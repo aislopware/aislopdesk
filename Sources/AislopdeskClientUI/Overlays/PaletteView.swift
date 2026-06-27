@@ -1,7 +1,7 @@
 // PaletteView — the floating command palette overlay (E2 / WI-2). Renders the live state of the injected
-// ``OverlayCoordinator`` as the otty-style command palette: a pre-focused search field, zero-state filter
-// chips, and a sectioned, fzf-highlighted result list with keycap chips, a ✓ toggled-state gutter, and a
-// keyboard-selected fill row.
+// ``OverlayCoordinator`` as the otty-style VERBS-ONLY command palette: a pre-focused search field and a
+// sectioned, fzf-highlighted result list with keycap chips, a ✓ toggled-state gutter, and a keyboard-selected
+// fill row. (The per-domain filter chips moved to the E11 Open-Quickly picker — ⌘⇧P shows no chips.)
 //
 // Faithful to `spec/user-interface__command-palette.md` (the centered floating panel, the magnifier +
 // blue/accent caret, ALL-CAPS section headers with the WORKING-DIRECTORY badge, per-symbol keycap chips,
@@ -43,7 +43,6 @@ struct PaletteView: View {
             Rectangle()
                 .fill(Otty.Line.divider)
                 .frame(height: Otty.Metric.hairline)
-            filterChipsRow
             resultsList
         }
         .frame(width: panelWidth)
@@ -103,53 +102,6 @@ struct PaletteView: View {
             // dropped — defer one runloop hop (the same idiom InPaneChooserView uses).
             DispatchQueue.main.async { searchFocused = true }
         }
-    }
-
-    // MARK: - Filter chips (zero-state)
-
-    @ViewBuilder private var filterChipsRow: some View {
-        // The per-domain filter chips + the multi-source jump-to belong to Open Quickly (⌘⇧O / E11). The
-        // verbs-only ⌘⇧P Command Palette NEVER shows them (it groups verbs by otty category instead). The
-        // chip machinery below stays built — it simply doesn't render unless the palette is multi-source.
-        if coordinator.paletteMode.multiSource,
-           coordinator.paletteQuery.trimmingCharacters(in: .whitespaces).isEmpty
-        {
-            let filters = coordinator.mixer?.availableFilters ?? []
-            if !filters.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Otty.Metric.space1) {
-                        ForEach(filters, id: \.self) { filter in
-                            filterChip(filter)
-                        }
-                    }
-                    .padding(.horizontal, Otty.Metric.space3)
-                    .padding(.vertical, Otty.Metric.space2)
-                }
-            }
-        }
-    }
-
-    private func filterChip(_ filter: QueryFilter) -> some View {
-        let active = coordinator.paletteFilter == filter
-        return Button {
-            coordinator.selectFilter(filter)
-        } label: {
-            HStack(spacing: Otty.Metric.space1) {
-                Image(systemName: filter.icon)
-                    .font(.system(size: Otty.Typeface.small))
-                Text(filter.label)
-                    .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-            }
-            .foregroundStyle(active ? Otty.Text.primary : Otty.Text.secondary)
-            .padding(.horizontal, Otty.Metric.space2)
-            .padding(.vertical, Otty.Metric.space1)
-            .background(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                    .fill(active ? Otty.State.selected : Otty.Surface.element),
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Results list

@@ -38,9 +38,14 @@ struct WorkspaceCommands: Commands {
     /// E5 / WI-4: the cross-tab Global Search overlay toggle (otty ⇧⌘F, the View ▸ Global Search… menu item).
     /// `nil` keeps the menu item a graceful no-op via `route`, never dead.
     var toggleGlobalSearch: (() -> Void)?
-    /// E10 / WI-8: the Jump-To panel toggle (otty ⌘J, the View ▸ Jump To… menu item). `nil` keeps the menu
-    /// item a graceful no-op via `route`, never dead.
+    /// E10 / WI-8 → E11 / WI-7: the View ▸ Jump To… menu item toggle (otty ⌘J). The app re-points it to the
+    /// folded-in Jump-To — the Open-Quickly picker at the `.current` pill. `nil` keeps the menu item a
+    /// graceful no-op via `route`, never dead.
     var toggleJumpTo: (() -> Void)?
+    /// E11 / WI-7: the View ▸ Open Quickly… menu item toggle (otty ⌘⇧O → the merged `.all` pill). `nil` keeps
+    /// the menu item a graceful no-op via `route`, never dead. The ⌘⇧O chord itself is owned by the NSEvent
+    /// dispatcher (this menu carries no `.keyboardShortcut`); the menu only mirrors it.
+    var openQuickly: (() -> Void)?
     /// E9 / WI-7: the four `Details: *` jump commands' tab selector (the View ▸ Details: Info/Outline/Git/
     /// Files menu items). `nil` keeps the items a graceful no-op via `route` (the live wiring rides the macOS
     /// NSEvent dispatcher's `selectDetailsTab`, matching how `toggleDetailsPanel`/`toggleSidebar` aren't
@@ -110,6 +115,7 @@ struct WorkspaceCommands: Commands {
                 toggleSidebar: toggleSidebar,
                 toggleGlobalSearch: toggleGlobalSearch,
                 toggleJumpTo: toggleJumpTo,
+                openQuickly: openQuickly,
                 selectDetailsTab: selectDetailsTab,
             )
         }

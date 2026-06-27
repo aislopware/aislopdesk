@@ -13,9 +13,16 @@ import Foundation
 
 // MARK: - Query filter (the chip categories)
 
-/// A per-domain palette filter — the zero-state filter chips + the registration key for each data source
-/// (warp-overlays-actions.md §1.5 / §2.2). A query carries at most one active filter; a source runs when
-/// the query has no filter OR its filter matches one the source is registered against.
+/// A per-domain palette filter — the registration key for each data source (warp-overlays-actions.md §1.5 /
+/// §2.2). A query carries at most one active filter; a source runs when the query has no filter OR its
+/// filter matches one the source is registered against.
+///
+/// This is the verbs-only ⌘⇧P taxonomy — DISTINCT from the ⌘⇧O ``OpenQuicklyFilter`` pills (Open-Quickly is
+/// its own E11 surface). Only ``actions`` is wired by a live source today (``ActionsPaletteSource`` /
+/// ``CategoryActionsSource``); ``tabs`` is wired by ``TabsPaletteSource`` for ad-hoc mounts. The remaining
+/// domains (``sessions`` / ``files`` / ``conversations`` / ``repos``) are RETAINED as the documented Warp
+/// taxonomy but are no longer surfaced by any source — their empty-stub sources were removed in E11 / WI-5
+/// once the multi-source jump-to moved to ``OpenQuicklyFilter`` (they were never reachable under ⌘⇧P).
 public enum QueryFilter: String, CaseIterable, Sendable, Hashable {
     case actions = "Actions"
     case tabs = "Tabs"

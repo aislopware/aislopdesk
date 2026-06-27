@@ -3869,6 +3869,14 @@ public final class WorkspaceStore {
     /// FontScroll hooks already hold). `nil` in tests / headless ⇒ the zoom is a clean no-op.
     public var onFontSizeStep: ((FontSizeStep) -> Void)?
 
+    /// The E11 cwd-visit sink: fired with the pane's NEW working directory whenever ``setLastKnownCwd(_:for:)``
+    /// records a CHANGED cwd (i.e. it passes the dirty guard). The app wires this to
+    /// ``FolderFrecencyStore/record(cwd:)`` so the Open-Quickly **Folders** filter learns the directories you
+    /// actually visit — but the store stays SwiftUI-/Folders-agnostic: it's a plain `(String) -> Void` closure,
+    /// not a dependency on the Folders module. `nil` in tests / headless ⇒ no frecency side effect (the prior
+    /// behavior). Gated by the dirty guard so a re-focus / unchanged refresh never records a phantom visit.
+    public var onCwdVisited: ((String) -> Void)?
+
     /// Commits the app-global connection ``ConnectionTarget`` into the persisted ``Workspace/connection``
     /// (called by ``AppConnection/onTargetCommitted`` on a successful connect) so the connect-gate
     /// prefills the last-used host next launch. Debounced-saves like any other mutation.
@@ -4386,6 +4394,9 @@ public extension WorkspaceStore {
             }
         guard current != cwd else { return }
         updateSpecLive(paneID) { $0.lastKnownCwd = cwd }
+        // E11 WI-2: the cwd just CHANGED (the guard above proves it differs from the stored value), so this is a
+        // genuine visit — notify the frecency sink. Kept after the dirty guard so an unchanged re-focus is silent.
+        onCwdVisited?(cwd)
         // ES-E6-4: the pane's cwd just CHANGED (the guard above proves it differs), so any cached git
         // toplevel for this pane is now stale — a `cd` can cross repos within the SAME live pane, and the
         // reconcile prune only drops CLOSED leaves. Invalidate the cache so `paneProjectKey` falls back to

@@ -147,17 +147,16 @@ final class OverlayCoordinatorMountTests: XCTestCase {
     // MARK: - ES-E2-1: the ⌘⇧P palette is VERBS-ONLY (no filter chips, no jump-to sources)
 
     /// ⌘⇧P is the Command Palette (verbs) — the per-domain filter chips + the Tabs/Files/Conversations/Repos
-    /// jump-to belong to Open Quickly (⌘⇧O / E11). Pin that command mode renders no chips (`multiSource ==
-    /// false`), mixes ONLY the action sources (`availableFilters == [.actions]`), and that no jump-to row or
-    /// section leaks in — even with a second pane a Tabs source WOULD have surfaced. Fails on a palette that
-    /// still registered the Tabs/Files sources under ⌘⇧P.
+    /// jump-to belong to Open Quickly (⌘⇧O / E11), now a SEPARATE surface. Pin that command mode mixes ONLY
+    /// the action sources (`availableFilters == [.actions]`) and that no jump-to row or section leaks in —
+    /// even with a second pane a Tabs source WOULD have surfaced. Fails on a palette that still registered the
+    /// Tabs/Files multi-source providers (the dead `multiSource` mixer branch) under ⌘⇧P.
     func testCommandPaletteIsVerbsOnlyWithNoFilterChips() {
         let (overlay, store) = makeCoordinator()
         store.newTab(kind: .terminal) // a 2nd pane a Tabs jump-to source WOULD surface — proves it's excluded
 
         overlay.openPalette(mode: .command)
 
-        XCTAssertFalse(overlay.paletteMode.multiSource, "the command palette renders no filter chips")
         XCTAssertEqual(
             overlay.mixer?.availableFilters, [.actions],
             "only the Actions category sources are mixed under ⌘⇧P (no Tabs/Files/Conversations/Repos)",
@@ -405,6 +404,68 @@ final class OverlayCoordinatorMountTests: XCTestCase {
         XCTAssertFalse(overlay.cheatSheetVisible, "⌘/ again closes it")
     }
 
+    // MARK: - ES-E11-1 / WI-5: the Open-Quickly picker state (the ⌘⇧O / ⌘J closures the app threads)
+
+    /// ⌘⇧O is `overlay.toggleOpenQuickly(filter: .all)`. Pin that the first press opens the picker on the
+    /// merged `.all` list and the second closes it — the SAME closure the dispatcher fires each press. The
+    /// picker starts hidden and defaults to `.all` (the ⌘⇧O entry). Fails on a coordinator that still owns the
+    /// pre-E11 `jumpToVisible`/`toggleJumpTo()` (no filter) instead of the Open-Quickly state.
+    func testToggleOpenQuicklyOpensAtAllAndCloses() {
+        let (overlay, _) = makeCoordinator()
+        XCTAssertFalse(overlay.openQuicklyVisible, "the picker starts hidden")
+        XCTAssertEqual(overlay.openQuicklyFilter, .all, "it defaults to the merged All pill")
+
+        overlay.toggleOpenQuickly(filter: .all)
+        XCTAssertTrue(overlay.openQuicklyVisible, "⌘⇧O opens the picker")
+        XCTAssertEqual(overlay.openQuicklyFilter, .all, "⌘⇧O lands on All")
+
+        overlay.toggleOpenQuickly(filter: .all)
+        XCTAssertFalse(overlay.openQuicklyVisible, "⌘⇧O again closes the picker")
+    }
+
+    /// ⌘J is re-pointed (E11) to `overlay.toggleOpenQuickly(filter: .current)` — the folded-in Jump-To. Pin
+    /// that it opens the picker pre-selected on the `.current` pill (NOT `.all`), so the focused-pane links +
+    /// command index show first. Fails if ⌘J opened to the wrong pill or didn't carry the filter through.
+    func testToggleOpenQuicklyCurrentOpensOnTheCurrentPill() {
+        let (overlay, _) = makeCoordinator()
+        overlay.toggleOpenQuickly(filter: .current)
+        XCTAssertTrue(overlay.openQuicklyVisible, "⌘J opens the picker")
+        XCTAssertEqual(overlay.openQuicklyFilter, .current, "⌘J lands on the Current pill (the folded Jump-To)")
+    }
+
+    /// `openOpenQuickly(filter:)` presents at a pill; `setOpenQuicklyFilter(_:)` switches the pill WITHOUT
+    /// closing (the Tab/⇧Tab cycle + the picker-local pill chords drive it). Pin both, plus `closeOpenQuickly`.
+    func testSetOpenQuicklyFilterSwitchesPillWithoutClosing() {
+        let (overlay, _) = makeCoordinator()
+        overlay.openOpenQuickly(filter: .all)
+        XCTAssertTrue(overlay.openQuicklyVisible)
+
+        overlay.setOpenQuicklyFilter(.folders)
+        XCTAssertEqual(overlay.openQuicklyFilter, .folders, "the pill switched")
+        XCTAssertTrue(overlay.openQuicklyVisible, "switching the pill does NOT close the picker")
+
+        overlay.setOpenQuicklyFilter(.agents)
+        XCTAssertEqual(overlay.openQuicklyFilter, .agents)
+        XCTAssertTrue(overlay.openQuicklyVisible)
+
+        overlay.closeOpenQuickly()
+        XCTAssertFalse(overlay.openQuicklyVisible, "closeOpenQuickly dismisses the picker")
+    }
+
+    /// WI-5: the app constructs a client-side `FolderFrecencyStore` and attaches it like the store. Pin that
+    /// `attach(folders:)` wires the reference the Open-Quickly Folders pill (WI-6) reads. A held-strong store
+    /// is required because the coordinator keeps it weakly (the app owns it).
+    func testAttachFoldersStoreWiresTheReference() {
+        let (overlay, _) = makeCoordinator()
+        XCTAssertNil(overlay.folders, "no Folders store until the app attaches one")
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("oq-folders-\(UUID().uuidString).json")
+        let folders = FolderFrecencyStore(fileURL: tempURL)
+        overlay.attach(folders: folders)
+        XCTAssertTrue(overlay.folders === folders, "attach(folders:) wires the app-owned frecency store")
+    }
+
     // MARK: - ES-E5-5 / WI-4: the ⇧⌘F Global Search overlay flag
 
     /// The ⇧⌘F toggle the app threads into the key dispatcher + the View menu is `overlay.toggleGlobalSearch()`.
@@ -608,10 +669,10 @@ final class OverlayCoordinatorMountTests: XCTestCase {
     // MARK: - WI-5: the `anyModalVisible` hit-testing gate the OverlayHostView reads
 
     /// `OverlayHostView.allowsHitTesting(anyModalVisible || !toasts.isEmpty)` — the host is transparent to
-    /// clicks until a modal is up. Pin that `anyModalVisible` tracks EXACTLY the four scrimmed panels (palette
-    /// / cheat sheet / connect / remote picker) and that a toast is NOT a modal (it is gated separately) — a
-    /// regression that folded a toast (or dropped a panel) into the gate would swallow workspace clicks or
-    /// fail to.
+    /// clicks until a modal is up. Pin that `anyModalVisible` tracks EXACTLY the five scrimmed panels (palette
+    /// / cheat sheet / connect / remote picker / Open-Quickly) and that a toast is NOT a modal (it is gated
+    /// separately) — a regression that folded a toast (or dropped a panel) into the gate would swallow
+    /// workspace clicks or fail to.
     func testAnyModalVisibleReflectsModalFlagsButNotToasts() {
         let (overlay, _) = makeCoordinator()
         XCTAssertFalse(overlay.anyModalVisible, "nothing up ⇒ the host passes clicks through")
@@ -634,6 +695,13 @@ final class OverlayCoordinatorMountTests: XCTestCase {
         overlay.openRemotePicker()
         XCTAssertTrue(overlay.anyModalVisible, "the remote-window picker is a modal")
         overlay.closeRemotePicker()
+        XCTAssertFalse(overlay.anyModalVisible)
+
+        // E11 / WI-5: the Open-Quickly picker is a centered, SCRIMMED modal (it folded in E10's Jump-To), so it
+        // MUST register here. Fails if `openQuicklyVisible` is not folded into `anyModalVisible`.
+        overlay.openOpenQuickly()
+        XCTAssertTrue(overlay.anyModalVisible, "the Open-Quickly picker is a modal")
+        overlay.closeOpenQuickly()
         XCTAssertFalse(overlay.anyModalVisible)
 
         // A toast alone must NOT make the layer modal (it is gated by `!toasts.isEmpty`, separately).

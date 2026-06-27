@@ -1,0 +1,487 @@
+import AislopdeskProtocol
+import Foundation
+
+// MARK: - E11 WI-3 (ES-E11-1..4): the pure Open-Quickly (`⌘⇧O`) switcher model
+
+/// The otty Open-Quickly filter pills — the `⌘⇧O` taxonomy (distinct from the `⌘⇧P` command-palette
+/// `QueryFilter`). One floating picker fuzzy-searches across these sources; `.all` merges the rest into a
+/// single ranked list with ALL-CAPS section headers.
+///
+/// ### Reduced pill set (carry-over — deliberate, not missing)
+/// otty ships eight pills (`All / Opened / Recent / Folders / SSH / Agents / Current / Recipes`). Aislopdesk
+/// drops two by binding decision:
+/// - **SSH** is a product cut (no `~/.ssh/config` parse, no `⌘S` chord, no SSH Actions row).
+/// - **Recipes** is deferred to E16 (no backing recipe store exists yet).
+///
+/// So the pill ring is **All / Opened / Recent / Folders / Agents / Current** — and the cut is *structural*:
+/// no `ssh`/`recipes` case exists on this enum at all, so nothing can route to a missing source.
+public enum OpenQuicklyFilter: String, CaseIterable, Equatable, Hashable, Sendable {
+    /// The merged, section-headered list of every source — the `⌘⇧O` default.
+    case all
+    /// Every currently-open pane (the vertical-rail "Opened" — `⌘W`).
+    case opened
+    /// Recently-closed tabs from this/the previous session (`⌘R`).
+    case recent
+    /// Frequently-visited folders, frecency-ranked (`⌘Z`).
+    case folders
+    /// Claude Code agent sessions for the current project (`⌘G`). Claude-only (carry-over).
+    case agents
+    /// The focused pane's detected links + command/prompt index (`⌘J` / Jump-To).
+    case current
+
+    // Recipes pill: added in E16 once the recipe store exists. SSH pill: dropped by product decision.
+    /// The pill order rendered in the filter bar (Tab/⇧Tab cycle this ring). `⌘⇧O` opens to ``defaultFilter``.
+    public static let pickerPills: [Self] = [.all, .opened, .recent, .folders, .agents, .current]
+
+    /// The section order the `.all` list merges in (every pill EXCEPT `.all`, in pill order). `.all` itself is
+    /// never a section — it is the merged view of these.
+    public static let sectionOrder: [Self] = [.opened, .recent, .folders, .agents, .current]
+
+    /// The pill `⌘⇧O` opens to (the merged All list).
+    public static let defaultFilter: OpenQuicklyFilter = .all
+
+    /// The pill's display label (also the source of ``sectionHeader``).
+    public var label: String {
+        switch self {
+        case .all: "All"
+        case .opened: "Opened"
+        case .recent: "Recent"
+        case .folders: "Folders"
+        case .agents: "Agents"
+        case .current: "Current"
+        }
+    }
+
+    /// The ALL-CAPS group header this source renders under in the merged `.all` list (otty's "WINDOWS"/"TABS"
+    /// styling, mapped to our pill names).
+    public var sectionHeader: String { label.uppercased() }
+
+    /// The pill's leading SF Symbol name (`Image(systemName:)`).
+    public var icon: String {
+        switch self {
+        case .all: "square.grid.2x2"
+        case .opened: "rectangle.stack"
+        case .recent: "clock.arrow.circlepath"
+        case .folders: "folder"
+        case .agents: "sparkles"
+        case .current: "scope"
+        }
+    }
+
+    /// The bare character of the picker-LOCAL `⌘`-chord that jumps straight to this pill (`⌘0`/`⌘W`/`⌘R`/
+    /// `⌘Z`/`⌘G`/`⌘J`). Handled by the panel's own `onKeyPress`, NEVER registered globally.
+    public var pickerChordKey: String {
+        switch self {
+        case .all: "0"
+        case .opened: "w"
+        case .recent: "r"
+        case .folders: "z"
+        case .agents: "g"
+        case .current: "j"
+        }
+    }
+
+    /// The honest empty-state line the picker shows when this source has no rows.
+    public var emptyMessage: String {
+        switch self {
+        case .all: "No results"
+        case .opened: "No open panes"
+        case .recent: "No recently closed tabs"
+        case .folders: "No folders yet"
+        case .agents: "No agent sessions"
+        case .current: "Nothing detected in this pane"
+        }
+    }
+}
+
+/// The classification of one ``OpenQuicklyItem`` — drives the row's leading icon + trailing type badge. A
+/// superset of the sources: panes (Opened), folders (Folders), agents (Agents), recently-closed tabs (Recent),
+/// and the Jump-To-derived command/prompt/path/url/file rows (Current).
+public enum OpenQuicklyKind: String, CaseIterable, Equatable, Hashable, Sendable {
+    case pane
+    case folder
+    case agent
+    case recentTab
+    case command
+    case prompt
+    case path
+    case url
+    case fileURL
+
+    /// The trailing type-badge label the row renders flush-right.
+    public var badge: String {
+        switch self {
+        case .pane: "Pane"
+        case .folder: "Folder"
+        case .agent: "Agent"
+        case .recentTab: "Tab"
+        case .command: "Cmd"
+        case .prompt: "Prompt"
+        case .path: "Path"
+        case .url: "URL"
+        case .fileURL: "File"
+        }
+    }
+
+    /// The leading icon SF Symbol name (`Image(systemName:)`).
+    public var symbol: String {
+        switch self {
+        case .pane: "rectangle.split.2x1"
+        case .folder: "folder"
+        case .agent: "sparkles"
+        case .recentTab: "clock.arrow.circlepath"
+        case .command: "terminal"
+        case .prompt: "text.bubble"
+        case .path: "doc.text"
+        case .url: "link"
+        case .fileURL: "doc"
+        }
+    }
+
+    /// Map a ``JumpToItemKind`` (the Current source) onto its Open-Quickly kind 1:1.
+    public init(jumpTo kind: JumpToItemKind) {
+        switch kind {
+        case .path: self = .path
+        case .url: self = .url
+        case .fileURL: self = .fileURL
+        case .command: self = .command
+        case .prompt: self = .prompt
+        }
+    }
+}
+
+/// One row in the Open-Quickly picker: a typed display value (title / subtitle / badge / icon / optional
+/// relative-timestamp) plus the ACTION that firing it (`↩` or `⌘1–9`) performs. A pure value (no SwiftUI /
+/// store) so the merge/rank/section/select logic is headlessly unit-tested; the view turns ``act`` into a
+/// store op / `LinkActionActuator` call via a thin switch.
+public struct OpenQuicklyItem: Identifiable, Equatable, Hashable, Sendable {
+    /// What firing the row does. Carrying the typed source keeps the view's actuator a thin switch and keeps
+    /// the routing decisions in one place (the model), not scattered across the view.
+    public enum Act: Equatable, Hashable, Sendable {
+        /// Focus a currently-open pane (Opened `↩`).
+        case focusPane(PaneID)
+        /// Open / change-directory to a frecent folder (Folders `↩`); the view picks the verbatim-`cd` vs
+        /// open routing.
+        case openFolder(path: String)
+        /// Resume a Claude agent session (Agents `↩`).
+        case resumeAgent(sessionID: String, cwd: String)
+        /// Reopen a recently-closed tab by its LIFO index (Recent `↩`).
+        case reopenRecentTab(index: Int)
+        /// Act on a focused-pane detection (Current `↩`) — wraps the underlying ``JumpToItem/Act`` (a link
+        /// open or a scrollback jump) so the Current rows actuate through the SAME path as the Jump-To panel.
+        case jumpTo(JumpToItem.Act)
+    }
+
+    /// A stable, unique id (the `ForEach` key). Prefixed by source: `pane:` / `folder:` / `agent:` /
+    /// `recent:` / `current:`.
+    public let id: String
+    public let kind: OpenQuicklyKind
+    /// The primary display label (pane title / folder name / agent / command / link).
+    public let title: String
+    /// The trailing metadata line (cwd / project path), or `nil`.
+    public let subtitle: String?
+    /// The CLIENT-RECEIVE time the relative stamp renders from, or `nil` (links / panes carry none).
+    public let timestamp: Date?
+    /// The fuzzy-match haystack the model ranks against — usually ``title``, but a folder row matches on its
+    /// full path (held here) while its ``title`` stays the short display name.
+    public let searchText: String
+    public let act: Act
+
+    /// The trailing type badge (delegates to ``kind``).
+    public var badge: String { kind.badge }
+    /// The leading icon symbol (delegates to ``kind``).
+    public var symbol: String { kind.symbol }
+
+    public init(
+        id: String,
+        kind: OpenQuicklyKind,
+        title: String,
+        subtitle: String?,
+        timestamp: Date?,
+        searchText: String,
+        act: Act,
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.subtitle = subtitle
+        self.timestamp = timestamp
+        self.searchText = searchText
+        self.act = act
+    }
+}
+
+/// One labelled group in the picker: the source ``filter`` it came from and the (already-ranked) ``items``.
+/// In `.all` the picker shows one section per non-empty source under its ``header``; in a specific pill it is
+/// a single section (possibly empty, so the view can render the empty-state).
+public struct OpenQuicklySection: Identifiable, Equatable, Sendable {
+    /// Which source this section is.
+    public let filter: OpenQuicklyFilter
+    /// The ranked rows of this source.
+    public let items: [OpenQuicklyItem]
+
+    /// `Identifiable` by the source filter (one section per source).
+    public var id: OpenQuicklyFilter { filter }
+    /// The ALL-CAPS group header (delegates to the source ``filter``).
+    public var header: String { filter.sectionHeader }
+
+    public init(filter: OpenQuicklyFilter, items: [OpenQuicklyItem]) {
+        self.filter = filter
+        self.items = items
+    }
+}
+
+/// The PURE merge / rank / section / cycle / quick-pick logic + the pure source builders for the
+/// Open-Quickly picker. No SwiftUI, no store — every source is handed in pre-built (the view assembles them
+/// from `WorkspaceStore` / `MetadataClient` / `JumpToModel`), so the ordering + selection contract is
+/// headlessly testable.
+///
+/// ### Reuse
+/// - Ranking takes an INJECTED `score` closure (the view passes `FuzzyMatcher.score(_:_:)?.score`; the tests
+///   pass a deterministic subsequence scorer) — the same contract as ``JumpToModel/filtered(_:query:score:)``.
+///   Scores are `Int` (no float / FMA / NaN hazard — CLAUDE.md §2).
+/// - The **Current** source is the existing ``JumpToModel`` output, wrapped 1:1 via ``currentItems(from:)``.
+public enum OpenQuicklyModel {
+    // MARK: - Sectioning + ranking
+
+    /// Build the picker sections for `filter`, ranking each source against `query` with the injected `score`.
+    ///
+    /// - `.all`: one section per source in ``OpenQuicklyFilter/sectionOrder``, EMPTY sources omitted (no
+    ///   stray header) — otty's merged-with-headers list.
+    /// - a specific pill: exactly ONE section for that source (kept even when empty, so the view renders the
+    ///   honest empty-state rather than a blank panel).
+    public static func sectioned(
+        sources: [OpenQuicklyFilter: [OpenQuicklyItem]],
+        filter: OpenQuicklyFilter,
+        query: String,
+        score: (_ query: String, _ haystack: String) -> Int?,
+    ) -> [OpenQuicklySection] {
+        if filter == .all {
+            return OpenQuicklyFilter.sectionOrder.compactMap { source in
+                let ranked = rank(sources[source] ?? [], query: query, score: score)
+                guard !ranked.isEmpty else { return nil }
+                return OpenQuicklySection(filter: source, items: ranked)
+            }
+        }
+        let ranked = rank(sources[filter] ?? [], query: query, score: score)
+        return [OpenQuicklySection(filter: filter, items: ranked)]
+    }
+
+    /// Fuzzy-filter + rank `items` by `query`. An EMPTY query returns `items` unchanged (the zero-state). A
+    /// non-empty query drops every item the scorer rejects (`nil`) and orders survivors by score DESCENDING,
+    /// breaking ties by original order (a STABLE sort). Integer scores only — the `>`/`<` are ordered + total.
+    static func rank(
+        _ items: [OpenQuicklyItem],
+        query: String,
+        score: (_ query: String, _ haystack: String) -> Int?,
+    ) -> [OpenQuicklyItem] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return items }
+        let scored: [(score: Int, order: Int, item: OpenQuicklyItem)] = items.enumerated().compactMap { offset, item in
+            guard let s = score(trimmed, item.searchText) else { return nil }
+            return (s, offset, item)
+        }
+        return scored.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.order < rhs.order
+        }.map(\.item)
+    }
+
+    /// The flattened, navigable row list (sections concatenated; headers are NOT rows). The basis for
+    /// arrow-key selection + ``quickPickIndex(_:in:)``.
+    public static func selectable(_ sections: [OpenQuicklySection]) -> [OpenQuicklyItem] {
+        sections.flatMap(\.items)
+    }
+
+    /// Map a 1-based `⌘1–9` quick-pick chord onto a 0-based index into the visible `rows`. Returns `nil` for
+    /// `⌘0` (the All-pill chord, not a pick), a chord above 9, or an index past the visible rows.
+    public static func quickPickIndex(_ oneBased: Int, in rows: [OpenQuicklyItem]) -> Int? {
+        guard (1...9).contains(oneBased) else { return nil }
+        let index = oneBased - 1
+        guard rows.indices.contains(index) else { return nil }
+        return index
+    }
+
+    // MARK: - Filter cycling (Tab / ⇧Tab)
+
+    /// The next pill in the ring (Tab), WRAPPING from the last pill back to the first.
+    public static func nextFilter(_ current: OpenQuicklyFilter) -> OpenQuicklyFilter {
+        cycle(from: current, by: 1)
+    }
+
+    /// The previous pill in the ring (⇧Tab), WRAPPING from the first pill back to the last.
+    public static func prevFilter(_ current: OpenQuicklyFilter) -> OpenQuicklyFilter {
+        cycle(from: current, by: -1)
+    }
+
+    private static func cycle(from current: OpenQuicklyFilter, by delta: Int) -> OpenQuicklyFilter {
+        let pills = OpenQuicklyFilter.pickerPills
+        guard !pills.isEmpty, let index = pills.firstIndex(of: current) else { return current }
+        let count = pills.count
+        // `((i + delta) % n + n) % n` keeps the index in range for a negative delta (no underflow / trap).
+        let wrapped = ((index + delta) % count + count) % count
+        return pills[wrapped]
+    }
+
+    // MARK: - Source builders (pure)
+
+    /// Build the **Agents** rows from the host's agent-session list, filtered to **Claude only** (carry-over:
+    /// Agents = Claude Code). A non-positive `mtimeMS` carries no timestamp; an empty title falls back to the
+    /// session id; an empty cwd is no subtitle.
+    public static func agentItems(from sessions: [MetadataCodec.AgentSessionInfo]) -> [OpenQuicklyItem] {
+        sessions.compactMap { session in
+            guard session.agentKind == .claude else { return nil }
+            let title = session.title.isEmpty ? session.id : session.title
+            // Whole-millisecond epoch → seconds; a non-positive sentinel (e.g. -1) means "unknown".
+            let timestamp: Date? = session.mtimeMS > 0
+                ? Date(timeIntervalSince1970: Double(session.mtimeMS) / 1000)
+                : nil
+            let haystack = [title, session.cwd].filter { !$0.isEmpty }.joined(separator: " ")
+            return OpenQuicklyItem(
+                id: "agent:\(session.id)",
+                kind: .agent,
+                title: title,
+                subtitle: session.cwd.isEmpty ? nil : session.cwd,
+                timestamp: timestamp,
+                searchText: haystack,
+                act: .resumeAgent(sessionID: session.id, cwd: session.cwd),
+            )
+        }
+    }
+
+    /// Build the **Folders** rows from the frecency store's ranked entries. The display ``title`` is the last
+    /// path component; the full path is both the subtitle AND the fuzzy haystack (so typing part of the path
+    /// matches).
+    public static func folderItems(from entries: [FolderEntry]) -> [OpenQuicklyItem] {
+        entries.map { entry in
+            OpenQuicklyItem(
+                id: "folder:\(entry.path)",
+                kind: .folder,
+                title: folderDisplayName(entry.path),
+                subtitle: entry.path,
+                timestamp: entry.lastAccess,
+                searchText: entry.path,
+                act: .openFolder(path: entry.path),
+            )
+        }
+    }
+
+    /// Build the **Current** rows by wrapping the focused pane's ``JumpToModel`` output 1:1 — the link/block
+    /// ``JumpToItem/Act`` is carried verbatim so Current actuates through the same `LinkActionActuator` path.
+    public static func currentItems(from items: [JumpToItem]) -> [OpenQuicklyItem] {
+        items.map { item in
+            OpenQuicklyItem(
+                id: "current:\(item.id)",
+                kind: OpenQuicklyKind(jumpTo: item.kind),
+                title: item.title,
+                subtitle: nil,
+                timestamp: item.timestamp,
+                searchText: item.title,
+                act: .jumpTo(item.act),
+            )
+        }
+    }
+
+    /// Build one **Opened** row for a live pane (the view enumerates `tree.sessions[].tabs[].root` panes).
+    /// `↩` focuses the pane; title + cwd are both matchable.
+    public static func paneItem(paneID: PaneID, title: String, cwd: String?) -> OpenQuicklyItem {
+        let haystack = [title, cwd ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
+        return OpenQuicklyItem(
+            id: "pane:\(paneID.raw.uuidString)",
+            kind: .pane,
+            title: title,
+            subtitle: cwd,
+            timestamp: nil,
+            searchText: haystack,
+            act: .focusPane(paneID),
+        )
+    }
+
+    /// Build one **Recent** row for a recently-closed tab at LIFO `index` (0 = most-recently closed). `↩`
+    /// reopens it.
+    public static func recentTabItem(index: Int, title: String, cwd: String?) -> OpenQuicklyItem {
+        let haystack = [title, cwd ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
+        return OpenQuicklyItem(
+            id: "recent:\(index)",
+            kind: .recentTab,
+            title: title,
+            subtitle: cwd,
+            timestamp: nil,
+            searchText: haystack,
+            act: .reopenRecentTab(index: index),
+        )
+    }
+
+    // MARK: - Composite source builders (whole-tree / whole-LIFO — E11 WI-6)
+
+    /// Build the **Opened** rows: one ``OpenQuicklyItem(.pane)`` per LIVE pane across every session → tab,
+    /// in `tree` order (the vertical-rail "Opened" — no horizontal tab-bar concept). The display title is the
+    /// pane's `lastKnownTitle` (falling back to its spec `title`, then a generic "Pane"); the subtitle + extra
+    /// haystack is its `lastKnownCwd`. `↩` focuses the pane. Pure so the view stays a thin renderer and the
+    /// enumeration is headlessly testable.
+    public static func openedItems(from tree: TreeWorkspace) -> [OpenQuicklyItem] {
+        var out: [OpenQuicklyItem] = []
+        for session in tree.sessions {
+            for tab in session.tabs {
+                for paneID in tab.allPaneIDs() {
+                    let spec = session.specs[paneID]
+                    out.append(paneItem(
+                        paneID: paneID,
+                        title: paneDisplayTitle(spec),
+                        cwd: nonEmpty(spec?.lastKnownCwd),
+                    ))
+                }
+            }
+        }
+        return out
+    }
+
+    /// Build the **Recent** rows from the store's recently-closed-tab LIFO. `records` is the raw
+    /// `recentlyClosedTabs` array (appended OLDEST→newest); the rows are emitted NEWEST-first with `index` =
+    /// the LIFO distance from the top (`0` = most-recently closed — the one `reopenLastClosedPane()` pops).
+    /// The title is the closed tab's title (falling back to its active pane's last-known title); the subtitle
+    /// is that pane's last-known cwd.
+    public static func recentItems(from records: [RecentlyClosedTab]) -> [OpenQuicklyItem] {
+        records.reversed().enumerated().map { index, record in
+            let activeSpec = record.tab.activePane.flatMap { record.specs[$0] }
+            return recentTabItem(
+                index: index,
+                title: recentDisplayTitle(tabTitle: record.tab.title, activeSpec: activeSpec),
+                cwd: nonEmpty(activeSpec?.lastKnownCwd),
+            )
+        }
+    }
+
+    /// The display title for an **Opened** pane row: `lastKnownTitle` → spec `title` → the generic "Pane".
+    static func paneDisplayTitle(_ spec: PaneSpec?) -> String {
+        if let last = spec?.lastKnownTitle, !last.isEmpty { return last }
+        if let spec, !spec.title.isEmpty { return spec.title }
+        return "Pane"
+    }
+
+    /// The display title for a **Recent** tab row: the closed tab's title → its active pane's last-known
+    /// title → the generic "Tab".
+    static func recentDisplayTitle(tabTitle: String, activeSpec: PaneSpec?) -> String {
+        if !tabTitle.isEmpty { return tabTitle }
+        if let last = activeSpec?.lastKnownTitle, !last.isEmpty { return last }
+        if let activeSpec, !activeSpec.title.isEmpty { return activeSpec.title }
+        return "Tab"
+    }
+
+    /// A non-empty trimmed-presence helper: `nil` for `nil`/empty, the string otherwise (so an empty cwd is no
+    /// subtitle, never a blank one — mirroring the ``agentItems``/``folderItems`` subtitle discipline).
+    private static func nonEmpty(_ s: String?) -> String? {
+        guard let s, !s.isEmpty else { return nil }
+        return s
+    }
+
+    /// The last path component for a folder's display title. Tolerates a trailing slash (`/var/log/` → `log`)
+    /// and the root (`/` → `/`); never blanks. No force-unwrap (CLAUDE.md §3).
+    static func folderDisplayName(_ path: String) -> String {
+        let trimmed = (path.count > 1 && path.hasSuffix("/")) ? String(path.dropLast()) : path
+        if let last = trimmed.split(separator: "/").last, !last.isEmpty {
+            return String(last)
+        }
+        return trimmed
+    }
+}

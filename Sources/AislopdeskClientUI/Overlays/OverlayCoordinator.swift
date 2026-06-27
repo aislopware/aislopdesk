@@ -15,28 +15,15 @@ import AislopdeskWorkspaceCore
 import Foundation
 import Observation
 
-/// How the palette was opened (warp-overlays-actions.md §2.1). Governs the friendly omnibar label AND the
-/// load-bearing distinction between the two surfaces the docs separate: the verbs-only ⌘⇧P Command Palette
-/// vs. the multi-source ⌘⇧O Open Quickly jump-to (E11).
+/// How the palette was opened (warp-overlays-actions.md §2.1) — governs only the friendly omnibar label now.
+/// BOTH entry points are the verbs-only ⌘⇧P Command Palette; the multi-source ⌘⇧O Open-Quickly jump-to is
+/// its OWN surface in E11 (`OpenQuicklyView` / `OpenQuicklyModel`), NOT a palette mode — so there is no
+/// `openQuickly` case and no `multiSource` flag here (E11 / WI-5 removed the dead palette jump-to path).
 public enum PaletteMode: Sendable, Equatable {
     /// ⌘⇧P — the verbs-only Command Palette (actions/verbs grouped by otty category; NO filter chips).
     case command
     /// The title-bar omnibar entry (still verbs-only — a friendlier label over the command palette).
     case titleBarSearch
-    /// ⌘⇧O — Open Quickly (E11): the multi-source jump-to (Tabs/Files/Conversations/Repos) WITH filter chips.
-    case openQuickly
-
-    /// Whether this entry point mixes the multi-source jump-to providers (Tabs/Files/Conversations/Repos)
-    /// AND shows the per-domain filter chips. ⌘⇧P + the title-bar omnibar are verbs-only (`false`); only
-    /// Open Quickly is multi-source. The chip/source machinery stays built — it simply doesn't render
-    /// under ⌘⇧P (the chips + jump-to belong to Open Quickly, E11).
-    public var multiSource: Bool {
-        switch self {
-        case .command,
-             .titleBarSearch: false
-        case .openQuickly: true
-        }
-    }
 }
 
 @preconcurrency
@@ -95,14 +82,20 @@ public final class OverlayCoordinator {
     /// ``WorkspaceStore/globalSearch``) until the query is re-run.
     public private(set) var globalSearchVisible = false
 
-    // MARK: Jump-To state (E10 / WI-8)
+    // MARK: Open-Quickly state (E11 / WI-5)
 
-    /// Whether the Jump-To panel (⌘J) is presented. UNLIKE the non-scrimmed Global Search surface, this IS a
-    /// centered, SCRIMMED modal (`jump-to.png`: a floating quick-switcher card over the terminal), so it is
-    /// included in ``anyModalVisible`` and ``OverlayHostView`` mounts it behind a ``Scrim``. The panel reads
-    /// the FOCUSED pane (its scrollback links + OSC-133 command index) itself — like Global Search, the
-    /// coordinator owns only the visibility flag, not the per-pane data.
-    public private(set) var jumpToVisible = false
+    /// Whether the Open-Quickly picker (⌘⇧O All / ⌘J Current) is presented. It FOLDS in E10's Jump-To: one
+    /// floating, centered, SCRIMMED quick-switcher card over the terminal (`open-quickly.png`), so it is
+    /// included in ``anyModalVisible`` and ``OverlayHostView`` mounts it behind a ``Scrim``. The picker reads
+    /// its own sources (open panes / recents / folders / agents / the focused pane's links + OSC-133 command
+    /// index) — like Global Search, the coordinator owns only the visibility flag + the active pill, not the
+    /// per-source data.
+    public private(set) var openQuicklyVisible = false
+
+    /// The pill the picker opens to / is currently showing (``OpenQuicklyFilter``). ⌘⇧O opens ``.all``; ⌘J
+    /// opens ``.current``; Tab/⇧Tab + the picker-local pill chords drive ``setOpenQuicklyFilter(_:)`` while it
+    /// is open. Defaults to ``.all`` (the ⌘⇧O entry).
+    public private(set) var openQuicklyFilter: OpenQuicklyFilter = .all
 
     // MARK: Remote-window picker state (L6)
 
@@ -142,7 +135,7 @@ public final class OverlayCoordinator {
     /// own surface (Global Search must not dim the workspace), so both are deliberately excluded here; the host
     /// gates Global Search's hit-testing separately on ``globalSearchVisible``.
     public var anyModalVisible: Bool {
-        paletteVisible || cheatSheetVisible || connectVisible || remotePickerVisible || jumpToVisible
+        paletteVisible || cheatSheetVisible || connectVisible || remotePickerVisible || openQuicklyVisible
     }
 
     // MARK: Toasts
@@ -153,24 +146,35 @@ public final class OverlayCoordinator {
 
     // MARK: Recents (mirrors the store's recent commands into palette item ids)
 
-    /// The mixer that combines the data sources. Rebuilt per open from a fresh store snapshot so the TABS
-    /// source reflects the live tree. `nil` until first opened.
+    /// The mixer that combines the verb-catalog sources (rebuilt per open; verbs-only — ⌘⇧P). `nil` until
+    /// first opened.
     @ObservationIgnored public private(set) var mixer: SearchMixer?
 
     private weak var store: WorkspaceStore?
 
-    public init(store: WorkspaceStore? = nil) { self.store = store }
+    /// The app-owned, client-side Folders frecency store (E11 / WI-5) — the backing of the Open-Quickly
+    /// **Folders** pill (`⌘Z`). Held weakly (the app owns it; attached once by the root like ``store``). `nil`
+    /// on iOS / tests / previews that don't construct one ⇒ the Folders source is simply empty there.
+    @ObservationIgnored public private(set) weak var folders: FolderFrecencyStore?
+
+    public init(store: WorkspaceStore? = nil, folders: FolderFrecencyStore? = nil) {
+        self.store = store
+        self.folders = folders
+    }
 
     /// Attach the live store (the root view does this once).
     public func attach(_ store: WorkspaceStore) { self.store = store }
+
+    /// Attach the app-owned Folders frecency store (the root view does this once, alongside ``attach(_:)``).
+    public func attach(folders: FolderFrecencyStore) { self.folders = folders }
 
     // MARK: Palette open / close
 
     /// Open the palette. `titleBarSearch` mode reads identically but starts empty (the omnibar friendly
     /// label); `command` mode is the ⌘⇧P entry. Rebuilds the mixer from a fresh store snapshot.
     public func openPalette(mode: PaletteMode = .command, query: String = "") {
-        paletteMode = mode // BEFORE rebuildMixer — the mixer's source set depends on the mode (verbs-only ⌘⇧P
-        rebuildMixer() //      registers only the action categories; multi-source Open Quickly adds the rest).
+        paletteMode = mode // cosmetic (the friendly omnibar label); the mixer is verbs-only regardless of mode.
+        rebuildMixer()
         paletteFilter = nil
         paletteQuery = query
         paletteSelection = 0
@@ -189,28 +193,13 @@ public final class OverlayCoordinator {
         paletteSelection = 0
     }
 
-    /// Rebuild the mixer for the current `paletteMode`. The verbs-only Command Palette (⌘⇧P) registers ONLY
-    /// the action catalog, grouped into otty categories (one section header each) — no Tabs/Files/jump-to
-    /// sources, so no filter chips. Open Quickly (⌘⇧O / E11) registers the multi-source providers (Actions +
-    /// a live Tabs snapshot + the file/conversation/repo stubs); that machinery stays built so E11 only has to
-    /// flip the entry point.
+    /// Rebuild the verbs-only ⌘⇧P mixer: the action catalog grouped into otty categories (Working Directory /
+    /// Window / Pane / Tab / View / Shell / Settings), one section header each. A typed query gets one section
+    /// header per matching category. (E11 / WI-5: the old multi-source Open-Quickly branch — a live Tabs
+    /// snapshot + the file/conversation/repo `EmptyPaletteSource` stubs — was removed; that jump-to is now the
+    /// dedicated `OpenQuicklyView`/`OpenQuicklyModel`, NOT a palette mode.)
     public func rebuildMixer() {
-        var sources: [any PaletteDataSource]
-        if paletteMode.multiSource {
-            sources = [ActionsPaletteSource()]
-            if let store {
-                sources.append(TabsPaletteSource.snapshot(store))
-            }
-            // Files / conversations / repos: protocol present, no client data yet (TODO host wires).
-            sources.append(EmptyPaletteSource(filter: .files, sectionTitle: "Files"))
-            sources.append(EmptyPaletteSource(filter: .conversations, sectionTitle: "Conversations"))
-            sources.append(EmptyPaletteSource(filter: .repos, sectionTitle: "Repositories"))
-        } else {
-            // Verbs-only ⌘⇧P: the action catalog grouped into otty categories (Working Directory / Window /
-            // Pane / Tab / View / Settings). A typed query gets one section header per matching category.
-            sources = ActionsPaletteSource.categorySources()
-        }
-        mixer = SearchMixer(sources: sources)
+        mixer = SearchMixer(sources: ActionsPaletteSource.categorySources())
     }
 
     // MARK: Palette results (view binds these)
@@ -441,16 +430,28 @@ public final class OverlayCoordinator {
         if globalSearchVisible { closeGlobalSearch() } else { openGlobalSearch() }
     }
 
-    // MARK: Jump-To (⌘J / E10 WI-8)
+    // MARK: Open-Quickly (⌘⇧O — All · ⌘J — Current · E11 / WI-5)
 
-    /// Present the Jump-To panel (ES-E10-5). The panel resolves the FOCUSED pane itself (its scrollback links
-    /// + OSC-133 command index), so — like Global Search — there is no per-open data snapshot here.
-    public func openJumpTo() { jumpToVisible = true }
-    public func closeJumpTo() { jumpToVisible = false }
+    /// Present the Open-Quickly picker at `filter` (⌘⇧O → ``OpenQuicklyFilter/all``; ⌘J → ``.current``). The
+    /// picker resolves its own sources (open panes / recents / folders / agents / the focused pane's links +
+    /// OSC-133 command index), so — like Global Search — there is no per-open data snapshot here.
+    public func openOpenQuickly(filter: OpenQuicklyFilter = .all) {
+        openQuicklyFilter = filter
+        openQuicklyVisible = true
+    }
 
-    /// Toggle the Jump-To panel (the ⌘J binding the app threads into the key dispatcher + menu).
-    public func toggleJumpTo() {
-        if jumpToVisible { closeJumpTo() } else { openJumpTo() }
+    public func closeOpenQuickly() { openQuicklyVisible = false }
+
+    /// Toggle the Open-Quickly picker (the ⌘⇧O / ⌘J bindings the app threads into the key dispatcher + menu).
+    /// Opening lands on `filter`; an already-open picker closes (matching the prior Jump-To toggle semantics).
+    public func toggleOpenQuickly(filter: OpenQuicklyFilter = .all) {
+        if openQuicklyVisible { closeOpenQuickly() } else { openOpenQuickly(filter: filter) }
+    }
+
+    /// Switch the visible picker to `filter` WITHOUT closing it — the Tab/⇧Tab cycle + the picker-local pill
+    /// chords (⌘0/⌘W/⌘R/⌘Z/⌘G/⌘J) drive this while the panel is open.
+    public func setOpenQuicklyFilter(_ filter: OpenQuicklyFilter) {
+        openQuicklyFilter = filter
     }
 
     // MARK: Remote-window picker (L6 / W1)

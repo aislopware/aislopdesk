@@ -906,6 +906,62 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(store.tree, before, "global search with no closure leaves the tree unchanged")
     }
 
+    // MARK: - View: Open Quickly (⌘⇧O) + the folded-in Jump-To (⌘J) (E11/WI-7)
+
+    /// `.openQuickly` WITH an explicit `openQuickly` override fires the closure (the app binds it to
+    /// `overlay.toggleOpenQuickly(filter: .all)` — the merged All pill) and does NOT mutate the tree. The
+    /// chord is GLOBAL (owned by the NSEvent dispatcher) only while the picker is HIDDEN; once it is open the
+    /// dispatcher's `isOverlayCapturingKeys` gate yields the keyboard to the picker, so the pill / ⌘1–9 / Tab /
+    /// ⌘K chords are picker-local and never reach `route`. FAILS on pre-WI-7 code (`.openQuickly` was a dead
+    /// `break`, no closure arg).
+    @MainActor
+    func testOpenQuicklyFiresToggleClosureAndDoesNotMutateTree() {
+        let store = makeTreeStore()
+        let before = store.tree
+        var fired = 0
+        WorkspaceBindingRegistry.route(.openQuickly, to: store, openQuickly: { fired += 1 })
+        XCTAssertEqual(fired, 1, "the open-quickly action invoked the openQuickly closure")
+        XCTAssertEqual(store.tree, before, "open quickly is a view overlay — the tree is unchanged")
+    }
+
+    /// `.openQuickly` WITHOUT an `openQuickly` override (the headless / test default) is a graceful no-op —
+    /// never a trap, never a tree mutation. Pins the nil-closure path stays inert (the chord is never dead,
+    /// but with no overlay wired it does nothing rather than crashing).
+    @MainActor
+    func testOpenQuicklyWithoutClosureIsAGracefulNoOp() {
+        let store = makeTreeStore()
+        let before = store.tree
+        WorkspaceBindingRegistry.route(.openQuickly, to: store) // no closure ⇒ no-op
+        XCTAssertEqual(store.tree, before, "open quickly with no closure leaves the tree unchanged")
+    }
+
+    /// `.jumpTo` (⌘J) stays a DISTINCT routing case from `.openQuickly`: it fires its OWN `toggleJumpTo`
+    /// closure (the app re-points that to `overlay.toggleOpenQuickly(filter: .current)`), independent of the
+    /// `openQuickly` toggle. Pins that the two global chords remain separately routed (no double-fire / alias)
+    /// — passing `openQuickly` must NOT fire on a `.jumpTo`, and vice-versa.
+    @MainActor
+    func testJumpToAndOpenQuicklyAreSeparatelyRoutedClosures() {
+        let store = makeTreeStore()
+        let before = store.tree
+        var jumpToFired = 0
+        var openQuicklyFired = 0
+        WorkspaceBindingRegistry.route(
+            .jumpTo, to: store,
+            toggleJumpTo: { jumpToFired += 1 },
+            openQuickly: { openQuicklyFired += 1 },
+        )
+        XCTAssertEqual(jumpToFired, 1, "⌘J fired its own toggleJumpTo closure")
+        XCTAssertEqual(openQuicklyFired, 0, "⌘J did NOT fire the openQuickly (⌘⇧O) closure")
+        WorkspaceBindingRegistry.route(
+            .openQuickly, to: store,
+            toggleJumpTo: { jumpToFired += 1 },
+            openQuickly: { openQuicklyFired += 1 },
+        )
+        XCTAssertEqual(openQuicklyFired, 1, "⌘⇧O fired the openQuickly closure")
+        XCTAssertEqual(jumpToFired, 1, "⌘⇧O did NOT re-fire the toggleJumpTo closure")
+        XCTAssertEqual(store.tree, before, "both are view overlays — the tree is unchanged")
+    }
+
     // MARK: - View: the four Details: * jump commands (E9/WI-7, ES-E9-5)
 
     /// `.selectDetailsTab(tab)` forwards the tab to the supplied `selectDetailsTab` closure and does NOT

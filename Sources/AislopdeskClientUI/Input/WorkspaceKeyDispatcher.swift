@@ -45,8 +45,15 @@ final class WorkspaceKeyDispatcher {
     private let toggleGlobalSearch: (() -> Void)?
     /// E10 / WI-8: the Jump-To panel toggle (⌘J). View-overlay state (the ``OverlayCoordinator``), so it is
     /// passed in as a closure like `toggleGlobalSearch`; `nil` (the headless / test default) keeps `.jumpTo`
-    /// a graceful no-op via `route` — never a dead chord.
+    /// a graceful no-op via `route` — never a dead chord. E11 re-points the app's `⌘J` binding to "open
+    /// Open-Quickly at `.current`" (the folded-in Jump-To); the dispatcher still threads it as `toggleJumpTo`.
     private let toggleJumpTo: (() -> Void)?
+    /// E11 / WI-7: the Open-Quickly picker toggle (⌘⇧O → the merged `.all` pill). View-overlay state (the
+    /// ``OverlayCoordinator`` owns `openQuicklyVisible`/`openQuicklyFilter`), so it is passed in as a closure
+    /// like `toggleJumpTo`; `nil` (the headless / test default) keeps `.openQuickly` a graceful no-op via
+    /// `route` — never a dead chord. ⌘⇧O (this) and ⌘J (`toggleJumpTo`) are the ONLY global Open-Quickly
+    /// chords — the pill / ⌘1–9 / Tab / ⌘K chords are PICKER-LOCAL (handled in `OpenQuicklyView`).
+    private let toggleOpenQuickly: (() -> Void)?
     /// The Details/inspector panel toggle (otty ⌘⇧R). View-owned `@State` (`WorkspaceChromeState`), so it is
     /// passed in as a closure. The chrome state is created INSIDE `WorkspaceRootView` (after the dispatcher is
     /// built at app `init`), so the root view installs the real closure via ``setToggleDetailsPanel(_:)`` on
@@ -63,6 +70,18 @@ final class WorkspaceKeyDispatcher {
     /// ``setSelectDetailsTab(_:)`` once those exist; until then `nil` ⇒ `.selectDetailsTab` is a graceful
     /// no-op (never a dead command).
     private var selectDetailsTab: ((DetailsPanelTab) -> Void)?
+
+    /// E11 review fix: a predicate the monitor consults BEFORE resolving any chord — `true` while a
+    /// keyboard-capturing overlay (the Open-Quickly picker) is presented. The app NSEvent monitor is built to
+    /// PREEMPT the responder chain (a multi-key prefix can't be a `.commands` menu item), so without this gate
+    /// every globally-bound ⌘-chord is resolved + SWALLOWED before the picker's `.onKeyPress` runs — ⌘1–9 would
+    /// switch the tab BEHIND the picker (instead of quick-picking the Nth result) and ⌘W would DESTRUCTIVELY
+    /// close the focused pane/session behind the open picker. When this returns `true` the monitor behaves like
+    /// a modal sheet and YIELDS the whole keyboard to the focused overlay: every key passes through UNCHANGED so
+    /// the picker owns its picker-local chords (⌘0/⌘W/⌘R/⌘Z/⌘G/⌘J, ⌘1–9, ⌘K), and Esc / a scrim-tap close it.
+    /// `{ false }` (the headless / test default) keeps the at-rest behaviour byte-identical; ⌘⇧O / ⌘J stay the
+    /// GLOBAL entry chords only while the picker is HIDDEN (they open it).
+    private let isOverlayCapturingKeys: () -> Bool
 
     /// The pure prefix machine (B2). Its sequence resolver reads the override-aware `resolvedSequenceTable`
     /// (single-chord fallback to `resolvedChordTable`) so a rebind — single OR multi-key — takes effect; the
@@ -86,7 +105,9 @@ final class WorkspaceKeyDispatcher {
         toggleSidebar: (() -> Void)? = nil,
         toggleGlobalSearch: (() -> Void)? = nil,
         toggleJumpTo: (() -> Void)? = nil,
+        toggleOpenQuickly: (() -> Void)? = nil,
         selectDetailsTab: ((DetailsPanelTab) -> Void)? = nil,
+        isOverlayCapturingKeys: @escaping () -> Bool = { false },
     ) {
         self.store = store
         self.togglePalette = togglePalette
@@ -97,7 +118,9 @@ final class WorkspaceKeyDispatcher {
         self.toggleSidebar = toggleSidebar
         self.toggleGlobalSearch = toggleGlobalSearch
         self.toggleJumpTo = toggleJumpTo
+        self.toggleOpenQuickly = toggleOpenQuickly
         self.selectDetailsTab = selectDetailsTab
+        self.isOverlayCapturingKeys = isOverlayCapturingKeys
         // The prefix machine resolves a post-prefix key against the override-aware SEQUENCE table FIRST (so a
         // multi-key prefix sequence whose tail key is not a standalone binding still fires), falling back to
         // the SINGLE-CHORD table (so the seeded ⌃A→⌘D, where ⌘D is also a standalone chord, keeps working and
@@ -151,8 +174,17 @@ final class WorkspaceKeyDispatcher {
 
     /// Map one `NSEvent` keystroke to swallow (`nil`) or pass-through (the event), routing any resolved
     /// action through `WorkspaceBindingRegistry.route(...)`. Pure transition logic lives in the machine; this
-    /// only does NSEvent→chord normalization + the intent→effect wiring.
-    private func handle(_ event: NSEvent) -> NSEvent? {
+    /// only does NSEvent→chord normalization + the intent→effect wiring. `internal` (not `private`) so the
+    /// modal-yield gate below is unit-testable headlessly via `@testable` (it constructs a synthetic NSEvent,
+    /// never a window-server resource — the hang-safety rule is about SCStream/VT/Metal, not NSEvent).
+    func handle(_ event: NSEvent) -> NSEvent? {
+        // MODAL YIELD: while a keyboard-capturing overlay (the Open-Quickly picker) is presented, this monitor
+        // — which PREEMPTS the responder chain — must NOT resolve the global chord table behind it, or ⌘1–9
+        // would switch the BACKGROUND tab (instead of quick-picking the Nth result) and ⌘W would DESTROY the
+        // focused pane behind the open picker. Yield the whole keyboard to it like a modal sheet: pass every
+        // key through UNCHANGED so the picker's `.onKeyPress` owns its picker-local chords (⌘0/⌘W/⌘R/⌘Z/⌘G/⌘J,
+        // ⌘1–9, ⌘K) and Esc / a scrim-tap close it. (⌘⇧O / ⌘J are global only while the picker is hidden.)
+        if isOverlayCapturingKeys() { return event }
         // A keystroke that does not normalize to a chord we model (a pure modifier, a dead key, …) is left
         // untouched — never swallow what we cannot classify.
         guard let chord = KeyChordNormalizer.chord(
@@ -230,6 +262,7 @@ final class WorkspaceKeyDispatcher {
             toggleSidebar: toggleSidebar,
             toggleGlobalSearch: toggleGlobalSearch,
             toggleJumpTo: toggleJumpTo,
+            openQuickly: toggleOpenQuickly,
             selectDetailsTab: selectDetailsTab,
         )
     }

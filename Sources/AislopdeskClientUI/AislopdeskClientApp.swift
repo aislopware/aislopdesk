@@ -49,6 +49,11 @@ public struct AislopdeskClientApp: App {
     /// SAME NSEvent monitor that owns every chord drives the overlays; the store's background-event sinks
     /// ALSO push an in-app toast through it. The panel views + the host mount land in WI-2…WI-5.
     @State private var overlayCoordinator: OverlayCoordinator
+    /// E11 / WI-7: the app-owned, client-side Folders frecency store — the backing of the Open-Quickly
+    /// **Folders** pill (⌘Z). Owned HERE so it outlives the ``OverlayCoordinator``'s WEAK `folders` reference
+    /// (attached, like `store`, in `init()`); ``WorkspaceStore/onCwdVisited`` records each cwd change into it
+    /// (`record(cwd:)` validates-then-stores). On iOS the picker reads it too (the pill bar is shared ClientUI).
+    @State private var folderFrecency: FolderFrecencyStore
     #if os(macOS)
     /// WS-B / B3: the live keybinding dispatcher. ONE app-level `NSEvent` `.keyDown` local monitor (the
     /// re-scope of DECISIONS.md's "no NSEvent monitor" rule — a multi-key prefix can't be a `.commands`
@@ -200,12 +205,29 @@ public struct AislopdeskClientApp: App {
             }
         }
 
+        // E11 / WI-7: the app-owned, client-side Folders frecency store — the backing of the Open-Quickly
+        // Folders pill (⌘Z). Owned here (retained by `_folderFrecency` below) and attached to the coordinator,
+        // which holds it WEAKLY (like `store`). Under automation, point it at a THROWAWAY temp sidecar so an
+        // autoconnect run never pollutes the developer's real `folders-frecency.json` (mirroring the
+        // nil-persistence guard that protects `workspace.json`).
+        let folderFrecency: FolderFrecencyStore = isAutomation
+            ? FolderFrecencyStore(fileURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("aislopdesk-automation-folders-frecency.json"))
+            : FolderFrecencyStore()
+        // E11 / WI-2 → WI-7: record a pane's cwd change into the frecency store. The store fires
+        // `onCwdVisited` ONLY when the known cwd actually changes (its own guard); the client owns the
+        // recording so `WorkspaceStore` stays store/SwiftUI-agnostic (a closure, not a direct dependency), and
+        // `record(cwd:)` validates-then-stores (drops an empty / over-long path). Held weakly — the app retains
+        // the store via `_folderFrecency`.
+        store.onCwdVisited = { [weak folderFrecency] cwd in folderFrecency?.record(cwd: cwd) }
+
         // E2/WI-1: the single overlay coordinator. Built HERE — after the store + app connection exist — so
         // the macOS dispatcher (below) can thread its ⌘⇧P / ⌘/ toggles into the SAME NSEvent monitor that
         // owns every chord, and the store's background-event sinks can ALSO surface an in-app toast.
-        // `connectionTarget` lets the remote-window-picker modal query the live host. Retained for the scene
-        // lifetime by `_overlayCoordinator` below.
-        let overlay = OverlayCoordinator(store: store)
+        // `connectionTarget` lets the remote-window-picker modal query the live host. The app-owned Folders
+        // frecency store is attached here (the coordinator holds it weakly, backing the Open-Quickly Folders
+        // pill). Retained for the scene lifetime by `_overlayCoordinator` / `_folderFrecency` below.
+        let overlay = OverlayCoordinator(store: store, folders: folderFrecency)
         overlay.connectionTarget = { [weak appConnection] in appConnection?.target ?? .default }
 
         #if os(macOS)
@@ -292,6 +314,7 @@ public struct AislopdeskClientApp: App {
         _store = State(initialValue: store)
         _connection = State(initialValue: appConnection)
         _overlayCoordinator = State(initialValue: overlay)
+        _folderFrecency = State(initialValue: folderFrecency)
         _dialogMonitor = State(initialValue: monitor)
         _appLaunchMonitor = State(initialValue: launchMonitor)
         #if os(macOS)
@@ -315,8 +338,19 @@ public struct AislopdeskClientApp: App {
             togglePalette: { [overlay] in overlay.togglePalette() },
             toggleCheatSheet: { [overlay] in overlay.toggleCheatSheet() },
             toggleGlobalSearch: { [overlay] in overlay.toggleGlobalSearch() },
-            // E10 / WI-8: ⌘J opens the Jump-To panel through the SAME NSEvent monitor that owns every chord.
-            toggleJumpTo: { [overlay] in overlay.toggleJumpTo() },
+            // E10 / WI-8 → E11 / WI-7: ⌘J now opens the folded-in Jump-To — the Open-Quickly picker at the
+            // `.current` pill — through the SAME NSEvent monitor that owns every chord.
+            toggleJumpTo: { [overlay] in overlay.toggleOpenQuickly(filter: .current) },
+            // E11 / WI-7: ⌘⇧O opens the Open-Quickly picker at the merged `.all` pill. ⌘⇧O + ⌘J are the ONLY
+            // GLOBAL Open-Quickly chords; the pill / ⌘1–9 / Tab / ⌘K chords are PICKER-LOCAL (handled by
+            // `OpenQuicklyView.onKeyPress`, never registered in `WorkspaceBindingRegistry`).
+            toggleOpenQuickly: { [overlay] in overlay.toggleOpenQuickly(filter: .all) },
+            // E11 review fix: while the Open-Quickly picker is presented the dispatcher yields the whole
+            // keyboard to it like a modal sheet (the picker's `.onKeyPress` owns ⌘0/⌘W/⌘R/⌘Z/⌘G/⌘J + ⌘1–9 +
+            // ⌘K). Without this the app monitor — which PREEMPTS the responder chain — resolves the GLOBAL
+            // chord behind the picker, so ⌘1–9 switched the background tab (not quick-pick) and ⌘W destroyed
+            // the focused pane. Esc / a scrim-tap still close it; ⌘⇧O / ⌘J stay global only while it is hidden.
+            isOverlayCapturingKeys: { [overlay] in overlay.openQuicklyVisible },
         ))
         #endif
     }
@@ -452,8 +486,12 @@ public struct AislopdeskClientApp: App {
                 togglePalette: { [overlayCoordinator] in overlayCoordinator.togglePalette() },
                 toggleCheatSheet: { [overlayCoordinator] in overlayCoordinator.toggleCheatSheet() },
                 toggleGlobalSearch: { [overlayCoordinator] in overlayCoordinator.toggleGlobalSearch() },
-                // E10 / WI-8: the View ▸ Jump To… menu item toggles the SAME overlay the ⌘J chord drives.
-                toggleJumpTo: { [overlayCoordinator] in overlayCoordinator.toggleJumpTo() },
+                // E10 / WI-8 → E11 / WI-7: the View ▸ Jump To… menu item opens the folded-in Jump-To (the
+                // Open-Quickly picker at the `.current` pill), the SAME overlay the ⌘J chord drives.
+                toggleJumpTo: { [overlayCoordinator] in overlayCoordinator.toggleOpenQuickly(filter: .current) },
+                // E11 / WI-7: the View ▸ Open Quickly… menu row opens the picker at the merged `.all` pill —
+                // the SAME overlay the ⌘⇧O chord drives (the menu mirrors the chord; the dispatcher owns it).
+                openQuickly: { [overlayCoordinator] in overlayCoordinator.toggleOpenQuickly(filter: .all) },
                 // E9/WI-7 (ES-E9-5): the four View ▸ Details: * menu rows route through the SAME injected
                 // coordinator closure the palette rows + the user-bindable chord drive (installed by
                 // `WorkspaceRootView.wireChromeToggles` → sets `DetailsPanelState.selected` + reveals the

@@ -24,10 +24,18 @@ struct RouteToggles {
     var detailsPanel: (() -> Void)?
     var sidebar: (() -> Void)?
     var globalSearch: (() -> Void)?
-    /// Toggles the Jump-To panel (E10 WI-8). A VIEW overlay (the `OverlayCoordinator` owns `jumpToVisible`),
-    /// so — like `globalSearch` — it is a passed-in closure; `nil` (the headless / test default) is a
-    /// graceful no-op, never a dead chord.
+    /// Toggles the Jump-To affordance (E10 WI-8, ⌘J). A VIEW overlay, so — like `globalSearch` — it is a
+    /// passed-in closure; `nil` (the headless / test default) is a graceful no-op, never a dead chord. E11
+    /// (WI-5/WI-7) folded Jump-To into the Open-Quickly picker: the app now re-points this to "open
+    /// Open-Quickly at `.current`" (`OverlayCoordinator.toggleOpenQuickly(filter: .current)`), but the routing
+    /// keeps it the distinct `.jumpTo`-action toggle (separate from `openQuickly` below).
     var jumpTo: (() -> Void)?
+    /// Toggles the Open-Quickly picker at the merged `.all` pill (E11 WI-7, otty ⌘⇧O). A VIEW overlay (the
+    /// `OverlayCoordinator` owns `openQuicklyVisible`/`openQuicklyFilter`), so — like `jumpTo` — it is a
+    /// passed-in closure; `nil` (the headless / test default) is a graceful no-op, never a dead chord. Only
+    /// ⌘⇧O (this) and ⌘J (`jumpTo`, → `.current`) are GLOBAL; the pill / ⌘1–9 / Tab / ⌘K chords are
+    /// PICKER-LOCAL (handled by `OpenQuicklyView.onKeyPress`, never registered here).
+    var openQuickly: (() -> Void)?
     /// Jumps the Details panel to a specific tab (E9/WI-7). View-owned state (`DetailsPanelState` + the
     /// chrome reveal), so — like `detailsPanel` — it is a passed-in closure; `nil` = a graceful no-op.
     var selectDetailsTab: ((DetailsPanelTab) -> Void)?
@@ -49,13 +57,14 @@ public extension WorkspaceBindingRegistry {
         toggleSidebar: (() -> Void)? = nil,
         toggleGlobalSearch: (() -> Void)? = nil,
         toggleJumpTo: (() -> Void)? = nil,
+        openQuickly: (() -> Void)? = nil,
         selectDetailsTab: ((DetailsPanelTab) -> Void)? = nil,
     ) {
         let toggles = RouteToggles(
             palette: togglePalette, cheatSheet: toggleCheatSheet, find: toggleFind,
             peekReply: togglePeekReply, detailsPanel: toggleDetailsPanel,
             sidebar: toggleSidebar, globalSearch: toggleGlobalSearch, jumpTo: toggleJumpTo,
-            selectDetailsTab: selectDetailsTab,
+            openQuickly: openQuickly, selectDetailsTab: selectDetailsTab,
         )
         switch store.liveModel {
         case .tree: routeTree(action, to: store, toggles: toggles)
@@ -208,9 +217,12 @@ public extension WorkspaceBindingRegistry {
         case .increaseFontSize: store.increaseFontInActivePane()
         case .decreaseFontSize: store.decreaseFontInActivePane()
         case .resetFontSize: store.resetFontInActivePane()
-        // Open Quickly (E1-registered, E11 behaviour): a routable no-op stub until E11 wires the fuzzy switcher
-        // overlay — registered so the chord is live, never dead. E11 threads its overlay toggle through `route`.
-        case .openQuickly: break
+        // Open Quickly (E1-registered, E11 WI-7): ⌘⇧O opens the fuzzy multi-source switcher at the merged
+        // `.all` pill. A VIEW overlay (the `OverlayCoordinator` owns the picker), so it is a passed-in closure
+        // like `.globalSearch` / `.jumpTo`; the app binds it to `overlay.toggleOpenQuickly(filter: .all)`. The
+        // pill / ⌘1–9 / Tab / ⌘K chords stay PICKER-LOCAL (handled in the panel, never routed here). `nil`
+        // (the headless / test default) is a graceful no-op — never a dead chord.
+        case .openQuickly: toggles.openQuickly?()
         // Tabs
         // `.newTab` is the generic new-pane entry (the `+` button / a future generic chord): it creates an
         // in-pane `.chooser` pane (Terminal / Remote window), focused. ⌘T stays a direct-terminal escape hatch
@@ -365,7 +377,9 @@ public extension WorkspaceBindingRegistry {
         case .increaseFontSize: store.increaseFontInActivePane()
         case .decreaseFontSize: store.decreaseFontInActivePane()
         case .resetFontSize: store.resetFontInActivePane()
-        case .openQuickly: break // E11 overlay — no canvas analogue
+        // Open Quickly is a view overlay (the tree-shell picker); the canvas path still toggles it via the
+        // closure (a graceful no-op when none is supplied, like the palette / global search / jump-to).
+        case .openQuickly: toggles.openQuickly?()
         case .nextTab,
              .prevTab,
              .selectTab,

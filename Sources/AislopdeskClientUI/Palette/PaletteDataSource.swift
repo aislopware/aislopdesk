@@ -5,9 +5,10 @@
 // per-item score, and groups them under section separators.
 //
 // All sources here are SYNCHRONOUS over a store SNAPSHOT (taken on the @MainActor) so the mixing/ranking is
-// pure + unit-testable without a view. The ASYNC file/conversation sources Warp has are represented by the
-// `files`/`conversations`/`repos` protocol stubs that return [] (TODO: a host directory-listing wire — see
-// logic-api §5.4); the protocol exists so they can be filled later without touching the mixer.
+// pure + unit-testable without a view. The ⌘⇧P palette is verbs-only (the ACTIONS catalog grouped by otty
+// category); the multi-source jump-to (panes/recents/folders/agents/files) lives on its OWN E11 surface
+// (`OpenQuicklyModel`/`OpenQuicklyView`), so the former `files`/`conversations`/`repos` empty-stub sources
+// were removed here (E11 / WI-5) — they were never reachable.
 
 import AislopdeskAgentDetect
 import AislopdeskWorkspaceCore
@@ -340,22 +341,6 @@ public struct TabsPaletteSource: PaletteDataSource {
             )
         }
     }
-}
-
-// MARK: - Empty stub sources (protocol present, no client data — TODO host)
-
-/// A source that returns no rows but registers its filter so the chip appears and the wiring is in place.
-/// Files/conversations/repos have no client-side data yet (logic-api §5.4) — TODO host directory/AI wires.
-public struct EmptyPaletteSource: PaletteDataSource {
-    public let filters: Set<QueryFilter>
-    public let sectionTitle: String?
-
-    public init(filter: QueryFilter, sectionTitle: String? = nil) {
-        filters = [filter]
-        self.sectionTitle = sectionTitle
-    }
-
-    public func candidates(query _: String) -> [PaletteItem] { [] }
 }
 
 // MARK: - The mixer

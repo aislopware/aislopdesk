@@ -1,0 +1,143 @@
+# E11 carry-over directives (REQUIRED — fold into the E11 plan)
+
+E11 (Open Quickly `⌘⇧O` filters + Actions popover) inherits **no behavioral fix from E10** —
+E10 (Path/link detection · Jump-To · status bar · hint mode) closed ALL of its review findings
+(base `639b927` → polish `833aae7`, `mediumsStillBroken:0`); its only residual is the Phase-3
+soft-wrap overlay-alignment HW-fidelity check, which does **not** constrain E11. This file carries
+the **binding scope reduction (SSH filter DROP — E11 is its PRIMARY impact)**, the **reuse-first seam
+map** (E11 is mostly wiring + ONE new engine — do not rebuild the picker), and the **traps** that
+specifically bite a multi-filter quick-switcher with a per-item Actions popover.
+
+## SCOPE REDUCTIONS (binding — do NOT build these)
+
+- **NO SSH filter. (PRIMARY E11 impact.)** Standing binding reduction (user, 2026-06-26: "bỏ không
+  cần làm: … SSH filter"). The otty spec lists **8** filter pills (All/Opened/Recent/Folders/**SSH**/
+  Agents/Current/Recipes) and `ES-E11-1` names SSH explicitly — **override both.** Do NOT build the
+  SSH pill, do NOT parse `~/.ssh/config` (client or host), do NOT register the `⌘S` picker-filter
+  chord, and **drop the "SSH host" row from the Actions-popover table.** When the design agent
+  reconciles `ES-E11-1`, treat its pill list as **All / Opened / Recent / Folders / Agents / Current**
+  (SSH removed; Recipes omitted — see next bullet). Document in `DECISIONS.md` that the SSH filter is
+  a deliberate product cut, not a missing feature (honesty discipline — no dead/half pill).
+- **OMIT the Recipes pill (no backing engine until E16).** The Recipes subsystem ships in **E16**,
+  which is LATER in the topo order (E11 → E14 → E18 → E19 → E13 → **E16** → …). A Recipes filter now
+  would be a 100%-dead pill (no recipe store exists), violating the honesty discipline. **Omit the
+  Recipes pill entirely in E11**; leave a one-line code note at the pill-array definition site
+  (`// Recipes pill: added in E16 once the recipe store exists`). `ES-E11`’s Recipes coverage moves to
+  E16. Do NOT ship an empty Recipes pill.
+- **Agents = Claude Code ONLY.** Standing exclusion. The otty spec's Agents filter lists "Claude,
+  Codex, and OpenCode" — build **Claude sessions only** (E4's `listAgentSessions` already returns the
+  Claude session set; the dead `AgentKind.codex` enum was already dropped at E4-close). Do not
+  reintroduce multi-agent kinds.
+- **Vertical-tabs-only / no horizontal tab bar.** Standing product decision (encoded at E7-close in
+  `docs/DECISIONS.md`). Not directly relevant to E11, but the "Opened" filter must enumerate panes/
+  tabs from the **vertical-rail** `WorkspaceStore` model — do not introduce any horizontal tab-bar
+  concept while listing open panes.
+
+## REUSE-FIRST — E11 is mostly WIRING; do NOT rebuild the picker
+
+Grep these seams and BUILD ON them — E11 is one structural picker + sources + ONE new engine, not a
+from-scratch surface:
+
+- **The `⌘⇧O` action + overlay stub ALREADY EXIST — wire them, don't re-add.**
+  `WorkspaceBindingRegistry.openQuickly` (action case + `view.openQuickly` command "Open Quickly…")
+  and `OverlayCoordinator.openQuickly` (overlay case) are live stubs; `WorkspaceBindingRouting`
+  routes `.openQuickly` to a `break` no-op. E11 fills these: build the picker view, mount it through
+  the **existing E2 `OverlayCoordinator`** (same mount path as palette/JumpTo/CommandNavigator), and
+  make `.openQuickly` toggle it. Pass the toggle closure through `WorkspaceKeyDispatcher` exactly like
+  `toggleJumpTo`/`togglePalette` (see `AislopdeskClientApp.swift`).
+- **E10's Jump-To IS otty's "Current" filter — GENERALIZE it, don't duplicate.** E10 shipped a full
+  floating picker: `JumpToView` (`Overlays/JumpToView.swift`) + the PURE, headlessly-tested
+  `JumpToModel` (`WorkspaceCore/.../Domain/JumpToModel.swift`, with `JumpToItem` + `filtered`) +
+  **an `actionsPopover(for:)` already** (JumpToView.swift ~line 274) + row rendering + LinkActionPolicy
+  routing. In otty, **`⌘J` = the Open-Quickly picker opened to the _Current_ filter** and `⌘⇧O` = the
+  same picker opened to _All_. So the otty-faithful design is ONE picker whose **Current filter's data
+  source IS `JumpToModel`** (reuse it verbatim — keep its headless tests green), and `⌘J` opens the
+  picker pre-selected to Current. **Decide explicitly** (inspect `JumpToView`/`JumpToModel` first):
+  either (a) fold `JumpToView` into the new `OpenQuicklyView` as its Current-filter render, or
+  (b) keep `JumpToView` as the Current-only lightweight surface and have `⌘⇧O` open the superset.
+  PREFER (a) for true 1:1, but you MUST NOT regress E10's `JumpToModel` headless tests or its
+  link-action routing. Reuse `JumpToView.actionsPopover` as the basis for E11's `⌘K` Actions popover.
+- **Fuzzy + palette infra (E2).** Reuse `Palette/FuzzyMatcher.swift`, `Palette/PaletteModel.swift`,
+  `Palette/PaletteDataSource.swift` (the same `FuzzyMatcher` already backs `JumpToModel` /
+  `CommandNavigatorModel`). The single live search field ranks across the active filter via
+  `FuzzyMatcher`. Do not add a second fuzzy engine.
+- **Filter data sources — all from EXISTING seams (NO new wire):**
+  - **Opened** → `WorkspaceStore` live panes/tabs (the same enumeration the sidebar rail uses).
+  - **Recent** → `WorkspaceStore.recentlyClosedTabs` LIFO (`RecentlyClosedTab`, built in E3). Reuse;
+    do not add a parallel store.
+  - **Agents** → E4 host RPC **`listAgentSessions(project:)`** (`MetadataResponseBuilder`, verb 8 over
+    the EXISTING metadata channel). **No new wire.** Claude-only. iOS sources this from the host too
+    (it already does — metadata RPC is host-served).
+  - **Current** → E10 `JumpToModel` (commands via OSC-133, links/files via the E10 detector, outline
+    via the E9/outline seam). Reuse.
+
+## The ONE net-new engine in E11: the Folders frecency store
+
+- No frecency store exists in the tree (grep `frecency` → 0 hits). **Folders** ranks visited cwds by
+  frecency (access-frequency × recency). Build a **lightweight, in-process, CLIENT-side** frecency
+  store over cwds observed from **OSC 7** (already piped to `PaneSpec.lastKnownCwd` in E3). Keep it:
+  - **No wire / no host RPC** — cwds are already client-observable via OSC 7; do not add a socket.
+  - **Bounded & validate-then-store** — cap the entry count and the path length; never force-unwrap;
+    a pathological/huge cwd string must not bloat or crash the store.
+  - **Persisted** via the existing preferences/sidecar idiom (a small JSON store), **schema-versioned**
+    with decode-fail-to-default (per `[[rwork-no-backcompat]]` — single-user, no migrations).
+  - **Honest empty state** — an empty Folders list before any cwd is visited is fine (it populates as
+    you `cd`); show an honest "no folders yet" rather than a dead pill.
+
+## TRAPS specific to E11 (respect these)
+
+- **Per-filter chords are PICKER-LOCAL — NEVER global bindings.** otty's filter chords
+  `⌘0`/`⌘W`/`⌘R`/`⌘Z`/`⌘G`/`⌘J` (All/Opened/Recent/Folders/Agents/Current; `⌘S` SSH dropped, `⌘E`
+  Recipes omitted) switch the active filter **only while the picker is open**. They MUST be handled by
+  the picker panel's own key handler/local monitor, **NOT** registered in `WorkspaceBindingRegistry`
+  as global app bindings — `⌘W` globally closes the pane, `⌘R`/`⌘Z`/`⌘G` are app-global chords, so a
+  global registration would shadow them and break the app. Only `⌘⇧O` (open All) and `⌘J` (open
+  Current) are GLOBAL; everything else is in-picker. Grep the default keymap to confirm `⌘⇧O` is the
+  free stub (it is) and that `⌘J` is owned by Jump-To/Current (it is, from E10).
+- **`⌘1`–`⌘9` quick-pick and `Tab`/`⇧Tab` cycling are picker-local too.** Same rule — handle inside
+  the panel, scoped to the visible result list / pill order. `⌘1–9` open the Nth visible result
+  directly (ES-E11-3). Never bind a bare key (`[[aislopdesk-orchestrator-rounds-2026-06-13]]`).
+- **Reveal/Open in the Actions popover ROUTE TO THE HOST — reuse E10's verbs, do NOT "disable for
+  remote".** The open-quickly spec's "cannot map 1:1" section recommends *disabling* Reveal-in-Finder /
+  Open-in-Default-App for remote panes — that recommendation is **SUPERSEDED by E10**, which already
+  added the host-routed `MetadataVerb.openPath = 9` / `revealPath = 10` actuators (status-byte-only,
+  validate-then-drop, NOT an exfil vector). So the Actions popover's **Reveal CWD in Finder / Reveal /
+  Open in Default App** reuse **E10's existing host verbs 9/10** (paths live on the HOST Mac) — no new
+  wire, and the actions actuate rather than being disabled. **Copy Path / Copy CWD Path / Copy
+  Command / Copy Session ID** = client pasteboard (no wire). **Change Directory Here** = inject
+  `cd <path>\n` as **VERBATIM UTF-8** into the PTY (NOT SendKeysParser — `[[aislopdesk-coding-workspace-redesign-2026-06-20]]`)
+  and — folding E10's polish — **cd to the PARENT** when the target is a FILE, not the file itself.
+  **Re-Run in Current/New** = the existing verbatim re-run path. Reuse E10's `LinkActionPolicy` for
+  File/URL item actions.
+- **No new wire expected → golden should stay ZERO-DIFF.** Every filter source (Opened/Recent/Folders/
+  Current) is client-side; Agents reuses E4's EXISTING `listAgentSessions`; Reveal/Open reuse E10's
+  EXISTING verbs 9/10. So E11 should NOT touch the wire and `golden-check.sh` should stay zero-diff.
+  **If** the design genuinely finds a new host verb is required, that is a WIRE EXTENSION: host accepts
+  only version `1` (no negotiation) → host+client **redeploy together** (no-backcompat); manual
+  **big-endian binary** (never JSON/Codable); **validate-then-drop** on the host handler; hand-edit
+  `golden/golden_vectors.json` surgically so the **13 frozen keys** survive + run `golden-check.sh`;
+  update `docs/20-wire-protocol.md` + justify in `DECISIONS.md`. **Default: no wire change.**
+- **iOS rots silently.** The picker, filter pills, and Actions popover live in shared
+  `AislopdeskClientUI` and must compile for iOS (⌘ chords get a tap/affordance fallback; the picker is
+  still presentable; Agents/Folders are host-/client-sourced and work). **Run `bash scripts/check-ios.sh`
+  in the gate** — `swift build` on macOS will NOT catch iOS rot.
+- **Honesty discipline (E8/E12/E15/E17/E10).** Never ship a filter pill or Actions row that silently
+  does nothing. Omit the Recipes pill (no engine); honest empty-states for Folders/Agents/Recent when
+  empty; if an action can't actuate for an item kind, document the ceiling in `DECISIONS.md` rather
+  than presenting a dead control. Tests are **revert-to-confirm-fail**, non-tautological — the picker's
+  filter-selection, fuzzy-ranking, `⌘1–9` index→result mapping, and frecency ordering are all
+  headlessly testable (PURE models); test them.
+- **Chord-collision check FIRST.** `⌘⇧O` is the free E1 stub (confirmed). `⌘J` is owned by E10
+  Jump-To/Current (reuse, don't double-bind). `⌘K` (Actions popover) is picker-local — confirm it
+  doesn't collide with a global binding before use. Grep `WorkspaceBindingRegistry` /
+  `WorkspaceBindingRouting` to confirm.
+
+## otty fidelity standard
+
+`spec/user-interface__open-quickly.md` + `screenshots/open-quickly.png` (+ `open-agents-quickly.png`,
+`right-click-action.png`) are the 1:1 visual standard: floating ~700×680 rounded charcoal panel,
+flat borderless search field with magnifier + blue caret, filter-pill bar (active=filled grey /
+inactive=outlined), ALL-CAPS section group headers in the All view, result rows (leading icon +
+primary label + trailing cwd/metadata + trailing type badge), full-width medium-grey selected-row
+fill, first-result auto-select, bottom hint bar ("Quick Select ⌘" left; "Switch to ↩" + "Actions ⌘K"
+right as STATIC affordance labels). Match these — minus the SSH and Recipes pills.

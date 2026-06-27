@@ -55,12 +55,14 @@ struct OverlayHostView: View {
                 Scrim { coordinator.closeRemotePicker() }
                 RemoteWindowPickerModal(coordinator: coordinator)
             }
-            // E10 / WI-8: the Jump-To panel (⌘J) — a centered, SCRIMMED quick-switcher over the focused pane
-            // (`jump-to.png`). It reads the active pane (its scrollback links + OSC-133 command index) itself,
-            // so it takes only the store + coordinator. Tapping the scrim closes it (like the other panels).
-            if coordinator.jumpToVisible {
-                Scrim { coordinator.closeJumpTo() }
-                JumpToView(store: store, coordinator: coordinator)
+            // E11 / WI-6: the Open-Quickly picker (⌘⇧O → All · ⌘J → Current) — a centered, SCRIMMED multi-
+            // source quick switcher over the workspace (`open-quickly.png`). It FOLDS in E10's Jump-To: it
+            // reads its own sources (open panes / recents / folders / agents / the focused pane's links +
+            // OSC-133 command index), so it takes the store + coordinator + the app-owned Folders frecency
+            // store. Tapping the scrim closes it (like the other panels).
+            if coordinator.openQuicklyVisible {
+                Scrim { coordinator.closeOpenQuickly() }
+                OpenQuicklyView(store: store, coordinator: coordinator, folders: coordinator.folders)
             }
             // E3 WI-4: the busy-shell / policy close confirmation for a PANE or TAB (the ⌘W / ⌘⇧W /
             // close-button path parks `store.pendingClose` / `store.pendingTabCloseID`). The window-scope
