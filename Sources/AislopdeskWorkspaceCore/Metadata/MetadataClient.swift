@@ -136,6 +136,23 @@ public final class MetadataClient {
         return payload
     }
 
+    /// E10 WI-7 — opens `path` in its default app / Finder ON THE HOST (``MetadataVerb/openPath``; the
+    /// otty ⌘click action). `path` is the resolved ABSOLUTE host path. Returns `true` only on a host
+    /// `.ok`; `false` for `.notFound` (the path is gone) / `.error` (open failed) / a dropped reply
+    /// (the registry's 5 s timeout → `.error`). The response payload is empty (side-effect-only verb).
+    public func openPath(_ path: String) async -> Bool {
+        let (status, _) = await request(.openPath, payload: Data(path.utf8))
+        return status == .ok
+    }
+
+    /// E10 WI-7 — reveals `path` in the HOST's Finder (``MetadataVerb/revealPath``; the otty ⌘⇧click
+    /// action). `path` is the resolved ABSOLUTE host path. Returns `true` only on a host `.ok`; `false`
+    /// for `.notFound` / `.error` / a dropped reply (timed out to `.error`). The response payload is empty.
+    public func revealPath(_ path: String) async -> Bool {
+        let (status, _) = await request(.revealPath, payload: Data(path.utf8))
+        return status == .ok
+    }
+
     // MARK: Core round-trip
 
     /// Sends `verb` + `payload`, awaits the reply, and maps the raw status byte to ``MetadataStatus``

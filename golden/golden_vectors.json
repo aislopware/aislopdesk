@@ -1920,6 +1920,13 @@
       "verb": 200
     },
     {
+      "hex": "00000026100a0b0c0d090000001c2f55736572732f6d652f70726f6a6563742f6d61696e2e7377696674",
+      "kind": "metadataRequest",
+      "payloadHex": "2f55736572732f6d652f70726f6a6563742f6d61696e2e7377696674",
+      "requestId": 168496141,
+      "verb": 9
+    },
+    {
       "hex": "0000000a1e000000000000000000",
       "kind": "metadataResponse",
       "payloadHex": "",

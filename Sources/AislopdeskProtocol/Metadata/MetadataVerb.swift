@@ -10,6 +10,15 @@ import Foundation
 /// `init(rawValue:)`, and an unrecognized value (`init(rawValue:)` returns `nil`) is answered with
 /// ``MetadataStatus/unsupportedVerb`` — never a trap. `Sendable` so a decoded verb can cross actor /
 /// task boundaries with its message.
+///
+/// **Read-only vs side-effecting (E10 WI-7).** Verbs `1...8` are PURE READS — the host runs a
+/// git/lsof/proc/FileManager lookup and returns the data, mutating nothing; they are served by the pure
+/// ``MetadataResponseBuilder``. Verbs `9` (``openPath``) and `10` (``revealPath``) are the ONLY
+/// SIDE-EFFECTING verbs: they actuate on the HOST's own Finder / Launch Services (the file lives on the
+/// host Mac, not the client) and return ONLY a status byte + empty payload — no host bytes ever cross the
+/// wire, so they are not an exfiltration vector and accept an absolute path WITHOUT cwd-subtree
+/// confinement (unlike the read verbs). The host routes them to a thin macOS shim BEFORE the read-only
+/// builder (see `HostPathActionPerformer`).
 public enum MetadataVerb: UInt8, Sendable, Equatable, CaseIterable {
     /// List the pane's foreground processes. Request payload: empty (the pane). Response: `ProcessList`.
     case processes = 1
@@ -33,6 +42,17 @@ public enum MetadataVerb: UInt8, Sendable, Equatable, CaseIterable {
     /// Read one agent session's raw transcript. Request payload: UTF-8 session id/path. Response: raw
     /// JSONL/JSON bytes (opaque — the client parses it via `AislopdeskInspector.TranscriptParser`).
     case readAgentSession = 8
+    /// **Side-effecting (E10 WI-7).** Open a host path in its default app / Finder (the otty ⌘click
+    /// action). Request payload: raw UTF-8 ABSOLUTE host path. Response: empty payload — status `.ok` on
+    /// a successful `NSWorkspace.open`, `.notFound` if the path no longer exists, `.error` on an
+    /// empty/relative/un-openable path. The host actuates this on ITS OWN Finder / Launch Services; no
+    /// host bytes cross the wire.
+    case openPath = 9
+    /// **Side-effecting (E10 WI-7).** Reveal a host path in the host's Finder (the otty ⌘⇧click action,
+    /// `NSWorkspace.activateFileViewerSelecting`). Request payload: raw UTF-8 ABSOLUTE host path.
+    /// Response: empty payload — status `.ok` when the path exists and the reveal was issued, `.notFound`
+    /// if the path is gone, `.error` on an empty/relative path.
+    case revealPath = 10
 }
 
 /// The outcome of a ``WireMessage/metadataResponse(requestID:status:payload:)`` (E4). The host ALWAYS

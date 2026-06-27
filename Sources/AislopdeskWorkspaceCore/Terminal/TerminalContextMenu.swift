@@ -136,6 +136,62 @@ public enum TerminalContextMenu {
     /// The title of the "Paste as…" submenu (Edit ▸ Paste ▸ Paste as), referenced by the GUI renderer.
     public static let pasteAsSubmenuTitle = "Paste as…"
 
+    // MARK: - E10 WI-6 (ES-E10-2): path / URL link items (right-click ON a detected link)
+
+    /// A right-click context-menu item shown ONLY when the click lands on a detected path / URL span
+    /// (otty `user-interface__files-and-links` §"Right-click Context Menu Items"). These are kept SEPARATE
+    /// from the always-present ``Item`` set: the GUI prepends them (with a separator) above the standard
+    /// copy/paste/split menu when ``TerminalLinkDetector`` finds a span under the cursor, and each routes
+    /// through ``LinkActionPolicy/action(for:link:)`` carrying the ``DetectedLink`` the view stashed at
+    /// build time. The raw `String` tags the `NSMenuItem.representedObject` (the cd item also gives the
+    /// tests / cheat-sheet a stable id).
+    ///
+    /// Only the actionable subset of otty's menu is offered — *Open With…* (host app enumeration) and
+    /// *Open in Otty* (a remote-file pane needs a file-transfer sub-protocol that does not exist yet; see
+    /// the files-and-links mapping notes #2/#3) are deliberately omitted rather than shipped as dead
+    /// controls (the WI-3 honesty discipline; tracked in `docs/DECISIONS.md`).
+    public enum LinkItem: String, CaseIterable, Sendable, Equatable {
+        /// Open the path in its best HOST handler, or the URL on the client (otty "Open Link / Open File").
+        case open
+        /// Copy the resolved absolute path (or the URL) to the CLIENT pasteboard.
+        case copyPath
+        /// Reveal the path in the HOST Finder (paths only — meaningless for a URL).
+        case revealInFinder
+        /// `cd` the focused terminal to the path via verbatim-UTF-8 PTY input (paths only).
+        case changeDirectoryHere
+
+        /// The menu label, kind-aware: *Open Link* / *Copy URL* for a URL, *Open* / *Copy Path* for a path.
+        public func title(for kind: DetectedLinkKind) -> String {
+            let isURL = kind == .url
+            switch self {
+            case .open: return isURL ? "Open Link" : "Open"
+            case .copyPath: return isURL ? "Copy URL" : "Copy Path"
+            case .revealInFinder: return "Reveal in Finder"
+            case .changeDirectoryHere: return "Change Directory Here"
+            }
+        }
+
+        /// SF Symbol for the row (matches the binding-registry glyph vocabulary).
+        public var symbol: String {
+            switch self {
+            case .open: "arrow.up.forward.app"
+            case .copyPath: "doc.on.doc"
+            case .revealInFinder: "folder"
+            case .changeDirectoryHere: "arrow.turn.down.right"
+            }
+        }
+    }
+
+    /// The ordered link items for a detected `kind`. A URL only offers Open + Copy URL (a URL has no
+    /// Finder target and you cannot `cd` into one); every path-like kind — including `file://` and a
+    /// `path:line:col` — offers the full Open / Copy Path / Reveal / Change-Directory set.
+    public static func linkItems(for kind: DetectedLinkKind) -> [LinkItem] {
+        if kind == .url {
+            return [.open, .copyPath]
+        }
+        return [.open, .copyPath, .revealInFinder, .changeDirectoryHere]
+    }
+
     /// Whether `item` is enabled for `context` — the testable enablement rule:
     /// - **Copy** needs a live selection.
     /// - **Paste / Paste as Keystrokes** need non-empty clipboard text.

@@ -63,8 +63,9 @@ enum BlockJump {
     /// The libghostty `jump_to_prompt` delta to reach newest-first navigator position `pos` (0 = newest)
     /// AFTER the viewport has been re-anchored to the newest prompt (`scroll_to_bottom`). From the bottom
     /// anchor the newest prompt is "0 prompts up", so target N is exactly N prompts UP → a delta of `-N`.
-    /// The SINGLE source of the delta math: ``toNavigatorPosition(_:using:)`` and the navigator's per-row
-    /// ``CommandNavigatorView/jumpDelta(toTargetPos:)`` both route through this so the two can't drift.
+    /// The SINGLE source of the delta math: ``toNavigatorPosition(_:using:)`` and the Command Navigator's
+    /// per-row jump (``WorkspaceStore/jumpToNavigatorBlockInActivePane(index:)``, which the
+    /// `CommandNavigatorView` row calls) both route through this so the two can't drift.
     nonisolated static func jumpDelta(toTargetPos pos: Int) -> Int {
         -pos
     }
@@ -106,10 +107,10 @@ public extension WorkspaceStore {
         return provider.terminalModel
     }
 
-    /// Opens the Command Navigator (WB2: ⌃⌘O / the chrome chip / a menu item) over the active pane — routes
-    /// to its ``TerminalViewModel/onRequestBlockNavigator`` (set by ``TerminalScreenView``). A no-op for a
-    /// non-terminal active pane or an empty shell. The navigator's recent-blocks list is the PURE
-    /// ``TerminalBlockModel`` (unit-tested).
+    /// Opens the Command Navigator (WB2/E10 WI-10: ⌃⌘O / the chrome chip / a menu item) over the active pane —
+    /// routes to its ``TerminalViewModel/onRequestBlockNavigator`` (wired by `TerminalLeafView`, which TOGGLES
+    /// its per-pane `CommandNavigatorView` overlay). A no-op for a non-terminal active pane or an empty shell.
+    /// The navigator's recent-blocks list is the PURE ``TerminalBlockModel`` (unit-tested).
     func requestBlockNavigatorInActivePane() {
         activeTerminalModel?.onRequestBlockNavigator?()
     }

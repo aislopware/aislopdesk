@@ -895,6 +895,17 @@ root["metadataWireMessages"] = [
         .metadataRequest(requestID: UInt32.max, verb: 200, payload: Data([0x00, 0xFF, 0x80, 0x7F])),
         ["requestId": UInt32.max, "verb": Int(200), "payloadHex": hex([0x00, 0xFF, 0x80, 0x7F])],
     ),
+    // request: openPath (E10 WI-7) — a SIDE-EFFECTING verb (9) carrying a raw UTF-8 ABSOLUTE host path
+    // (revealPath = 10 is byte-identical save the verb byte; one sample pins the envelope shape).
+    wmRecord(
+        "metadataRequest",
+        .metadataRequest(requestID: 0x0A0B_0C0D, verb: 9, payload: Data("/Users/me/project/main.swift".utf8)),
+        [
+            "requestId": UInt32(0x0A0B_0C0D),
+            "verb": Int(9),
+            "payloadHex": hex(Data("/Users/me/project/main.swift".utf8)),
+        ],
+    ),
     // response: ok, empty payload (e.g. an empty list / cleared field).
     wmRecord(
         "metadataResponse",

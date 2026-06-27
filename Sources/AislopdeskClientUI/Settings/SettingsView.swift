@@ -544,6 +544,13 @@ private struct ControlsSettingsTab: View {
     // Keyboard / System.
     @Default(.undoAtPrompt) private var undoAtPrompt
     @Default(.systemDialogPanes) private var systemDialogPanes
+    // Links (otty Settings → Controls → Open With / Link Schemes, E10 WI-3). Client-side link interaction —
+    // NOT libghostty config, so these bind DIRECTLY (no `refreshing(_:)` terminal-config rebuild).
+    @Default(.linkDetection) private var linkDetection
+    @Default(.linkCmdClick) private var linkCmdClick
+    @Default(.linkCmdShiftClick) private var linkCmdShiftClick
+    @Default(.autoDetectLinkSchemes) private var autoDetectLinkSchemes
+    @Default(.customLinkSchemes) private var customLinkSchemes
     // Secure Input (E17 ES-E17-4 / WI-7) — macOS-only (the iOS sheet hides the section). The keys still
     // compile + round-trip on iOS; only the UI is gated.
     #if os(macOS)
@@ -605,6 +612,10 @@ private struct ControlsSettingsTab: View {
             scrollSection
 
             mouseSection
+
+            openWithSection
+
+            linkSchemesSection
 
             Section("Keyboard") {
                 toggleRow(
@@ -746,6 +757,112 @@ private struct ControlsSettingsTab: View {
             )
             timingFooter(.live)
         }
+    }
+
+    // MARK: - E10 Links (Open With + Link Schemes)
+
+    /// otty Settings → Controls → Open With (E10 WI-3). The link-interaction knobs are CLIENT-side (not
+    /// libghostty config), so they bind DIRECTLY — no `refreshing(_:)` terminal-config rebuild.
+    ///
+    /// HONESTY CEILING (docs/DECISIONS.md): otty's per-target "Open Files / Folders With → Otty" surrogates
+    /// need a LOCAL file / folder pane, which aislopdesk cannot offer for a REMOTE host (the files live on the
+    /// host; there is no file-transfer sub-protocol). So instead of shipping dead Browser / Otty / Finder
+    /// target pickers, the actionable otty config keys (`link-cmd-click` / `link-cmd-shift-click`) are
+    /// surfaced and the reduced target set is documented as a footnote, not a control.
+    private var openWithSection: some View {
+        Section("Open With") {
+            Toggle(isOn: $linkDetection) {
+                rowLabel(
+                    "Detect Links & Paths",
+                    "Underline paths and URLs in terminal output on Cmd-hover so they are clickable.",
+                )
+            }
+            linkPickerRow(
+                "Cmd-Click on Link",
+                "Open in the best handler (files / folders open on the host, URLs in your browser), copy the "
+                    + "path / URL, or do nothing.",
+                selection: $linkCmdClick,
+            ) {
+                Text("Open").tag(LinkCmdClick.open)
+                Text("Copy").tag(LinkCmdClick.copy)
+                Text("Do Nothing").tag(LinkCmdClick.nothing)
+            }
+            linkPickerRow(
+                "Cmd-Shift-Click on Link",
+                "Reveal the path in the host Finder, or open it with the host's system-default app.",
+                selection: $linkCmdShiftClick,
+            ) {
+                Text("Reveal in Finder").tag(LinkCmdShiftClick.revealFinder)
+                Text("Open with System Default").tag(LinkCmdShiftClick.openSystemDefault)
+            }
+            Text(
+                "Files and folders live on the remote host, so otty's per-target “Open in Otty” file / folder "
+                    + "panes are not available here — paths reveal or open on the host and URLs open in your "
+                    + "client browser.",
+            )
+            .font(.system(size: Otty.Typeface.footnote))
+            .foregroundStyle(Otty.Text.secondary)
+            timingFooter(.live)
+        }
+    }
+
+    /// otty Settings → Controls → Link Schemes (E10 WI-3). The custom-scheme list is editable only when the
+    /// mode is Custom; `http(s)` / `file` / `mailto` are always detected regardless of this mode.
+    private var linkSchemesSection: some View {
+        Section("Link Schemes") {
+            linkPickerRow(
+                "Auto-Detect Link Schemes",
+                "Which URL schemes get underlined on Cmd-hover and made clickable. All detects any "
+                    + "scheme://; Custom restricts to the schemes you list. http(s), file, and mailto are "
+                    + "always detected.",
+                selection: $autoDetectLinkSchemes,
+            ) {
+                Text("All").tag(AutoDetectLinkSchemes.all)
+                Text("Custom").tag(AutoDetectLinkSchemes.custom)
+            }
+            if autoDetectLinkSchemes == .custom {
+                VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                    rowLabel(
+                        "Custom Link Schemes",
+                        "Comma-separated extra schemes to additionally detect (e.g. codex, ssh, vscode).",
+                    )
+                    TextField("codex, ssh, vscode", text: customSchemesText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: Otty.Typeface.body, design: .monospaced))
+                }
+            }
+            timingFooter(.live)
+        }
+    }
+
+    /// A dropdown row for a CLIENT-side link knob — like ``pickerRow`` but binds DIRECTLY (no `refreshing(_:)`
+    /// terminal-config rebuild, since the link knobs are not libghostty config).
+    private func linkPickerRow(
+        _ title: String, _ subtitle: String? = nil,
+        selection: Binding<some Hashable>, @ViewBuilder options: () -> some View,
+    ) -> some View {
+        LabeledContent {
+            Picker("", selection: selection, content: options)
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize()
+        } label: {
+            rowLabel(title, subtitle)
+        }
+    }
+
+    /// Bridge the `[String]` custom-schemes key to a comma / space / newline separated text field (each token
+    /// trimmed, empties dropped). The setter persists the parsed list straight into `Defaults`.
+    private var customSchemesText: Binding<String> {
+        Binding(
+            get: { customLinkSchemes.joined(separator: ", ") },
+            set: { newValue in
+                customLinkSchemes = newValue
+                    .split(whereSeparator: { $0 == "," || $0 == " " || $0 == "\n" || $0 == "\t" })
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            },
+        )
     }
 
     // MARK: - Row helpers

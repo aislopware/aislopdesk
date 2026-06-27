@@ -103,6 +103,13 @@ struct PaneContainer: View {
                 live: live,
                 isFocused: isFocused,
                 staticMirror: staticMirror,
+                // E10 WI-4 (ES-E10-3): feed the bottom status bar. cwd is the host-reported OSC-7 dir kept on
+                // the spec (reactive — reading it here re-renders on change); host is the app-global
+                // connection target persisted on the active session.
+                cwd: spec?.lastKnownCwd,
+                host: store.tree.activeSession?.connection?.host ?? "",
+                // E10 WI-10 (G8): the Command Navigator (⌃⌘O) jumps the scrollback through the store.
+                store: store,
             )
         }
     }

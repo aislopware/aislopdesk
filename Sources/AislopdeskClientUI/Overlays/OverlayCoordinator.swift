@@ -95,6 +95,15 @@ public final class OverlayCoordinator {
     /// ``WorkspaceStore/globalSearch``) until the query is re-run.
     public private(set) var globalSearchVisible = false
 
+    // MARK: Jump-To state (E10 / WI-8)
+
+    /// Whether the Jump-To panel (⌘J) is presented. UNLIKE the non-scrimmed Global Search surface, this IS a
+    /// centered, SCRIMMED modal (`jump-to.png`: a floating quick-switcher card over the terminal), so it is
+    /// included in ``anyModalVisible`` and ``OverlayHostView`` mounts it behind a ``Scrim``. The panel reads
+    /// the FOCUSED pane (its scrollback links + OSC-133 command index) itself — like Global Search, the
+    /// coordinator owns only the visibility flag, not the per-pane data.
+    public private(set) var jumpToVisible = false
+
     // MARK: Remote-window picker state (L6)
 
     /// Whether the Remote-Window picker modal is presented (the `/remote-control` pill + the "New Remote
@@ -133,7 +142,7 @@ public final class OverlayCoordinator {
     /// own surface (Global Search must not dim the workspace), so both are deliberately excluded here; the host
     /// gates Global Search's hit-testing separately on ``globalSearchVisible``.
     public var anyModalVisible: Bool {
-        paletteVisible || cheatSheetVisible || connectVisible || remotePickerVisible
+        paletteVisible || cheatSheetVisible || connectVisible || remotePickerVisible || jumpToVisible
     }
 
     // MARK: Toasts
@@ -430,6 +439,18 @@ public final class OverlayCoordinator {
     /// Opening with no seed restores the last in-memory results.
     public func toggleGlobalSearch() {
         if globalSearchVisible { closeGlobalSearch() } else { openGlobalSearch() }
+    }
+
+    // MARK: Jump-To (⌘J / E10 WI-8)
+
+    /// Present the Jump-To panel (ES-E10-5). The panel resolves the FOCUSED pane itself (its scrollback links
+    /// + OSC-133 command index), so — like Global Search — there is no per-open data snapshot here.
+    public func openJumpTo() { jumpToVisible = true }
+    public func closeJumpTo() { jumpToVisible = false }
+
+    /// Toggle the Jump-To panel (the ⌘J binding the app threads into the key dispatcher + menu).
+    public func toggleJumpTo() {
+        if jumpToVisible { closeJumpTo() } else { openJumpTo() }
     }
 
     // MARK: Remote-window picker (L6 / W1)

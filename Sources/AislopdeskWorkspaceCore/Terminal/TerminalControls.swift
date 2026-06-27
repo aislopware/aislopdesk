@@ -224,6 +224,85 @@ public enum MouseShiftCapture: String, Codable, Sendable, CaseIterable {
     }
 }
 
+// MARK: - E10 link-interaction enums (otty Settings → Controls → Open With / Link Schemes)
+
+/// What a `⌘`click on a detected link / path does (otty `link-cmd-click`, default ``open``).
+///
+/// - ``open``: open in the best handler — a file / folder opens or reveals on the HOST (over the E4
+///   metadata RPC, E10 WI-7), a URL opens in the client's system browser.
+/// - ``copy``: copy the resolved absolute path / URL to the client pasteboard.
+/// - ``nothing``: do nothing on ⌘click (the user reaches links via the right-click menu / Jump-To /
+///   Hint Mode instead) — otty's escape hatch when ⌘click conflicts with a TUI.
+///
+/// PURE `String`-raw + `CaseIterable`; a CLIENT-side dispatch token (no libghostty config key), so the raw
+/// values are aislopdesk's own / otty's persistence tokens. ``init(rawValue:)`` is validate-then-repair to
+/// ``open`` (the default) — the same non-failable shape as ``RightClickAction`` so the
+/// `Defaults.PreferRawRepresentable` bridge keeps working.
+public enum LinkCmdClick: String, Codable, Sendable, CaseIterable {
+    case open
+    case copy
+    case nothing
+
+    /// Decodes the persisted token, repairing a stale / hostile value to ``open`` (the default) rather than
+    /// trapping. Non-failable so the `Defaults.PreferRawRepresentable` bridge works.
+    public init(rawValue: String) {
+        switch rawValue {
+        case "open": self = .open
+        case "copy": self = .copy
+        case "nothing": self = .nothing
+        default: self = .open
+        }
+    }
+}
+
+/// What a `⌘⇧`click on a detected link / path does (otty `link-cmd-shift-click`, default ``revealFinder``).
+///
+/// - ``revealFinder``: reveal the path in the HOST Finder (the `open -R`-equivalent over the metadata RPC,
+///   E10 WI-7); a URL has no Finder target, so the click copies it instead.
+/// - ``openSystemDefault``: open the path / URL with the HOST's system-default handler.
+///
+/// PURE `String`-raw + `CaseIterable`; a CLIENT-side dispatch token. ``init(rawValue:)`` is
+/// validate-then-repair to ``revealFinder`` (the default).
+public enum LinkCmdShiftClick: String, Codable, Sendable, CaseIterable {
+    case revealFinder = "reveal-finder"
+    case openSystemDefault = "open-system-default"
+
+    /// Decodes the persisted token, repairing a stale / hostile value to ``revealFinder`` (the default)
+    /// rather than trapping. Non-failable so the `Defaults.PreferRawRepresentable` bridge works.
+    public init(rawValue: String) {
+        switch rawValue {
+        case "reveal-finder": self = .revealFinder
+        case "open-system-default": self = .openSystemDefault
+        default: self = .revealFinder
+        }
+    }
+}
+
+/// Which URL schemes are auto-detected / underlined on `⌘`-hover (otty "Auto-Detect Link Schemes",
+/// default ``all``). `http(s)`, `file`, and `mailto` are ALWAYS detected regardless of this mode (the
+/// detector hard-codes them — see ``LinkSchemePolicy``); this only governs OTHER `scheme://…` forms.
+///
+/// - ``all``: detect ANY `scheme://…`.
+/// - ``custom``: detect only the always-on schemes plus the user's ``SettingsKey/customLinkSchemes`` list.
+///
+/// PURE `String`-raw + `CaseIterable`; a CLIENT-side persistence token. ``init(rawValue:)`` is
+/// validate-then-repair to ``all`` (the default). Bridged to the detector's richer ``LinkSchemePolicy`` by
+/// ``SettingsKey/linkSchemePolicy``.
+public enum AutoDetectLinkSchemes: String, Codable, Sendable, CaseIterable {
+    case all
+    case custom
+
+    /// Decodes the persisted token, repairing a stale / hostile value to ``all`` (the default) rather than
+    /// trapping. Non-failable so the `Defaults.PreferRawRepresentable` bridge works.
+    public init(rawValue: String) {
+        switch rawValue {
+        case "all": self = .all
+        case "custom": self = .custom
+        default: self = .all
+        }
+    }
+}
+
 // MARK: - TerminalControls (the fire-time control bundle the config builder consumes)
 
 /// The pure, headless bundle of E8 terminal CONTROL values the libghostty config builder (WI-2) turns into

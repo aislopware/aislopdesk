@@ -74,6 +74,13 @@ struct AllSettingsListView: View {
     @Default(.rightClickAction) private var rightClickAction
     @Default(.scrollPastLastLine) private var scrollPastLastLine
     @Default(.scrollPastFirstLine) private var scrollPastFirstLine
+    // E10 (Path/link detection — otty Settings → Controls → Open With / Link Schemes). Client-side link
+    // knobs, so no `refresh:` config rebuild on change.
+    @Default(.linkDetection) private var linkDetection
+    @Default(.linkCmdClick) private var linkCmdClick
+    @Default(.linkCmdShiftClick) private var linkCmdShiftClick
+    @Default(.autoDetectLinkSchemes) private var autoDetectLinkSchemes
+    @Default(.customLinkSchemes) private var customLinkSchemes
 
     private var filtered: [AllSettingsCatalog.SettingEntry] { AllSettingsCatalog.filter(query) }
 
@@ -290,6 +297,30 @@ struct AllSettingsListView: View {
         case SettingsKey.workingDirectoryNewWindowKey: workingDirControl($workingDirNewWindow)
         case SettingsKey.workingDirectoryNewTabKey: workingDirControl($workingDirNewTab)
         case SettingsKey.workingDirectoryNewSplitKey: workingDirControl($workingDirNewSplit)
+        // E10 link interaction — client-side knobs (no config rebuild on change).
+        case SettingsKey.linkDetection: boolControl($linkDetection)
+        case SettingsKey.linkCmdClickKey:
+            menuPicker($linkCmdClick) {
+                Text("Open").tag(LinkCmdClick.open)
+                Text("Copy").tag(LinkCmdClick.copy)
+                Text("Do Nothing").tag(LinkCmdClick.nothing)
+            }
+        case SettingsKey.linkCmdShiftClickKey:
+            menuPicker($linkCmdShiftClick) {
+                Text("Reveal in Finder").tag(LinkCmdShiftClick.revealFinder)
+                Text("Open with System Default").tag(LinkCmdShiftClick.openSystemDefault)
+            }
+        case SettingsKey.autoDetectLinkSchemesKey:
+            menuPicker($autoDetectLinkSchemes) {
+                Text("All").tag(AutoDetectLinkSchemes.all)
+                Text("Custom").tag(AutoDetectLinkSchemes.custom)
+            }
+        case SettingsKey.customLinkSchemes:
+            // Read-only live summary here — the full editor lives on the Controls → Link Schemes section.
+            AnyView(Text(customLinkSchemes.isEmpty ? "None" : customLinkSchemes.joined(separator: ", "))
+                .font(.system(size: Otty.Typeface.footnote))
+                .foregroundStyle(Otty.Text.secondary)
+                .lineLimit(1))
         default:
             // No inline editor wired (should not happen for an `.advancedOnly` entry) — show the default.
             AnyView(Text(entry.defaultText)

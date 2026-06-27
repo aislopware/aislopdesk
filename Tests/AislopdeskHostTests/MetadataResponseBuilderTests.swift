@@ -314,9 +314,28 @@ final class MetadataResponseBuilderTests: XCTestCase {
     }
 
     func testZeroVerbByteReturnsUnsupported() {
-        // 0 is not a defined MetadataVerb (verbs are 1...8) — must be tolerated, not trap.
+        // 0 is not a defined MetadataVerb (verbs are 1...10) — must be tolerated, not trap.
         let fake = FakeQuery()
         let r = decode(MetadataResponseBuilder(query: fake).response(requestID: 1, verb: 0, payload: Data()))
         XCTAssertEqual(r.status, MetadataStatus.unsupportedVerb.rawValue)
+    }
+
+    // MARK: - Side-effecting path verbs are NOT this read-only builder's job (E10 WI-7)
+
+    func testSideEffectingPathVerbsReachingTheReadOnlyBuilderReturnError() {
+        // openPath (9) / revealPath (10) are routed to `HostPathActionPerformer` by `serveMetadata`
+        // BEFORE the builder; if one ever reaches this PURE reducer it must reply .error and perform NO
+        // side effect — never trap on the now-exhaustive switch, never silently report success.
+        for verb in [MetadataVerb.openPath, .revealPath] {
+            let fake = FakeQuery()
+            let r = response(
+                MetadataResponseBuilder(query: fake), verb, Data("/Users/dev/repo/x.swift".utf8), requestID: 33,
+            )
+            XCTAssertEqual(r.requestID, 33)
+            XCTAssertEqual(r.status, MetadataStatus.error.rawValue, "\(verb): the read-only builder never actuates")
+            XCTAssertTrue(r.payload.isEmpty)
+            // The read query seam was never touched (the builder did no work for a side-effecting verb).
+            XCTAssertTrue(fake.gitDiffCalls.isEmpty && fake.listDirectoryCalls.isEmpty)
+        }
     }
 }

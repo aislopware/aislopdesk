@@ -81,6 +81,22 @@ public enum WorkspaceAction: Hashable, Sendable {
     // unbound by default (the four registry rows carry `chord: nil`) — the user can bind any in Settings.
     case selectDetailsTab(DetailsPanelTab)
     case openQuickly // ⌘⇧O — open the fuzzy "open quickly" file/symbol switcher (E11 stub)
+    // Jump-To (E10 ES-E10-5): ⌘J opens the floating Jump-To panel — the active pane's detected paths/URLs
+    // (over its scrollback) + its OSC-133 command/prompt index, fuzzy-filterable, ↩ to act / ⌘K for the
+    // per-row actions. A VIEW overlay (the OverlayCoordinator owns it), so it routes through a passed-in
+    // toggle closure like `.globalSearch`. ⌘J is FREE (only ⌘⇧J / ⌘⌥J use `j`).
+    case jumpTo
+
+    // Hint Mode (E10 ES-E10-6 / `terminal-features__hint-mode`): overlay 2-letter Vimium labels on every
+    // detected target in the active pane's viewport; type the label to run the action — no mouse. Three
+    // intents: ⌘⇧J open (paths→host / URLs→client), ⌘⇧Y copy (→ client clipboard), reveal-in-Finder (host)
+    // which is CHORD-LESS (otty's ⌘⇧R is aislopdesk's Toggle Details — see `view.toggleDetails`), so it is
+    // palette/menu-surfaced + an in-overlay action switch. E10 OWNS ⌘⇧J for Hint to Open, so `.peekAndReply`
+    // moved off ⌘⇧J → ⌘⌥J (carryover-binding; see `view.peekReply`). Each targets the active terminal pane (a
+    // graceful no-op off-terminal).
+    case hintToOpen // ⌘⇧J
+    case hintToCopy // ⌘⇧Y
+    case hintToReveal // chord-less
 
     // View — viewport scroll (E1 ES-E1-3; named-key chords — the §5 prefix exemption)
     case scrollPageUp // ⇧PageUp — scroll the active pane one page toward older scrollback
@@ -123,7 +139,8 @@ public enum WorkspaceAction: Hashable, Sendable {
     case jumpToAttention // ⌘⇧U — focus the oldest pane needing attention (needsPermission first, then done)
 
     // Supervision (P4 — answer the blocked pane INLINE without a context switch)
-    case peekAndReply // ⌘⇧J — open the Peek & Reply overlay over the oldest pane needing attention
+    case peekAndReply // ⌘⌥J — open the Peek & Reply overlay over the oldest pane needing attention (moved off
+    // ⌘⇧J, which E10 Hint Mode now owns for Hint to Open — see `view.peekReply` / `hintToOpen`)
 
     // Agents (E1-registered; the behaviour lands in later epics — these are routable stubs, never dead chords)
     case composer // ⌘⇧E — open the agent prompt composer (E12 stub)
@@ -192,6 +209,14 @@ public extension WorkspaceAction {
              // but degrades gracefully (an empty / non-terminal shell just no-ops), same family.
              .secureKeyboardEntry,
              .commandNavigator,
+             // Jump-To scans the ACTIVE terminal pane (its scrollback links + its OSC-133 command index), so it
+             // needs one — but degrades gracefully (an empty / non-terminal shell just opens an empty list).
+             .jumpTo,
+             // Hint Mode (E10 ES-E10-6) overlays labels on the ACTIVE terminal pane's viewport targets, so it
+             // needs one — but degrades gracefully (no targets / non-terminal pane just no-ops, never a dead chord).
+             .hintToOpen,
+             .hintToCopy,
+             .hintToReveal,
              .jumpPreviousBlock,
              .jumpNextBlock,
              .reRunLastCommand,
@@ -508,14 +533,17 @@ public enum WorkspaceBindingRegistry {
             symbol: "bell.badge",
             keywords: "jump unread attention needs permission blocked done next pane supervise oldest",
         ),
-        // Supervision (P4): ⌘⇧J opens the Peek & Reply overlay over the oldest pane needing attention so
+        // Supervision (P4): ⌘⌥J opens the Peek & Reply overlay over the oldest pane needing attention so
         // the human can ANSWER a blocked agent INLINE — no full tab/context switch. The partner of ⌘⇧U
-        // (jump TO the pane): "J" = jump-in-and-reply. ⌘⇧J is FREE (`j` is in NO other binding); pinned
-        // unique by the chord-uniqueness test. A registry chord fires ONLY via its menu item, so the Pane
-        // menu carries the matching "Peek & Reply" item.
+        // (jump TO the pane): "J" = jump-in-and-reply, kept on the `j` key. RE-POINTED ⌘⇧J → ⌘⌥J in E10
+        // (carryover-binding: "E10 OWNS ⌘⇧J for Hint Mode"): ⌘⇧J is now Hint to Open (`view.hintOpen`), and
+        // ⌘⌥J is FREE (no `option+command` `j` exists). Peek & Reply is a menu/palette-surfaced supervision
+        // action, so the muscle-memory impact of the displacement is minimal (DECISIONS.md). A registry chord
+        // fires ONLY via its menu item, so the Pane menu carries the matching "Peek & Reply" item. Pinned
+        // unique by the chord-uniqueness test + `PeekReplyTests`.
         WorkspaceBinding(
             id: "view.peekReply", action: .peekAndReply, title: "Peek & Reply to Blocked Pane",
-            category: .tabs, chord: KeyChord(character: "j", [.command, .shift]),
+            category: .tabs, chord: KeyChord(character: "j", [.command, .option]),
             symbol: "bubble.left.and.text.bubble.right",
             keywords: "peek reply answer respond blocked needs permission inline quick supervise prompt",
         ),
@@ -712,6 +740,43 @@ public enum WorkspaceBindingRegistry {
             id: "view.commandNavigator", action: .commandNavigator, title: "Command Navigator",
             category: .view, chord: KeyChord(character: "o", [.control, .command]),
             symbol: "list.bullet.rectangle", keywords: "blocks commands history recent navigator output jump warp",
+        ),
+        // Jump-To (E10 ES-E10-5 / `user-interface__outline.md`): ⌘J opens the floating Jump-To panel over the
+        // active pane — its detected paths/URLs + its OSC-133 command/prompt index, fuzzy-filterable, ↩ acts /
+        // ⌘K opens the per-row actions popover. ⌘J is FREE (`j` is otherwise only ⌘⇧J peek-reply / ⌘⌥J). A VIEW
+        // overlay (OverlayCoordinator), routed via a passed-in toggle closure like Global Search. Pinned unique
+        // by the chord-uniqueness guard + `JumpToModelTests`.
+        WorkspaceBinding(
+            id: "view.jumpTo", action: .jumpTo, title: "Jump To…",
+            category: .view, chord: KeyChord(character: "j", [.command]),
+            symbol: "scope",
+            keywords: "jump to outline quick switch goto navigate command url path link prompt current",
+        ),
+        // Hint Mode (E10 ES-E10-6 / `terminal-features__hint-mode`): the three "Hint to …" intents that overlay
+        // 2-letter Vimium labels on the active pane's detected targets. ⌘⇧J Open + ⌘⇧Y Copy are otty's
+        // documented defaults — both FREE on the tree shell after E10 RE-POINTED `.peekAndReply` off ⌘⇧J →
+        // ⌘⌥J (the carryover binding "E10 OWNS ⌘⇧J for Hint Mode"; `y` is in NO other chord). Reveal-in-Finder
+        // is otty's ⌘⇧R, but ⌘⇧R is aislopdesk's Toggle Details (`view.toggleDetails`, otty-faithful,
+        // `E1KeymapParityTests`-pinned), so Hint to Reveal is CHORD-LESS (`chord: nil` — palette/menu-surfaced
+        // + an in-overlay action switch while hint mode is up; the user may bind it in Settings). The ⌘⇧R
+        // divergence is documented in DECISIONS.md. Pinned unique by the chord-uniqueness guard.
+        WorkspaceBinding(
+            id: "view.hintOpen", action: .hintToOpen, title: "Hint to Open",
+            category: .view, chord: KeyChord(character: "j", [.command, .shift]),
+            symbol: "cursorarrow.rays",
+            keywords: "hint mode open vimium label link path url file follow keyboard jump target",
+        ),
+        WorkspaceBinding(
+            id: "view.hintCopy", action: .hintToCopy, title: "Hint to Copy",
+            category: .view, chord: KeyChord(character: "y", [.command, .shift]),
+            symbol: "doc.on.doc",
+            keywords: "hint mode copy vimium label yank clipboard link path url text keyboard target",
+        ),
+        WorkspaceBinding(
+            id: "view.hintReveal", action: .hintToReveal, title: "Hint to Reveal in Finder",
+            category: .view, chord: nil,
+            symbol: "folder",
+            keywords: "hint mode reveal finder vimium label path file host keyboard target show",
         ),
         WorkspaceBinding(
             id: "view.jumpPreviousBlock", action: .jumpPreviousBlock, title: "Jump to Previous Block",

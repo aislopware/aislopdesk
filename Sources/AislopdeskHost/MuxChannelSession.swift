@@ -1342,6 +1342,15 @@ final class MuxChannelSession: @unchecked Sendable {
         let shellPID = pty.pid
         metadataQueue.async { [weak self] in
             guard let self else { return }
+            // E10 WI-7: the side-effecting path verbs (openPath = 9 / revealPath = 10) actuate on the
+            // HOST's own Finder / Launch Services via `HostPathActionPerformer` and reply with an
+            // empty-payload status. They are handled HERE — BEFORE, and never reach, the read-only
+            // `MetadataResponseBuilder` (which performs NO side effects). `response` returns nil for
+            // every OTHER verb, so the read verbs fall through to the pure builder unchanged.
+            if let response = HostPathActionPerformer.response(requestID: requestID, verb: verb, payload: payload) {
+                enqueueControl([response])
+                return
+            }
             let probe = HostMetadataProbe(masterFD: masterFD, shellPID: shellPID)
             let response = MetadataResponseBuilder(query: probe)
                 .response(requestID: requestID, verb: verb, payload: payload)

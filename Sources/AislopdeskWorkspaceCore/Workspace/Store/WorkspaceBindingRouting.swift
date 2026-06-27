@@ -24,6 +24,10 @@ struct RouteToggles {
     var detailsPanel: (() -> Void)?
     var sidebar: (() -> Void)?
     var globalSearch: (() -> Void)?
+    /// Toggles the Jump-To panel (E10 WI-8). A VIEW overlay (the `OverlayCoordinator` owns `jumpToVisible`),
+    /// so — like `globalSearch` — it is a passed-in closure; `nil` (the headless / test default) is a
+    /// graceful no-op, never a dead chord.
+    var jumpTo: (() -> Void)?
     /// Jumps the Details panel to a specific tab (E9/WI-7). View-owned state (`DetailsPanelState` + the
     /// chrome reveal), so — like `detailsPanel` — it is a passed-in closure; `nil` = a graceful no-op.
     var selectDetailsTab: ((DetailsPanelTab) -> Void)?
@@ -44,12 +48,13 @@ public extension WorkspaceBindingRegistry {
         toggleDetailsPanel: (() -> Void)? = nil,
         toggleSidebar: (() -> Void)? = nil,
         toggleGlobalSearch: (() -> Void)? = nil,
+        toggleJumpTo: (() -> Void)? = nil,
         selectDetailsTab: ((DetailsPanelTab) -> Void)? = nil,
     ) {
         let toggles = RouteToggles(
             palette: togglePalette, cheatSheet: toggleCheatSheet, find: toggleFind,
             peekReply: togglePeekReply, detailsPanel: toggleDetailsPanel,
-            sidebar: toggleSidebar, globalSearch: toggleGlobalSearch,
+            sidebar: toggleSidebar, globalSearch: toggleGlobalSearch, jumpTo: toggleJumpTo,
             selectDetailsTab: selectDetailsTab,
         )
         switch store.liveModel {
@@ -139,6 +144,17 @@ public extension WorkspaceBindingRegistry {
         // passed-in closure like the palette / cheat sheet. `nil` (the headless / test default) is a graceful
         // no-op — never a dead chord.
         case .globalSearch: toggles.globalSearch?()
+        // Jump-To (E10 WI-8 / ES-E10-5): a VIEW overlay (the OverlayCoordinator owns it) that scans the ACTIVE
+        // pane, so it is a passed-in closure like the palette / global search. `nil` (the headless / test
+        // default) is a graceful no-op — never a dead chord.
+        case .jumpTo: toggles.jumpTo?()
+        // Hint Mode (E10 WI-9 / ES-E10-6): arm 2-letter Vimium hints over the ACTIVE terminal pane's viewport
+        // for the chosen intent (open / copy / reveal). The mode lives on the pane's `TerminalViewModel`
+        // (`beginHint(_:)`) so the renderer's key capture + the overlay read ONE source; a no-op for a
+        // non-terminal active pane, an empty shell, a headless surface, or an alt-screen TUI (don't fight it).
+        case .hintToOpen: store.activeTerminalModel?.beginHint(.open)
+        case .hintToCopy: store.activeTerminalModel?.beginHint(.copy)
+        case .hintToReveal: store.activeTerminalModel?.beginHint(.reveal)
         // Copy Mode (P5b): arm modal keyboard scrollback navigation over the active terminal pane.
         case .toggleCopyMode: store.requestCopyModeInActivePane()
         // Vi Mode Key Hints (E17 ES-E17-2 / WI-5): the DISCOVERABLE palette / menu command toggles the active
@@ -303,6 +319,14 @@ public extension WorkspaceBindingRegistry {
         case .findPrev: store.requestFindPrevInActivePane()
         // Global Search is a view overlay (tree-shell chrome); the canvas path still toggles it via the closure.
         case .globalSearch: toggles.globalSearch?()
+        // Jump-To (E10 WI-8): a view overlay; the canvas path still toggles it via the closure (a graceful
+        // no-op when none is supplied, like the palette / global search).
+        case .jumpTo: toggles.jumpTo?()
+        // Hint Mode (E10 WI-9): the canvas path resolves the active pane via canvas focus, so the same model
+        // seam arms hints there too (a no-op for a non-terminal active pane / empty shell / alt-screen TUI).
+        case .hintToOpen: store.activeTerminalModel?.beginHint(.open)
+        case .hintToCopy: store.activeTerminalModel?.beginHint(.copy)
+        case .hintToReveal: store.activeTerminalModel?.beginHint(.reveal)
         // Copy Mode (P5b): the canvas path resolves the active pane via canvas focus, so the same store hook
         // arms copy-mode there too (a no-op for a non-terminal active pane / empty shell).
         case .toggleCopyMode: store.requestCopyModeInActivePane()

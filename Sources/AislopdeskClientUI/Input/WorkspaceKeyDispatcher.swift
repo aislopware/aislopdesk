@@ -43,6 +43,10 @@ final class WorkspaceKeyDispatcher {
     /// ``OverlayCoordinator``), so it is passed in as a closure like `togglePalette`; `nil` (the headless /
     /// test default) keeps `.globalSearch` a graceful no-op via `route` — never a dead chord.
     private let toggleGlobalSearch: (() -> Void)?
+    /// E10 / WI-8: the Jump-To panel toggle (⌘J). View-overlay state (the ``OverlayCoordinator``), so it is
+    /// passed in as a closure like `toggleGlobalSearch`; `nil` (the headless / test default) keeps `.jumpTo`
+    /// a graceful no-op via `route` — never a dead chord.
+    private let toggleJumpTo: (() -> Void)?
     /// The Details/inspector panel toggle (otty ⌘⇧R). View-owned `@State` (`WorkspaceChromeState`), so it is
     /// passed in as a closure. The chrome state is created INSIDE `WorkspaceRootView` (after the dispatcher is
     /// built at app `init`), so the root view installs the real closure via ``setToggleDetailsPanel(_:)`` on
@@ -81,6 +85,7 @@ final class WorkspaceKeyDispatcher {
         toggleDetailsPanel: (() -> Void)? = nil,
         toggleSidebar: (() -> Void)? = nil,
         toggleGlobalSearch: (() -> Void)? = nil,
+        toggleJumpTo: (() -> Void)? = nil,
         selectDetailsTab: ((DetailsPanelTab) -> Void)? = nil,
     ) {
         self.store = store
@@ -91,6 +96,7 @@ final class WorkspaceKeyDispatcher {
         self.toggleDetailsPanel = toggleDetailsPanel
         self.toggleSidebar = toggleSidebar
         self.toggleGlobalSearch = toggleGlobalSearch
+        self.toggleJumpTo = toggleJumpTo
         self.selectDetailsTab = selectDetailsTab
         // The prefix machine resolves a post-prefix key against the override-aware SEQUENCE table FIRST (so a
         // multi-key prefix sequence whose tail key is not a standalone binding still fires), falling back to
@@ -223,6 +229,7 @@ final class WorkspaceKeyDispatcher {
             toggleDetailsPanel: toggleDetailsPanel,
             toggleSidebar: toggleSidebar,
             toggleGlobalSearch: toggleGlobalSearch,
+            toggleJumpTo: toggleJumpTo,
             selectDetailsTab: selectDetailsTab,
         )
     }

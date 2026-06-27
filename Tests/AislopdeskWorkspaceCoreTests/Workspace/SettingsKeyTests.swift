@@ -45,6 +45,14 @@ final class SettingsKeyTests: XCTestCase {
             SettingsKey.rightClickActionKey,
             SettingsKey.scrollPastLastLineKey,
             SettingsKey.scrollPastFirstLineKey,
+            // E10 WI-3: link & status-bar config keys.
+            SettingsKey.linkDetection,
+            SettingsKey.linkCmdClickKey,
+            SettingsKey.linkCmdShiftClickKey,
+            SettingsKey.autoDetectLinkSchemesKey,
+            SettingsKey.customLinkSchemes,
+            SettingsKey.hintPatterns,
+            SettingsKey.hintPatternActions,
         ]
     }
 
@@ -308,5 +316,63 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertEqual(SettingsKey.rightClickActionKey, "controls.rightClickAction")
         XCTAssertEqual(SettingsKey.scrollPastLastLineKey, "controls.scrollPastLastLine")
         XCTAssertEqual(SettingsKey.scrollPastFirstLineKey, "controls.scrollPastFirstLine")
+    }
+
+    // MARK: - E10 WI-3: link & status-bar config keys
+
+    /// The new E10 link-interaction keys read their declared defaults when unset, round-trip the alternative
+    /// case via the persisted raw value (`Defaults.PreferRawRepresentable` → `RawRepresentableBridge`), and
+    /// repair a stale / hostile persisted raw value to the default rather than trapping (the non-failable
+    /// `init(rawValue:)`). ``SettingsKey/linkSchemePolicy`` bridges the persisted mode + custom list into the
+    /// detector's ``LinkSchemePolicy``. Read through the public typed accessors + the raw `UserDefaults` the
+    /// `@Default(.key)` pickers bind (the file's established no-`import Defaults` convention).
+    func testE10LinkKeyDefaultsAndRoundTrip() {
+        // Defaults when unset.
+        XCTAssertTrue(SettingsKey.linkDetectionEnabled, "link-detection defaults ON")
+        XCTAssertEqual(SettingsKey.linkCmdClick, .open, "link-cmd-click defaults Open")
+        XCTAssertEqual(SettingsKey.linkCmdShiftClick, .revealFinder, "link-cmd-shift-click defaults Reveal")
+        XCTAssertEqual(SettingsKey.autoDetectLinkSchemes, .all, "auto-detect schemes defaults All")
+        XCTAssertEqual(SettingsKey.linkSchemePolicy, .all, "the default scheme policy detects any scheme")
+        // Round-trip the alternative case from its persisted raw value.
+        UserDefaults.standard.set(false, forKey: SettingsKey.linkDetection)
+        UserDefaults.standard.set(LinkCmdClick.copy.rawValue, forKey: SettingsKey.linkCmdClickKey)
+        UserDefaults.standard.set(
+            LinkCmdShiftClick.openSystemDefault.rawValue,
+            forKey: SettingsKey.linkCmdShiftClickKey,
+        )
+        UserDefaults.standard.set(AutoDetectLinkSchemes.custom.rawValue, forKey: SettingsKey.autoDetectLinkSchemesKey)
+        UserDefaults.standard.set(["codex", "ssh"], forKey: SettingsKey.customLinkSchemes)
+        XCTAssertFalse(SettingsKey.linkDetectionEnabled)
+        XCTAssertEqual(SettingsKey.linkCmdClick, .copy)
+        XCTAssertEqual(SettingsKey.linkCmdShiftClick, .openSystemDefault)
+        XCTAssertEqual(SettingsKey.autoDetectLinkSchemes, .custom)
+        // Custom mode bridges the persisted list into the detector policy (the always-on schemes are folded in
+        // by the detector itself, not by this policy value).
+        XCTAssertEqual(SettingsKey.linkSchemePolicy, .custom(["codex", "ssh"]))
+        // A stale / hostile persisted raw value repairs to the default rather than trapping.
+        UserDefaults.standard.set("garbage-from-a-future-version", forKey: SettingsKey.linkCmdClickKey)
+        UserDefaults.standard.set("nonsense", forKey: SettingsKey.autoDetectLinkSchemesKey)
+        XCTAssertEqual(SettingsKey.linkCmdClick, .open, "an invalid raw value repairs to open")
+        XCTAssertEqual(SettingsKey.autoDetectLinkSchemes, .all, "an invalid raw value repairs to all")
+    }
+
+    /// The new E10 wire key strings are the single source of truth shared with every `@Default`/`@AppStorage`
+    /// consumer + the All-Settings catalog + the (E10 WI-5/6/8/9) fire-sites — a rename that would split-brain
+    /// the Settings UI from the fire-sites fails this pin. The enum raw values are the otty config tokens
+    /// (shared with the host-route dispatch + `docs/20-wire-protocol.md`).
+    func testE10LinkKeyStringsAreStable() {
+        XCTAssertEqual(SettingsKey.linkDetection, "controls.linkDetection")
+        XCTAssertEqual(SettingsKey.linkCmdClickKey, "controls.linkCmdClick")
+        XCTAssertEqual(SettingsKey.linkCmdShiftClickKey, "controls.linkCmdShiftClick")
+        XCTAssertEqual(SettingsKey.autoDetectLinkSchemesKey, "controls.autoDetectLinkSchemes")
+        XCTAssertEqual(SettingsKey.customLinkSchemes, "controls.customLinkSchemes")
+        XCTAssertEqual(SettingsKey.hintPatterns, "controls.hintPatterns")
+        XCTAssertEqual(SettingsKey.hintPatternActions, "controls.hintPatternActions")
+        XCTAssertEqual(LinkCmdClick.open.rawValue, "open")
+        XCTAssertEqual(LinkCmdClick.nothing.rawValue, "nothing")
+        XCTAssertEqual(LinkCmdShiftClick.revealFinder.rawValue, "reveal-finder")
+        XCTAssertEqual(LinkCmdShiftClick.openSystemDefault.rawValue, "open-system-default")
+        XCTAssertEqual(AutoDetectLinkSchemes.all.rawValue, "all")
+        XCTAssertEqual(AutoDetectLinkSchemes.custom.rawValue, "custom")
     }
 }

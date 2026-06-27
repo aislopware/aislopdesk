@@ -315,6 +315,8 @@ public struct AislopdeskClientApp: App {
             togglePalette: { [overlay] in overlay.togglePalette() },
             toggleCheatSheet: { [overlay] in overlay.toggleCheatSheet() },
             toggleGlobalSearch: { [overlay] in overlay.toggleGlobalSearch() },
+            // E10 / WI-8: ⌘J opens the Jump-To panel through the SAME NSEvent monitor that owns every chord.
+            toggleJumpTo: { [overlay] in overlay.toggleJumpTo() },
         ))
         #endif
     }
@@ -450,6 +452,8 @@ public struct AislopdeskClientApp: App {
                 togglePalette: { [overlayCoordinator] in overlayCoordinator.togglePalette() },
                 toggleCheatSheet: { [overlayCoordinator] in overlayCoordinator.toggleCheatSheet() },
                 toggleGlobalSearch: { [overlayCoordinator] in overlayCoordinator.toggleGlobalSearch() },
+                // E10 / WI-8: the View ▸ Jump To… menu item toggles the SAME overlay the ⌘J chord drives.
+                toggleJumpTo: { [overlayCoordinator] in overlayCoordinator.toggleJumpTo() },
                 // E9/WI-7 (ES-E9-5): the four View ▸ Details: * menu rows route through the SAME injected
                 // coordinator closure the palette rows + the user-bindable chord drive (installed by
                 // `WorkspaceRootView.wireChromeToggles` → sets `DetailsPanelState.selected` + reveals the

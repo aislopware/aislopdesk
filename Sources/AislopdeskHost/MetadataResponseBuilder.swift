@@ -147,6 +147,14 @@ struct MetadataResponseBuilder {
                 return reply(requestID, .notFound, Data())
             }
             return reply(requestID, .ok, cappedOpaque(bytes))
+
+        case .openPath,
+             .revealPath:
+            // E10 WI-7: the side-effecting path verbs are NOT this READ-ONLY builder's job —
+            // `MuxChannelSession.serveMetadata` routes them to `HostPathActionPerformer` BEFORE the
+            // builder, so they never reach here in production. Reaching this case is a routing bug;
+            // answer `.error` defensively (this pure reducer must NEVER perform a host side effect).
+            return reply(requestID, .error, Data())
         }
     }
 

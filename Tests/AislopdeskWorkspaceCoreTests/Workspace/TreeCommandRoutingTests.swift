@@ -993,7 +993,53 @@ final class TreeCommandRoutingTests: XCTestCase {
         store.setAgentStatus(.needsPermission, for: firstPane) // the BACKGROUND pane is blocked
 
         WorkspaceBindingRegistry.route(.peekAndReply, to: store) // no closure ⇒ store fallback
-        XCTAssertEqual(activePane(store), firstPane, "⌘⇧J without an overlay jumps to the blocked pane")
+        XCTAssertEqual(activePane(store), firstPane, "⌘⌥J without an overlay jumps to the blocked pane")
+    }
+
+    // MARK: - View: Hint Mode (E10 WI-9, ES-E10-6) — chord pins + active-pane routing
+
+    /// Pins the three Hint Mode chords to their E10 defaults: ⌘⇧J Hint to Open, ⌘⇧Y Hint to Copy, and Hint to
+    /// Reveal CHORD-LESS (otty's ⌘⇧R is aislopdesk's Toggle Details). ALSO pins that peek-and-reply RE-POINTED
+    /// ⌘⇧J → ⌘⌥J so Hint to Open could own ⌘⇧J (the carryover binding). The generic uniqueness guard catches a
+    /// COLLISION; this pins the intended values so a transposed modifier can't slip past it. Revert-to-confirm-fail
+    /// by removing the hint bindings (this fails to find them) or leaving peek-and-reply on ⌘⇧J (a collision).
+    func testHintModeChordsAreTheDocumentedDefaults() {
+        func chord(_ action: WorkspaceAction) -> KeyChord? {
+            WorkspaceBindingRegistry.binding(for: action)?.chord
+        }
+        XCTAssertEqual(chord(.hintToOpen), KeyChord(character: "j", [.command, .shift]), "hint to open = ⌘⇧J")
+        XCTAssertEqual(chord(.hintToCopy), KeyChord(character: "y", [.command, .shift]), "hint to copy = ⌘⇧Y")
+        XCTAssertNil(chord(.hintToReveal), "hint to reveal is chord-less (⌘⇧R is Toggle Details on aislopdesk)")
+        XCTAssertEqual(
+            chord(.peekAndReply), KeyChord(character: "j", [.command, .option]),
+            "peek & reply re-pointed ⌘⇧J → ⌘⌥J (E10 owns ⌘⇧J for Hint Mode)",
+        )
+    }
+
+    /// The four `j`/`y` chords must coexist chord-uniquely: ⌘J jump-to, ⌘⇧J hint-open, ⌘⌥J peek-and-reply, and
+    /// ⌘⇧Y hint-copy — the exact set E10 reshuffled. The generic uniqueness test asserts no two share a chord;
+    /// this adds the explicit presence + disambiguation so the re-point can't silently drop or collide a chord.
+    func testHintModeChordsArePresentAndChordUnique() {
+        let chords = WorkspaceBindingRegistry.allBindings.compactMap(\.chord)
+        XCTAssertEqual(Set(chords).count, chords.count, "no two bindings share a chord after the E10 hint additions")
+        XCTAssertTrue(chords.contains(KeyChord(character: "j", [.command])), "⌘J jump-to present")
+        XCTAssertTrue(chords.contains(KeyChord(character: "j", [.command, .shift])), "⌘⇧J hint-to-open present")
+        XCTAssertTrue(chords.contains(KeyChord(character: "j", [.command, .option])), "⌘⌥J peek-and-reply present")
+        XCTAssertTrue(chords.contains(KeyChord(character: "y", [.command, .shift])), "⌘⇧Y hint-to-copy present")
+    }
+
+    /// The three hint actions route to the store's active-pane hook (`activeTerminalModel?.beginHint`) — a no-op
+    /// against a `FakePaneSession` (not a live terminal), but they must not trap or mutate the tree. Pins that
+    /// the new actions are wired to the store, not dropped. Proven to fail before the routing cases exist (the
+    /// exhaustive switch would not compile, then would mis-route).
+    @MainActor
+    func testHintActionsRouteToStoreWithoutMutatingTree() {
+        let store = makeTreeStore()
+        let before = store.tree
+        WorkspaceBindingRegistry.route(.hintToOpen, to: store)
+        WorkspaceBindingRegistry.route(.hintToCopy, to: store)
+        WorkspaceBindingRegistry.route(.hintToReveal, to: store)
+        XCTAssertEqual(store.tree, before, "the hint actions are active-pane affordances — the tree is unchanged")
     }
 
     // L0: the cheat-sheet drift-guard tests (testTreeCheatSheetChordsEqualRegistryChords /

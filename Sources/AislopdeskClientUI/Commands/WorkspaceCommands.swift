@@ -38,6 +38,9 @@ struct WorkspaceCommands: Commands {
     /// E5 / WI-4: the cross-tab Global Search overlay toggle (otty ⇧⌘F, the View ▸ Global Search… menu item).
     /// `nil` keeps the menu item a graceful no-op via `route`, never dead.
     var toggleGlobalSearch: (() -> Void)?
+    /// E10 / WI-8: the Jump-To panel toggle (otty ⌘J, the View ▸ Jump To… menu item). `nil` keeps the menu
+    /// item a graceful no-op via `route`, never dead.
+    var toggleJumpTo: (() -> Void)?
     /// E9 / WI-7: the four `Details: *` jump commands' tab selector (the View ▸ Details: Info/Outline/Git/
     /// Files menu items). `nil` keeps the items a graceful no-op via `route` (the live wiring rides the macOS
     /// NSEvent dispatcher's `selectDetailsTab`, matching how `toggleDetailsPanel`/`toggleSidebar` aren't
@@ -106,6 +109,7 @@ struct WorkspaceCommands: Commands {
                 toggleDetailsPanel: toggleDetailsPanel,
                 toggleSidebar: toggleSidebar,
                 toggleGlobalSearch: toggleGlobalSearch,
+                toggleJumpTo: toggleJumpTo,
                 selectDetailsTab: selectDetailsTab,
             )
         }

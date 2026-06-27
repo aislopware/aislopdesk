@@ -23,7 +23,13 @@
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
+import Foundation
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 struct TerminalLeafView: View {
     /// The live session backing this pane (terminal model + input bar). When `nil` (no live handle yet, or
@@ -33,6 +39,20 @@ struct TerminalLeafView: View {
     let isFocused: Bool
     /// EAGER/STATIC render path for headless ImageRenderer snapshots.
     var staticMirror: Bool = false
+
+    /// E10 WI-4 (ES-E10-3): the host-reported working directory (`PaneSpec.lastKnownCwd`, live-set from OSC 7)
+    /// for the bottom status bar's left field. Resolved by ``PaneContainer`` from the store's spec so it stays
+    /// reactive; `nil` until the host first reports a cwd.
+    let cwd: String?
+    /// E10 WI-4 (ES-E10-3): the app-global connection host (`ConnectionTarget.host`) for the status bar's
+    /// right field. Empty when not yet connected / unknown (the strip then omits the host).
+    let host: String
+
+    /// E10 WI-10 (G8): the live workspace store — the only thing the per-pane Command Navigator (⌃⌘O) needs
+    /// the leaf to carry. Its row jump routes through ``WorkspaceStore/jumpToNavigatorBlockInActivePane(index:)``
+    /// (the shared ``BlockJump`` re-anchor engine, which resolves the ACTIVE pane = the pane the navigator is
+    /// over). Passed down from ``PaneContainer`` (which already owns it).
+    let store: WorkspaceStore
 
     /// E5 ES-E5-1..4: the in-pane ⌘F find bar's view-model (pure ``TerminalSearchController`` + the libghostty
     /// `search:` passthrough). Owned per-leaf and wired to the pane's `onRequestFind*` callbacks in `.task`;
@@ -54,12 +74,39 @@ struct TerminalLeafView: View {
     /// Inert off macOS (the controller is a no-op).
     @State private var secureInput = SecureKeyboardEntryController()
 
+    /// E10 WI-10 (G8): the per-leaf Command Navigator (⌃⌘O) chrome the pane model's `onRequestBlockNavigator`
+    /// callback TOGGLES (the seam doc: "show/hide"). A reference type so the `@MainActor` closure can flip it
+    /// (the find-bar / Composer idiom); per-pane (`.id(PaneID)`-keyed leaf), so no cross-pane bleed, and the
+    /// modal only ever opens over the pane whose model the store fired — i.e. the active pane.
+    @State private var navigatorChrome = CommandNavigatorChrome()
+
+    /// E10 WI-7 (ES-E10-2 / ES-E10-6): the single overlay coordinator, used ONLY to surface a transient
+    /// error toast when a host open/reveal RPC fails (the path is gone / open failed / the reply dropped) —
+    /// so the action is never a SILENT no-op. `nil` outside the app scene root (tests/previews) ⇒ the failure
+    /// is simply swallowed there, never a crash.
+    @Environment(\.overlayCoordinator) private var overlayCoordinator
+
     var body: some View {
         VStack(spacing: 0) {
             // TODO(L5): mount `FileExplorerPanel` beside the surface when the per-pane explorer is open.
             terminalSurface
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             bottomComposer
+            // E10 WI-4 (ES-E10-3 / ES-E10-4): the flat ≤20pt status bar along the pane BOTTOM (the opposite
+            // edge from the E17 top-trailing pills). Gated `!staticMirror && !hideStatusBar` and only for a
+            // live terminal pane; a thin renderer over the pure ``StatusBarContent`` model.
+            if showStatusBar {
+                StatusBarStrip(
+                    model: live?.terminalModel,
+                    cwd: cwd,
+                    kind: live?.kind ?? .terminal,
+                    host: host,
+                    // E10 WI-5 (ES-E10-4): the ⌘-hovered link's resolved full path overrides the left field on
+                    // the dark sub-strip (`full-path-hover.png`). Reading this OBSERVABLE here re-renders the
+                    // strip as the renderer's `mouseMoved` hit-test updates it; `nil` at rest keeps the cwd chip.
+                    hoverFullPath: live?.terminalModel?.hoveredLinkFullPath,
+                )
+            }
             // TODO(L5): mount `AgentInputFooter` at the pane bottom (agent-gated).
         }
         .background(NativePaneColor.terminalBackground)
@@ -68,6 +115,11 @@ struct TerminalLeafView: View {
         // (`initial: true` fires once up-front, then on each `live?.id` change). A synchronous `@MainActor`
         // closure — no actor hop, unlike the `@Sendable async` `.task` action above.
         .onChange(of: live?.id, initial: true) { wirePaneCallbacks() }
+        // E10 WI-5 (ES-E10-4): mirror the host-reported cwd onto the model so the AppKit renderer's ⌘-hover
+        // hit-test can resolve a RELATIVE detected path to its absolute form for the status-bar preview. The
+        // cwd arrives reactively from `PaneContainer` (OSC 7) and changes independently of the live-session id,
+        // so it gets its own `onChange`; `initial: true` seeds it once on mount. No-op when no model yet.
+        .onChange(of: cwd, initial: true) { live?.terminalModel?.linkCwd = cwd }
         // Clear the callbacks when the leaf is torn down so a dead `@State` holder can't be driven by a
         // surviving model (the model is owned by the live session, which can outlive this `.id(PaneID)` leaf).
         .onDisappear { clearPaneCallbacks() }
@@ -89,6 +141,13 @@ struct TerminalLeafView: View {
             }
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
+    }
+
+    /// Whether the bottom status bar mounts (E10 WI-4): a live terminal pane, NOT the static-mirror snapshot
+    /// path, and the `Hide Status Bar` setting (``SettingsKey/hideStatusBarEnabled``) off. The strip itself is
+    /// a pure renderer — this leaf-side gate is the single hide decision (so a hidden strip costs nothing).
+    private var showStatusBar: Bool {
+        !staticMirror && live?.terminalModel != nil && !SettingsKey.hideStatusBarEnabled
     }
 
     /// Whether the in-pane Composer chrome should mount: a live terminal pane, not the static mirror, the
@@ -119,6 +178,34 @@ struct TerminalLeafView: View {
                     TerminalRendererFactory.make(model: model, isFocused: isFocused)
                 } else {
                     BuildStatusPlaceholderView(model: model)
+                }
+                // E10 WI-5 (ES-E10-1): the ⌘-hold link underline, layered as a DECORATION overlay over the
+                // surface (never a content branch — libghostty-freeze guardrail). Coincident with the surface
+                // (both fill this top-leading ZStack), so the WI-2 cell metrics (origin 0,0 = surface top-left)
+                // map straight to the Canvas. Inert unless the renderer set `linkHighlightActive` (macOS ⌘);
+                // a placeholder surface does not conform to the viewport seam, so it draws nothing.
+                if !staticMirror {
+                    LinkHighlightOverlay(model: model, cwd: cwd)
+                }
+                // E10 WI-9 (ES-E10-6): the Vimium Hint Mode overlay — dims the surface + draws yellow 2-letter
+                // labels when armed (⌘⇧J open / ⌘⇧Y copy / reveal). Also a DECORATION overlay coincident with
+                // the surface (origin 0,0). Inert unless the renderer armed `hintMode` (or an iOS tap-on-label);
+                // a placeholder surface does not conform to the viewport seam, so it draws nothing.
+                if !staticMirror {
+                    HintModeOverlay(model: model)
+                }
+                // E10 WI-10 (G8): the Command Navigator (⌃⌘O) — a scrimmed, centered card over the surface
+                // listing the pane's recent OSC-133 command blocks (search + All/Failed/Bookmarked filter),
+                // jumping the scrollback on ↩. Toggled by the pane model's `onRequestBlockNavigator` (wired in
+                // `wireNavigatorCallbacks`); the store fires that only on the ACTIVE pane, so this card only
+                // mounts over the focused pane. Never in the static-mirror snapshot path.
+                if !staticMirror, navigatorChrome.isVisible {
+                    CommandNavigatorView(
+                        model: model,
+                        store: store,
+                        onClose: { navigatorChrome.isVisible = false },
+                    )
+                    .transition(.opacity)
                 }
                 // TODO(L3): layer `TerminalBlocksView` here as a decoration OVERLAY (never a content
                 // branch — libghostty-freeze guardrail).
@@ -170,6 +257,7 @@ struct TerminalLeafView: View {
         .animation(Otty.Anim.reveal, value: showSecureInputPill)
         .animation(Otty.Anim.reveal, value: showViModePill)
         .animation(Otty.Anim.reveal, value: showViHintBar)
+        .animation(Otty.Anim.reveal, value: navigatorChrome.isVisible)
     }
 
     /// Whether the `🛡 SECURE INPUT` pill is shown (E17 ES-E17-4 / WI-7). Visible iff secure input is active for
@@ -210,11 +298,15 @@ struct TerminalLeafView: View {
         return model.copyModeBadgeActive && model.showViKeyHints
     }
 
-    /// Wire all per-pane view callbacks (find + Composer + secure input) on appear / live-session swap.
+    /// Wire all per-pane view callbacks (find + Composer + secure input + hint mode + host path actions) on
+    /// appear / live-session swap.
     private func wirePaneCallbacks() {
         wireFindCallbacks()
         wireComposerCallbacks()
         wireSecureInputCallbacks()
+        wireHintCallbacks()
+        wireNavigatorCallbacks()
+        wirePathActionCallbacks()
     }
 
     /// Clear all per-pane view callbacks on teardown so a surviving model can't drive a dead leaf's `@State`.
@@ -222,6 +314,77 @@ struct TerminalLeafView: View {
         clearFindCallbacks()
         clearComposerCallbacks()
         clearSecureInputCallbacks()
+        clearHintCallbacks()
+        clearNavigatorCallbacks()
+        clearPathActionCallbacks()
+    }
+
+    /// Wire the pane's host OPEN / REVEAL path callbacks (E10 WI-7 / ES-E10-2 / ES-E10-6) to the pane's live
+    /// ``MetadataClient`` — the final connection that makes ⌘click "Open", ⌘⇧click "Reveal in Finder", the
+    /// right-click Open / Reveal items, Jump-To open/reveal, and Hint-to-open/reveal on a detected PATH route
+    /// to the HOST Mac's Finder/app (a path lives on the host, not the client). The client provider captures
+    /// `live` WEAKLY (so the model-stored closure never retains the live session into a cycle) and reads the
+    /// pane's CURRENT façade each fire (it is replaced on every reconnect — `activeMetadataClient` is `nil`
+    /// while disconnected). A `.notFound`/`.error`/timeout result raises a transient error toast rather than
+    /// being swallowed. No-op for a non-terminal / not-yet-live pane.
+    private func wirePathActionCallbacks() {
+        guard let model = live?.terminalModel else { return }
+        let overlay = overlayCoordinator
+        HostPathActions.wire(
+            model: model,
+            client: { [weak live] in live?.connection?.activeMetadataClient },
+            onResult: { action, path, ok in
+                guard !ok else { return }
+                overlay?.pushToast(Toast(
+                    id: "host-path-action",
+                    flavor: .error,
+                    title: action == .open ? "Couldn't open on host" : "Couldn't reveal on host",
+                    body: path,
+                ))
+            },
+        )
+    }
+
+    /// Nil the host path callbacks so the durable terminal model stops referencing this torn-down leaf.
+    private func clearPathActionCallbacks() {
+        guard let model = live?.terminalModel else { return }
+        HostPathActions.clear(model: model)
+    }
+
+    /// Wire the pane's Command Navigator toggle (E10 WI-10 / G8): ⌃⌘O routes through the store
+    /// (`requestBlockNavigatorInActivePane` → `activeTerminalModel.onRequestBlockNavigator`), so this closure
+    /// fires only when THIS pane is active. It TOGGLES the per-leaf ``CommandNavigatorChrome`` (the seam doc:
+    /// "show/hide"). `[weak chrome]`-free: the chrome is the leaf's own `@State` reference, not the model, so
+    /// there is no model→leaf retain cycle (the closure captures the chrome, and `clearNavigatorCallbacks`
+    /// nils the model's reference on teardown). No-op for a non-terminal / not-yet-live pane.
+    private func wireNavigatorCallbacks() {
+        guard let model = live?.terminalModel else { return }
+        let chrome = navigatorChrome
+        model.onRequestBlockNavigator = { chrome.isVisible.toggle() }
+    }
+
+    /// Nil the navigator callback so the durable terminal model stops referencing this torn-down leaf's
+    /// `@State` chrome (the leaf is `.id(PaneID)`-keyed and can be rebuilt while the live session survives).
+    private func clearNavigatorCallbacks() {
+        live?.terminalModel?.onRequestBlockNavigator = nil
+    }
+
+    /// Wire the pane's Hint Mode actuation (E10 WI-9 / ES-E10-6): the model resolves a label (macOS key-resolve
+    /// or iOS tap-on-label) and fires ``TerminalViewModel/onHintConfirmed`` with the chosen target + intent; the
+    /// view is the thin platform actuator (open path → host RPC, open URL → client, copy → client pasteboard,
+    /// reveal → host RPC — the SAME `LinkActionPolicy` the ⌘click / Jump-To paths use). `[weak model]` so the
+    /// model-stored closure never retains the model into a cycle (also nilled on teardown). No-op off-terminal.
+    private func wireHintCallbacks() {
+        guard let model = live?.terminalModel else { return }
+        model.onHintConfirmed = { [weak model] target, intent in
+            guard let model else { return }
+            Self.performHintAction(target, intent: intent, model: model)
+        }
+    }
+
+    /// Nil the hint callback so the durable terminal model stops referencing this torn-down leaf.
+    private func clearHintCallbacks() {
+        live?.terminalModel?.onHintConfirmed = nil
     }
 
     /// Wire the pane's ⌘F / ⌘G / ⇧⌘G callbacks to the find-bar holder (the seam the store fires via
@@ -314,6 +477,111 @@ struct TerminalLeafView: View {
     private func connectIfNeeded() async {
         guard !staticMirror else { return }
         await live?.connection?.connect()
+    }
+
+    // MARK: - Hint Mode actuation (E10 WI-9 / ES-E10-6)
+
+    /// Actuate a resolved hint `target` for `intent`. A path/URL link routes through the SAME pure
+    /// ``LinkActionPolicy`` the ⌘click / Jump-To paths use (so there is no parallel mapping to drift); a
+    /// git-hash / IP copies its text (no defined open/reveal — a useful fallback, never a dead action); a custom
+    /// `hint-pattern` runs its `{0}` action template (a known-safe `open <url>` on the client, else verbatim on
+    /// the HOST shell — the mapping note's "arbitrary shell strings run on the host"). `static` so the
+    /// model-stored closure needs no leaf `self`.
+    private static func performHintAction(_ target: HintTarget, intent: HintIntent, model: TerminalViewModel) {
+        switch target.kind {
+        case let .link(link):
+            actuate(linkAction(for: intent, link: link), model: model)
+        case .gitHash,
+             .ipAddress:
+            copyToPasteboard(target.raw)
+        case let .custom(actionTemplate):
+            switch intent {
+            case .copy: copyToPasteboard(target.raw)
+            case .open,
+                 .reveal: runCustomHintAction(template: actionTemplate, raw: target.raw, model: model)
+            }
+        }
+    }
+
+    /// Map a hint `intent` on a detected `link` to a ``LinkAction`` through the SAME pure ``LinkActionPolicy``
+    /// the ⌘click (open) / Jump-To (copy) / ⌘⇧click (reveal) paths use — open = best handler, copy = copy
+    /// path/URL, reveal = reveal-in-Finder (a no-op for a URL, which has no Finder target).
+    private static func linkAction(for intent: HintIntent, link: DetectedLink) -> LinkAction {
+        switch intent {
+        case .open: LinkActionPolicy.action(for: .commandClick, link: link, config: liveLinkConfig())
+        case .copy: LinkActionPolicy.action(for: .copyPath, link: link)
+        case .reveal: LinkActionPolicy.action(for: .revealInFinder, link: link)
+        }
+    }
+
+    /// The live link config (otty `link-cmd-click` / `link-cmd-shift-click`), resolved fire-time from Settings.
+    private static func liveLinkConfig() -> LinkActionConfig {
+        LinkActionConfig(cmdClick: SettingsKey.linkCmdClick, cmdShiftClick: SettingsKey.linkCmdShiftClick)
+    }
+
+    /// The thin platform dispatch behind a resolved ``LinkAction`` (mirrors the renderer's `performLinkAction` /
+    /// the Jump-To `actuate`): copy → client pasteboard; cd → verbatim-UTF-8 down the PTY; open/reveal → the
+    /// host RPC seams on the model; URL → client open.
+    private static func actuate(_ action: LinkAction, model: TerminalViewModel) {
+        switch action {
+        case .nothing:
+            return
+        case let .copyPathClient(text):
+            copyToPasteboard(text)
+        case let .changeDirectoryPTY(path):
+            model.sendInput(Data(("cd " + shellSingleQuoted(path) + "\n").utf8))
+        case let .openURLClient(urlString):
+            openURLString(urlString)
+        case let .openHost(path):
+            model.onRequestOpenHostPath?(path)
+        case let .revealHost(path):
+            model.onRequestRevealHostPath?(path)
+        }
+    }
+
+    /// Run a custom `hint-pattern`'s action template with `{0}` replaced by the matched text. A known-safe
+    /// `open <url>` opens the URL on the CLIENT; anything else runs on the HOST shell (the correct execution
+    /// context per the hint-mode mapping note) by injecting it verbatim down the PTY. No template ⇒ copy the text.
+    private static func runCustomHintAction(template: String?, raw: String, model: TerminalViewModel) {
+        guard let template, !template.isEmpty else {
+            copyToPasteboard(raw)
+            return
+        }
+        let resolved = template.replacingOccurrences(of: "{0}", with: raw)
+        if resolved.hasPrefix("open ") {
+            let rest = String(resolved.dropFirst("open ".count)).trimmingCharacters(in: .whitespaces)
+            if let url = URL(string: rest), url.scheme != nil {
+                openURLString(rest)
+                return
+            }
+        }
+        model.sendInput(Data((resolved + "\n").utf8))
+    }
+
+    /// POSIX single-quote a path so it survives the shell verbatim (the renderer's idiom).
+    private static func shellSingleQuoted(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Open a URL string on the CLIENT (a URL / IP is host-agnostic). A no-op for an unparseable string.
+    private static func openURLString(_ urlString: String) {
+        guard let url = URL(string: urlString) else { return }
+        #if canImport(AppKit)
+        NSWorkspace.shared.open(url)
+        #elseif canImport(UIKit)
+        UIApplication.shared.open(url)
+        #endif
+    }
+
+    /// Copy text to the platform pasteboard (the Jump-To / context-menu idiom). A no-op for empty text.
+    private static func copyToPasteboard(_ text: String) {
+        guard !text.isEmpty else { return }
+        #if canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #elseif canImport(UIKit)
+        UIPasteboard.general.string = text
+        #endif
     }
 }
 #endif

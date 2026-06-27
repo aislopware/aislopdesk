@@ -942,6 +942,12 @@ final class GhosttyLayerBackedView: NSView {
     /// the key that DID the exit). `nil` = nothing pending.
     private var copyModeConsumedReleaseKeyCode: UInt16?
 
+    /// E10 WI-9: the Hint Mode analogue of ``copyModeConsumedReleaseKeyCode`` — the keyCode whose PRESS hint
+    /// mode consumed but whose RELEASE arrives after the mode has already exited (the confirming second key
+    /// flips `hintMode` to nil synchronously inside keyDown, so the matching keyUp's `hintMode != nil` guard is
+    /// already false). Stamped in keyDown's hint branch and swallowed ONCE by keyUp. `nil` = nothing pending.
+    private var hintConsumedReleaseKeyCode: UInt16?
+
     /// WS-B / B4: the keyCode whose PRESS the workspace interceptor SWALLOWED (a prefix arm, a resolved
     /// chord, a send-prefix double-tap, or a tmux-faithful disarm) so the matching RELEASE is suppressed too.
     /// libghostty never saw the press, so without this its `keyUp` would encode an orphan CSI-u release under
@@ -1028,6 +1034,19 @@ final class GhosttyLayerBackedView: NSView {
             // would already be false and fall through to an orphan CSI-u release under a report_events TUI).
             copyModeConsumedReleaseKeyCode = UInt16(event.keyCode)
             model?.handleCopyModeKey(TerminalViewModel.makeCopyModeKey(event: event))
+            return
+        }
+
+        // E10 WI-9 HINT MODE: while a hint intent is armed (⌘⇧J open / ⌘⇧Y copy / reveal), every key drives
+        // label resolution (first letter dims, second confirms + runs the action; Esc cancels; Backspace
+        // undoes) instead of the shell. Map the NSEvent → the abstract `HintKey` (the ONLY NSEvent-aware point)
+        // and hand the PURE intent to the model; consume unconditionally so nothing leaks to libghostty / the
+        // PTY. Mirrors the copy-mode branch above, incl. stamping the RELEASE-swallow so a kitty `report_events`
+        // TUI never sees an orphan CSI-u release for a key the surface never sent a press for (the confirming
+        // second key exits hint mode SYNCHRONOUSLY here, so its keyUp's `hintMode != nil` guard is already false).
+        if model?.hintMode != nil {
+            hintConsumedReleaseKeyCode = UInt16(event.keyCode)
+            model?.handleHintKey(TerminalViewModel.makeHintKey(event: event))
             return
         }
 
@@ -1228,6 +1247,16 @@ final class GhosttyLayerBackedView: NSView {
             return
         }
 
+        // E10 WI-9 HINT MODE symmetry: keyDown CONSUMES every key while a hint intent is armed (routing it to
+        // `handleHintKey`), so libghostty never saw the PRESS — suppress the RELEASE too. Mirror the keyDown
+        // guard, plus the ONE exit key whose press hint mode consumed but whose mode flag is now already cleared
+        // (the confirming second key / Esc exited synchronously in keyDown). Swallow it once.
+        if model?.hintMode != nil { return }
+        if let pending = hintConsumedReleaseKeyCode, pending == UInt16(event.keyCode) {
+            hintConsumedReleaseKeyCode = nil
+            return
+        }
+
         // WS-B / B4 PRESS/RELEASE SYMMETRY: keyDown swallowed this key's PRESS via the workspace interceptor
         // (prefix arm / resolved chord / send-prefix / disarm), so libghostty never saw it — suppress the
         // matching RELEASE once, or a kitty `report_events` TUI emits an orphan CSI-u release. Mirrors the
@@ -1264,6 +1293,154 @@ final class GhosttyLayerBackedView: NSView {
         _ = surface?.key(key)
     }
 
+    // MARK: Link highlight (E10 WI-5 — ⌘-hold underline + full-path hover)
+
+    /// Track the ⌘ modifier so the ``LinkHighlightOverlay`` underlines every detected path/URL while ⌘ is held
+    /// (ES-E10-1) and the bottom status bar previews the ⌘-hovered link's full path (ES-E10-4). Releasing ⌘
+    /// clears both. macOS only — iOS has no ⌘ modifier, so `linkHighlightActive` is never set there and the
+    /// overlay stays inert. Setting the OBSERVABLE model state from this NSEvent handler is safe (it is NOT an
+    /// `updateNSView`/AttributeGraph pass), so it cannot trigger the infinite-render loop `surface` documents.
+    override func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        guard let model else { return }
+        let commandHeld = event.modifierFlags.contains(.command)
+        if model.linkHighlightActive != commandHeld { model.linkHighlightActive = commandHeld }
+        if commandHeld {
+            // ⌘ went down with a (possibly) stationary pointer: resolve the hover from the CURRENT location so
+            // the full-path preview appears immediately, without waiting for the next pointer move.
+            if let point = currentSurfacePoint() { updateLinkHover(at: point) }
+        } else if model.hoveredLinkFullPath != nil {
+            model.hoveredLinkFullPath = nil
+        }
+    }
+
+    /// E10 WI-5 (ES-E10-4): the ⌘-hover full-path preview. While ⌘ is held (`linkHighlightActive`), link
+    /// detection is on, and the surface is NOT a mouse-reporting TUI (alt screen — don't fight vim/tmux/htop),
+    /// hit-test the detected links in the VISIBLE viewport against the pointer cell and publish the resolved
+    /// path to ``TerminalViewModel/hoveredLinkFullPath`` (the status bar's left-field override). A move off any
+    /// link, a released ⌘, or a pointer-exit clears it. All the math + detection live in the PURE, headless-
+    /// tested ``TerminalViewModel/hoveredLinkPath(rows:cwd:schemes:metrics:pointX:pointY:)``; this is the thin
+    /// actuator that feeds it the live `viewportTextRows()` + WI-2 `cellMetrics()`. `point` is in the surface's
+    /// top-left-origin POINT space (the `surfacePoint`/`cellMetrics` convention).
+    private func updateLinkHover(at point: (x: Double, y: Double)) {
+        guard let model else { return }
+        guard model.linkHighlightActive,
+              SettingsKey.linkDetectionEnabled,
+              !model.isAlternateScreen,
+              let metrics = surface?.cellMetrics()
+        else {
+            if model.hoveredLinkFullPath != nil { model.hoveredLinkFullPath = nil }
+            return
+        }
+        let path = TerminalViewModel.hoveredLinkPath(
+            rows: surface?.viewportTextRows() ?? [],
+            cwd: model.linkCwd,
+            schemes: SettingsKey.linkSchemePolicy,
+            metrics: metrics,
+            pointX: CGFloat(point.x),
+            pointY: CGFloat(point.y),
+        )
+        if model.hoveredLinkFullPath != path { model.hoveredLinkFullPath = path }
+    }
+
+    /// The pointer's CURRENT position in the surface's top-left-origin POINT space, or `nil` when it is outside
+    /// this view / off-window. Used by ``flagsChanged`` to resolve a ⌘-hover without waiting for a pointer move.
+    /// Mirrors ``surfacePoint(_:)``'s y-flip (`frame.height - y`).
+    private func currentSurfacePoint() -> (x: Double, y: Double)? {
+        guard let window else { return nil }
+        let local = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard bounds.contains(local) else { return nil }
+        return (Double(local.x), Double(frame.height - local.y))
+    }
+
+    // MARK: Link click + context menu dispatch (E10 WI-6 — ES-E10-2)
+
+    /// A pending link click captured on `mouseDown` (the swallowed press) so the paired `mouseUp` can fire
+    /// the resolved action — but only if the release ends on the SAME link. One-shot; cleared on every up.
+    private var pendingLinkGesture: (link: DetectedLink, gesture: LinkGesture)?
+
+    /// The detected link the LAST-built context menu targeted, stashed so ``linkMenuAction(_:)`` can resolve
+    /// it (an `NSMenuItem.representedObject` carries only the item tag). A menu is modal-per-view, so one slot
+    /// suffices.
+    private var pendingMenuLink: DetectedLink?
+
+    /// The link gesture for `flags`, or `nil` when this is not a link-owning click — link detection is off,
+    /// the surface is a mouse-reporting TUI (alt screen — don't fight vim/tmux), or ⌘ is not held (a bare
+    /// click does nothing per otty, so we leave it to libghostty's selection).
+    private func linkGesture(for flags: NSEvent.ModifierFlags) -> LinkGesture? {
+        guard SettingsKey.linkDetectionEnabled, model?.isAlternateScreen == false else { return nil }
+        guard flags.contains(.command) else { return nil }
+        return flags.contains(.shift) ? .commandShiftClick : .commandClick
+    }
+
+    /// The ``DetectedLink`` under a top-left-origin surface POINT (points), or `nil` when the point is over no
+    /// detected span / detection is off / there is no live surface. Mirrors the pure
+    /// ``TerminalViewModel/hoveredLinkPath(...)`` cell math (plain `*`/`/`+ — view geometry, never `fma`)
+    /// but returns the link OBJECT the action policy needs (kind + raw + resolved), not just its path.
+    private func detectedLink(at point: (x: Double, y: Double)) -> DetectedLink? {
+        guard SettingsKey.linkDetectionEnabled,
+              model?.isAlternateScreen == false,
+              let metrics = surface?.cellMetrics(),
+              metrics.cellWidth > 0, metrics.cellHeight > 0,
+              point.x >= Double(metrics.originX), point.y >= Double(metrics.originY)
+        else { return nil }
+        let column = Int((point.x - Double(metrics.originX)) / Double(metrics.cellWidth))
+        let row = Int((point.y - Double(metrics.originY)) / Double(metrics.cellHeight))
+        guard row >= 0, column >= 0 else { return nil }
+        let links = TerminalLinkDetector.detect(
+            rows: surface?.viewportTextRows() ?? [],
+            cwd: model?.linkCwd,
+            schemes: SettingsKey.linkSchemePolicy,
+        )
+        return links.first { $0.row == row && column >= $0.colStart && column < $0.colEnd }
+    }
+
+    /// The live link config the policy reads (otty `link-cmd-click` / `link-cmd-shift-click`), resolved
+    /// fire-time from Settings so a change applies to the next click with no re-wire.
+    private func liveLinkConfig() -> LinkActionConfig {
+        LinkActionConfig(cmdClick: SettingsKey.linkCmdClick, cmdShiftClick: SettingsKey.linkCmdShiftClick)
+    }
+
+    /// Actuate a resolved ``LinkAction`` — the thin macOS dispatcher behind the pure ``LinkActionPolicy``:
+    /// copy → client pasteboard; cd → **verbatim UTF-8** `cd <quoted>` down the PTY (never `SendKeysParser`);
+    /// open/reveal → the host RPC seams (E10 WI-7; a graceful no-op until wired); URL → client `NSWorkspace`.
+    private func performLinkAction(_ action: LinkAction) {
+        switch action {
+        case .nothing:
+            return
+        case let .copyPathClient(text):
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        case let .changeDirectoryPTY(path):
+            // `cd <single-quoted path>\n` as raw bytes — the existing terminal OUT path (mapping note: cd is
+            // verbatim UTF-8). Single-quote so spaces / shell metacharacters in the path land literally.
+            let line = "cd " + Self.shellSingleQuoted(path) + "\n"
+            model?.sendInput(Data(line.utf8))
+        case let .openURLClient(urlString):
+            if let url = URL(string: urlString) { NSWorkspace.shared.open(url) }
+        case let .openHost(path):
+            model?.onRequestOpenHostPath?(path)
+        case let .revealHost(path):
+            model?.onRequestRevealHostPath?(path)
+        }
+    }
+
+    /// POSIX single-quote a path so it survives the shell verbatim: wrap in `'…'` and rewrite each embedded
+    /// `'` as `'\''` (close-quote, escaped-quote, reopen-quote). Safe for spaces, `$`, `` ` ``, `;`, etc.
+    private static func shellSingleQuoted(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Dispatches a path/URL context-menu item (tagged by ``TerminalContextMenu/LinkItem`` rawValue) for the
+    /// menu's stashed ``pendingMenuLink``, routing through the same pure ``LinkActionPolicy``. Unknown tags /
+    /// a missing link are ignored (validate-then-drop).
+    @objc private func linkMenuAction(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let item = TerminalContextMenu.LinkItem(rawValue: raw),
+              let link = pendingMenuLink else { return }
+        performLinkAction(LinkActionPolicy.action(for: item, link: link))
+    }
+
     // MARK: Mouse / scroll forwarding → libghostty
     //
     // Mirrors upstream `SurfaceView_AppKit.swift:860-1051`. libghostty owns ALL mouse semantics:
@@ -1292,6 +1469,18 @@ final class GhosttyLayerBackedView: NSView {
         model?.onRequestFocus?()
         if let window, window.firstResponder !== self { window.makeFirstResponder(self) }
 
+        // E10 WI-6 (ES-E10-2): a ⌘click / ⌘⇧click that lands ON a detected path/URL is OURS — swallow the
+        // press so libghostty starts no selection, and fire the resolved action on the paired `mouseUp`
+        // (only when the release ends on the SAME link, so a ⌘-drag-away cancels). A ⌘click that is NOT
+        // over a detected link falls straight through to libghostty (e.g. its ⌘ rectangular-select). OSC 8
+        // hyperlinks stay libghostty's own (GHOSTTY_ACTION_OPEN_URL) — this is only the regex detector path.
+        if let gesture = linkGesture(for: event.modifierFlags),
+           let link = detectedLink(at: surfacePoint(event)) {
+            pendingLinkGesture = (link, gesture)
+            return
+        }
+        pendingLinkGesture = nil
+
         let mods = Self.ghosttyMods(event.modifierFlags)
         surface?.sendMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT, mods: mods)
     }
@@ -1299,6 +1488,16 @@ final class GhosttyLayerBackedView: NSView {
     override func mouseUp(with event: NSEvent) {
         // Always reset pressure when the mouse goes up (upstream SurfaceView_AppKit.swift:875/883).
         prevPressureStage = 0
+        // E10 WI-6: complete a swallowed link ⌘click. The matching PRESS was never forwarded, so we must NOT
+        // forward this RELEASE either (press/release stay balanced under mouse-reporting). Fire only when the
+        // pointer is still over the SAME detected link (a genuine click, not a drag that wandered off).
+        if let pending = pendingLinkGesture {
+            pendingLinkGesture = nil
+            if let up = detectedLink(at: surfacePoint(event)), up == pending.link {
+                performLinkAction(LinkActionPolicy.action(for: pending.gesture, link: pending.link, config: liveLinkConfig()))
+            }
+            return
+        }
         let mods = Self.ghosttyMods(event.modifierFlags)
         surface?.sendMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT, mods: mods)
         surface?.sendMousePressure(stage: 0, pressure: 0)
@@ -1378,6 +1577,9 @@ final class GhosttyLayerBackedView: NSView {
         // pointer sat here) also claims focus. The policy's `!isFocusedPane` short-circuit keeps this a cheap
         // no-op once focused, so the per-move call can't flicker the title bar.
         requestFocusFollowsMouseIfNeeded()
+        // E10 WI-5 (ES-E10-4): refresh the ⌘-hover full-path preview (a no-op unless ⌘ is held — it gates on
+        // `linkHighlightActive` internally, so a non-⌘ move costs one bool check).
+        updateLinkHover(at: p)
     }
 
     // A drag is just a moved position to libghostty (it tracks the held button from the down/up pair);
@@ -1427,6 +1629,9 @@ final class GhosttyLayerBackedView: NSView {
         if NSEvent.pressedMouseButtons != 0 { return }
         let mods = Self.ghosttyMods(event.modifierFlags)
         surface?.sendMousePos(x: -1, y: -1, mods: mods)   // negative = cursor left the viewport
+        // E10 WI-5 (ES-E10-4): the pointer left the surface — drop any ⌘-hover full-path preview so the status
+        // bar falls back to the resting cwd (the underline overlay stays until ⌘ is actually released).
+        if model?.hoveredLinkFullPath != nil { model?.hoveredLinkFullPath = nil }
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -1720,6 +1925,24 @@ final class GhosttyLayerBackedView: NSView {
             hasComposer: model?.onPasteToComposer != nil,
         )
         let menu = NSMenu()
+
+        // E10 WI-6 (ES-E10-2): if the right-click landed ON a detected path/URL, PREPEND its action items
+        // (Open / Copy Path|URL / Reveal in Finder / Change Directory Here) above the standard terminal menu,
+        // separated by a rule. Each routes through the pure `LinkActionPolicy` for the stashed `pendingMenuLink`.
+        pendingMenuLink = detectedLink(at: surfacePoint(event))
+        if let link = pendingMenuLink {
+            for linkItem in TerminalContextMenu.linkItems(for: link.kind) {
+                let item = NSMenuItem(
+                    title: linkItem.title(for: link.kind), action: #selector(linkMenuAction(_:)), keyEquivalent: "",
+                )
+                item.target = self
+                item.representedObject = linkItem.rawValue
+                item.image = NSImage(systemSymbolName: linkItem.symbol, accessibilityDescription: nil)
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+        }
+
         for item in TerminalContextMenu.items {
             if item.separatorBefore { menu.addItem(.separator()) }
             let menuItem = NSMenuItem(title: item.title, action: #selector(contextMenuAction(_:)), keyEquivalent: "")

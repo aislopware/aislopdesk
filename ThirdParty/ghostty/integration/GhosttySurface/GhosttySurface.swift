@@ -135,7 +135,7 @@ func ghosttyOnMainActor(_ body: @escaping @MainActor () -> Void) {
 /// enqueues onto the per-surface serial ``feedGate`` queue (docs/31 follow-up #5 — see
 /// the header THREADING CONTRACT).
 @MainActor
-public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressuring, @MainActor TerminalSurfaceActions {
+public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressuring, @MainActor TerminalSurfaceActions, @MainActor TerminalViewportSnapshotting {
 
     // MARK: Stored state
 
@@ -683,6 +683,68 @@ public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressurin
         var lines = String(cString: ptr).components(separatedBy: "\n")
         if lines.last == "" { lines.removeLast() }
         return lines
+    }
+
+    // MARK: TerminalViewportSnapshotting (E10 WI-2 — overlay geometry seam)
+    //
+    // The VISIBLE-grid text + cell geometry the E10 link-underline (WI-5) and Hint Mode (WI-9)
+    // overlays consume to draw at the exact cell. Compiled + code-reviewed only (the real surface
+    // hangs headless — the hang-safety rule); the pure rect math it feeds is unit-tested via
+    // `TerminalCellMetrics` + `TerminalLinkDetector`. Headless/placeholder surfaces never conform, so
+    // the overlays read `nil`/`[]` and simply do not render (the honest ceiling, never a faked underline).
+
+    /// The VISIBLE viewport rows top→bottom (NOT the retained scrollback — that is
+    /// ``scrollbackTextLines()``).
+    ///
+    /// Mirror of ``scrollbackTextLines()`` but reads `GHOSTTY_POINT_VIEWPORT` instead of
+    /// `GHOSTTY_POINT_SCREEN`, so only the visible grid is returned (top-left → bottom-right via the
+    /// coord hints). libghostty owns the returned buffer, so we copy + `free_text` on every path (the
+    /// `defer`). Returns `[]` when the surface is gone or the read fails (validate-then-drop).
+    public func viewportTextRows() -> [String] {
+        guard let s = surface else { return [] }
+        var sel = ghostty_selection_s()
+        sel.top_left.tag = GHOSTTY_POINT_VIEWPORT
+        sel.top_left.coord = GHOSTTY_POINT_COORD_TOP_LEFT
+        sel.bottom_right.tag = GHOSTTY_POINT_VIEWPORT
+        sel.bottom_right.coord = GHOSTTY_POINT_COORD_BOTTOM_RIGHT
+        sel.rectangle = false
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_text(s, sel, &text) else { return [] }   // header 1220
+        defer { ghostty_surface_free_text(s, &text) }                       // libghostty owns the buffer
+        guard let ptr = text.text else { return [] }
+        var lines = String(cString: ptr).components(separatedBy: "\n")
+        if lines.last == "" { lines.removeLast() }
+        return lines
+    }
+
+    /// The live cell geometry in POINTS, or `nil` when there is no live surface (``close()``-d).
+    ///
+    /// The authoritative measured grid + cell extent come from `ghostty_surface_size` (header 1177 →
+    /// `ghostty_surface_size_s`: `columns`/`rows` + `cell_width_px`/`cell_height_px`) once the font has
+    /// laid out; this is a READ-only probe (unlike ``setSize(cols:rows:)`` it does NOT write back to the
+    /// `cellWidthPx`/`cellHeightPx` seeds), falling back to those seeds + the mirrored `cols`/`rows`
+    /// before the first render. libghostty measures cells in PIXELS, so we divide by the backing scale
+    /// to hand the overlay POINTS (its coordinate space). The surface fills its hosting view, so the
+    /// viewport origin is the view's top-left `(0, 0)` — the overlay is layered directly over the
+    /// surface view in `TerminalLeafView` (WI-5). Plain `/` (no `addingProduct`/`fma` — CLAUDE.md §2
+    /// habit, kept even though this is view geometry).
+    public func cellMetrics() -> TerminalCellMetrics? {
+        guard let s = surface else { return nil }
+        let sz = ghostty_surface_size(s)   // header 1177 → ghostty_surface_size_s
+        let cellWPx = sz.cell_width_px > 0 ? sz.cell_width_px : cellWidthPx
+        let cellHPx = sz.cell_height_px > 0 ? sz.cell_height_px : cellHeightPx
+        // Guard a zero/NaN backing scale (NaN > 0 is false → 1) so the px→pt divide can never blow up.
+        let scale = contentScale > 0 ? CGFloat(contentScale) : 1
+        let gridCols = sz.columns > 0 ? Int(sz.columns) : Int(cols)
+        let gridRows = sz.rows > 0 ? Int(sz.rows) : Int(rows)
+        return TerminalCellMetrics(
+            cellWidth: CGFloat(cellWPx) / scale,
+            cellHeight: CGFloat(cellHPx) / scale,
+            cols: gridCols,
+            rows: gridRows,
+            originX: 0,
+            originY: 0,
+        )
     }
 
     /// Performs a named libghostty keybinding action (e.g. `copy_to_clipboard`,

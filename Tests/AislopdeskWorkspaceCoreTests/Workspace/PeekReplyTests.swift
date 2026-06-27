@@ -9,7 +9,8 @@ import XCTest
 /// - ``PeekReplyFormatter/reply(for:)`` / ``PeekReplyFormatter/quickAnswer(_:)`` — newline-terminated
 ///   plain / bang-shell / digit replies.
 /// - ``PeekContent/recentLines(from:limit:)`` — the cheap "last N lines" stand-in off the block mirror.
-/// - The ⌘⇧J chord is registered, maps to `.peekAndReply`, and is UNIQUE (no collision).
+/// - The ⌘⌥J chord is registered, maps to `.peekAndReply`, and is UNIQUE (no collision). (E10 re-pointed it
+///   off ⌘⇧J, which Hint Mode's "Hint to Open" now owns — the carryover binding "E10 OWNS ⌘⇧J for Hint Mode".)
 /// - The store glue: `peekReplyTargetPane`, `sendPeekReply` (reaches a NON-focused pane), `peekContent`,
 ///   and the advance-to-next exclusion.
 ///
@@ -175,8 +176,13 @@ final class PeekReplyTests: XCTestCase {
     // MARK: - Chord (⌘⇧J registered, mapped, unique)
 
     func testPeekReplyChordIsRegistered() {
-        let chord = KeyChord(character: "j", [.command, .shift])
-        XCTAssertEqual(WorkspaceBindingRegistry.chordTable[chord], .peekAndReply, "⌘⇧J maps to .peekAndReply")
+        let chord = KeyChord(character: "j", [.command, .option])
+        XCTAssertEqual(WorkspaceBindingRegistry.chordTable[chord], .peekAndReply, "⌘⌥J maps to .peekAndReply")
+        // The old ⌘⇧J is now Hint to Open (E10 re-point), NOT peek-and-reply.
+        XCTAssertEqual(
+            WorkspaceBindingRegistry.chordTable[KeyChord(character: "j", [.command, .shift])], .hintToOpen,
+            "⌘⇧J moved to Hint to Open — peek-and-reply no longer owns it",
+        )
     }
 
     func testPeekReplyBindingIsInTable() throws {
@@ -189,15 +195,15 @@ final class PeekReplyTests: XCTestCase {
     }
 
     func testPeekReplyChordIsUnique() {
-        let chord = KeyChord(character: "j", [.command, .shift])
+        let chord = KeyChord(character: "j", [.command, .option])
         let hits = WorkspaceBindingRegistry.allBindings.filter { $0.chord == chord }
-        XCTAssertEqual(hits.count, 1, "⌘⇧J must be bound to exactly one action — no chord collision")
+        XCTAssertEqual(hits.count, 1, "⌘⌥J must be bound to exactly one action — no chord collision")
     }
 
-    /// The whole registry stays chord-unique after adding ⌘⇧J (the C1 guard).
+    /// The whole registry stays chord-unique after re-pointing peek-and-reply to ⌘⌥J + adding the hint chords.
     func testNoTwoBindingsShareAChord() {
         let chords = WorkspaceBindingRegistry.allBindings.compactMap(\.chord)
-        XCTAssertEqual(Set(chords).count, chords.count, "no two bindings share a chord after adding ⌘⇧J")
+        XCTAssertEqual(Set(chords).count, chords.count, "no two bindings share a chord after the E10 hint re-point")
     }
 
     // MARK: - Store glue: peekReplyTargetPane

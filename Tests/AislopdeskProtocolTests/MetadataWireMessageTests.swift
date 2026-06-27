@@ -252,9 +252,12 @@ final class MetadataWireMessageTests: XCTestCase {
         XCTAssertEqual(MetadataVerb.listDirectory.rawValue, 6)
         XCTAssertEqual(MetadataVerb.listAgentSessions.rawValue, 7)
         XCTAssertEqual(MetadataVerb.readAgentSession.rawValue, 8)
+        // E10 WI-7: the two side-effecting path verbs.
+        XCTAssertEqual(MetadataVerb.openPath.rawValue, 9)
+        XCTAssertEqual(MetadataVerb.revealPath.rawValue, 10)
         // Unknown verb bytes map to nil (caller answers unsupportedVerb) — never a trap.
         XCTAssertNil(MetadataVerb(rawValue: 0))
-        XCTAssertNil(MetadataVerb(rawValue: 9))
+        XCTAssertNil(MetadataVerb(rawValue: 11))
         XCTAssertNil(MetadataVerb(rawValue: 200))
     }
 

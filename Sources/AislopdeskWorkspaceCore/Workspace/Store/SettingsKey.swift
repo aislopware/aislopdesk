@@ -104,6 +104,35 @@ public enum SettingsKey {
     /// otty secure-input INDICATOR (E17 ES-E17-4) — show the `🛡 SECURE INPUT` pill while secure input is
     /// active (default ON; macOS-only). **WI-7 owns it.**
     public static let secureInputIndicator = "controls.secureInputIndicator"
+
+    // E10 (Path/link detection — otty Settings → Controls → Open With / Link Schemes). Fire-time
+    // `Defaults.Keys` flags (never folded into a typed prefs model → golden-safe). Declared + persisted here
+    // so the Controls UI round-trips; E10 WI-5/6/8/9 read them fire-time (the ⌘-hold underline, the
+    // click/context-menu dispatch, Jump-To, and Hint Mode). The bool key takes the bare name (`…Enabled`
+    // accessor); the enum-valued keys take a `…Key` suffix (like `rightClickActionKey`) so the typed accessor
+    // below can use the bare name; the list-valued keys take the bare name (read via the bridged accessors /
+    // `@Default`, like `composerPinnedPaneIDs`).
+    /// otty `link-detection` — detect paths / URLs in terminal output and underline them on ⌘-hover (default
+    /// ON). Turn OFF when a TUI's mouse reporting conflicts with the detection overlay.
+    public static let linkDetection = "controls.linkDetection"
+    /// otty `link-cmd-click` — what a ⌘click on a detected link does (stored ``LinkCmdClick`` rawValue,
+    /// default `open`).
+    public static let linkCmdClickKey = "controls.linkCmdClick" // LinkCmdClick.rawValue
+    /// otty `link-cmd-shift-click` — what a ⌘⇧click on a detected link does (stored ``LinkCmdShiftClick``
+    /// rawValue, default `reveal-finder`).
+    public static let linkCmdShiftClickKey = "controls.linkCmdShiftClick" // LinkCmdShiftClick.rawValue
+    /// otty "Auto-Detect Link Schemes" — which URL schemes are underlined / clickable (stored
+    /// ``AutoDetectLinkSchemes`` rawValue, default `all`). `http(s)` / `file` / `mailto` are always detected.
+    public static let autoDetectLinkSchemesKey = "controls.autoDetectLinkSchemes" // AutoDetectLinkSchemes.rawValue
+    /// otty "Custom Link Schemes" — the extra `scheme`s detected when ``autoDetectLinkSchemes`` is `custom`
+    /// (stored `[String]`, e.g. `codex`, `ssh`, `vscode`). Default empty. Read via ``linkSchemePolicy``.
+    public static let customLinkSchemes = "controls.customLinkSchemes" // [String]
+    /// otty hint-mode user patterns (E10 WI-9) — extra regexes whose matches also get a hint label (stored
+    /// `[String]`). Default empty. Declared here so the key round-trips; **WI-9 owns the behaviour.**
+    public static let hintPatterns = "controls.hintPatterns" // [String]
+    /// The parallel per-pattern action for each ``hintPatterns`` entry (stored `[String]`, e.g. `open` /
+    /// `copy`). Default empty. **WI-9 owns the behaviour.**
+    public static let hintPatternActions = "controls.hintPatternActions" // [String]
     // Features / advanced
     public static let systemDialogPanes = "features.systemDialogPanes"
     public static let autoSwitchLayouts = "features.autoSwitchLayouts"
@@ -380,6 +409,49 @@ public enum SettingsKey {
     /// Overscroll past the first scrollback row (otty "Scroll Past First Line"), default
     /// ``ScrollPastFirst/disabled``. A stale / invalid raw value repairs to `.disabled`.
     public static var scrollPastFirstLine: ScrollPastFirst { Defaults[.scrollPastFirstLine] }
+
+    // MARK: E10 link interaction (declared + persisted here; E10 WI-5/6/8/9 own the behaviour)
+
+    /// Whether path / URL link detection is on (otty `link-detection`), default ON. Read fire-time by the
+    /// ⌘-hold underline overlay + the click / context-menu / Jump-To / Hint paths.
+    public static var linkDetectionEnabled: Bool { Defaults[.linkDetection] }
+
+    /// What a ⌘click on a detected link does (otty `link-cmd-click`), default ``LinkCmdClick/open``. A stale /
+    /// invalid persisted raw value repairs to `.open` via the `RawRepresentableBridge`.
+    public static var linkCmdClick: LinkCmdClick { Defaults[.linkCmdClick] }
+
+    /// What a ⌘⇧click on a detected link does (otty `link-cmd-shift-click`), default
+    /// ``LinkCmdShiftClick/revealFinder``. A stale / invalid raw value repairs to `.revealFinder`.
+    public static var linkCmdShiftClick: LinkCmdShiftClick { Defaults[.linkCmdShiftClick] }
+
+    /// Which URL schemes are auto-detected (otty "Auto-Detect Link Schemes"), default
+    /// ``AutoDetectLinkSchemes/all``. A stale / invalid raw value repairs to `.all`.
+    public static var autoDetectLinkSchemes: AutoDetectLinkSchemes { Defaults[.autoDetectLinkSchemes] }
+
+    /// The resolved ``LinkSchemePolicy`` the detector consumes — bridges the persisted mode + custom list
+    /// into the detector's richer policy (`.all` ⇒ detect any scheme; `.custom` ⇒ the always-on schemes plus
+    /// the user list). The ONE seam the ⌘-hold underline / Jump-To / Hint Mode read so the scheme setting is
+    /// applied in exactly one place.
+    public static var linkSchemePolicy: LinkSchemePolicy {
+        switch autoDetectLinkSchemes {
+        case .all: .all
+        case .custom: .custom(Defaults[.customLinkSchemes])
+        }
+    }
+
+    /// The resolved user Hint Mode patterns (E10 WI-9) — zips the persisted parallel `hint-pattern` /
+    /// `hint-pattern-action` lists into ``HintPattern`` values the assigner consumes. A pattern with no
+    /// paired action (the actions list is shorter) carries `nil`; an empty pattern string is dropped. The ONE
+    /// seam Hint Mode reads, so the pattern config is applied in exactly one place (mirrors ``linkSchemePolicy``).
+    public static var hintPatternList: [HintPattern] {
+        let patterns = Defaults[.hintPatterns]
+        let actions = Defaults[.hintPatternActions]
+        return patterns.enumerated().compactMap { index, regex in
+            guard !regex.isEmpty else { return nil }
+            let action = index < actions.count && !actions[index].isEmpty ? actions[index] : nil
+            return HintPattern(regex: regex, action: action)
+        }
+    }
 }
 
 // MARK: - Typed Defaults keys (the single source the accessors + `@Default(.key)` views read)
@@ -462,6 +534,20 @@ public extension Defaults.Keys {
     static let rightClickAction = Key<RightClickAction>(SettingsKey.rightClickActionKey, default: .contextMenu)
     static let scrollPastLastLine = Key<ScrollPastLast>(SettingsKey.scrollPastLastLineKey, default: .disabled)
     static let scrollPastFirstLine = Key<ScrollPastFirst>(SettingsKey.scrollPastFirstLineKey, default: .disabled)
+    // E10 (Path/link detection — otty Settings → Controls → Open With / Link Schemes). Fire-time flags, never
+    // folded into a typed prefs model → golden-safe. The enum keys store the bare enum rawValue via the
+    // `RawRepresentableBridge` (repairing a stale value to the default exactly like `rightClickAction`); the
+    // list keys store a native `[String]` (like `composerPinnedPaneIDs`).
+    static let linkDetection = Key<Bool>(SettingsKey.linkDetection, default: true)
+    static let linkCmdClick = Key<LinkCmdClick>(SettingsKey.linkCmdClickKey, default: .open)
+    static let linkCmdShiftClick = Key<LinkCmdShiftClick>(SettingsKey.linkCmdShiftClickKey, default: .revealFinder)
+    static let autoDetectLinkSchemes = Key<AutoDetectLinkSchemes>(
+        SettingsKey.autoDetectLinkSchemesKey,
+        default: .all,
+    )
+    static let customLinkSchemes = Key<[String]>(SettingsKey.customLinkSchemes, default: [])
+    static let hintPatterns = Key<[String]>(SettingsKey.hintPatterns, default: [])
+    static let hintPatternActions = Key<[String]>(SettingsKey.hintPatternActions, default: [])
 }
 
 /// Store ``PaneKind`` as its bare `String` rawValue (not JSON-wrapped) so the value stays wire-compatible
@@ -503,3 +589,12 @@ extension RightClickAction: Defaults.Serializable, Defaults.PreferRawRepresentab
 extension ScrollPastLast: Defaults.Serializable, Defaults.PreferRawRepresentable {}
 extension ScrollPastFirst: Defaults.Serializable, Defaults.PreferRawRepresentable {}
 extension MouseShiftCapture: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+
+/// Store the E10 link-interaction enums as their bare `String` rawValue (the otty / aislopdesk config
+/// tokens) so each persisted link setting round-trips compactly; `PreferRawRepresentable` selects the
+/// `RawRepresentableBridge`. Each enum's own non-failable ``init(rawValue:)`` repairs a stale / hostile
+/// persisted string to its default (`.open` / `.revealFinder` / `.all`), so a future-version value can never
+/// trap the bridge — the same shape as ``RightClickAction`` / ``ScrollPastLast``.
+extension LinkCmdClick: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+extension LinkCmdShiftClick: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+extension AutoDetectLinkSchemes: Defaults.Serializable, Defaults.PreferRawRepresentable {}

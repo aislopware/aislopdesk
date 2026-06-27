@@ -189,6 +189,20 @@ public final class TerminalViewModel {
     /// view state. Nil for headless/preview callers (never invoked).
     @ObservationIgnored public var onContextMenuSplit: ((_ horizontal: Bool) -> Void)?
 
+    /// E10 WI-6 (ES-E10-2): the ⌘click / right-click "Open" action on a detected PATH — the file lives on
+    /// the HOST Mac, so the renderer resolves ``LinkActionPolicy`` to ``LinkAction/openHost(_:)`` and fires
+    /// this with the resolved absolute path; the leaf wires it to the host open RPC (E10 WI-7 — the new
+    /// `openPath` ``MetadataVerb`` over the existing metadata channel). `nil` until WI-7 lands the host
+    /// performer, so open-on-host is a graceful no-op (copy / cd / URL still work). `@ObservationIgnored`:
+    /// wiring, not view state.
+    @ObservationIgnored public var onRequestOpenHostPath: ((_ path: String) -> Void)?
+
+    /// E10 WI-6 (ES-E10-2): the ⌘⇧click / right-click "Reveal in Finder" action on a detected PATH —
+    /// host-side `activateFileViewerSelecting`, so the renderer fires this with the resolved absolute path
+    /// and the leaf wires it to the host reveal RPC (E10 WI-7 `revealPath` ``MetadataVerb``). `nil` until
+    /// WI-7 lands ⇒ a graceful no-op. `@ObservationIgnored`: wiring, not view state.
+    @ObservationIgnored public var onRequestRevealHostPath: ((_ path: String) -> Void)?
+
     /// E8 / ES-E8-4: the right-click "Paste as ▸ Paste and continue in Composer" item — instead of typing the
     /// clipboard into the shell, the renderer TRIGGERS this (parameterless) so the leaf reads the richest
     /// clipboard flavour, converts HTML/RTF→Markdown (the SAME `ComposerPasteboard` the in-field `⌘V` uses),
@@ -804,6 +818,181 @@ public final class TerminalViewModel {
     /// and cleared on teardown; while `nil` (disconnected) a copy-output request resolves immediately as
     /// "unavailable" rather than hanging. `@ObservationIgnored`: wiring, not view state.
     @ObservationIgnored public var requestBlockOutputSink: ((UInt32) -> Void)?
+
+    // MARK: E10 link interaction (WI-5 — ⌘-hold underline + full-path hover)
+
+    /// TRUE while ⌘ is held over this pane's terminal (set by the macOS renderer's `flagsChanged`). Drives the
+    /// ``LinkHighlightOverlay``, which underlines every detected path/URL in the visible viewport. OBSERVABLE
+    /// (a normal `@Observable` stored property, NOT `@ObservationIgnored`) so the overlay reveals / clears
+    /// reactively — and it is WRITTEN from the renderer's `flagsChanged` event handler (NOT from inside an
+    /// `updateNSView` / AttributeGraph pass, unlike ``isReadOnly``), so there is no infinite-render hazard.
+    /// Always FALSE on iOS — there is no ⌘ modifier, so the overlay is inert there (the iOS affordance is
+    /// tap-on-label / long-press in WI-9, not ⌘-hold).
+    public var linkHighlightActive = false
+
+    /// The resolved absolute path (or raw text, when it cannot be resolved purely — a `~`-path, a bare URL)
+    /// of the detected link the pointer is ⌘-hovering (ES-E10-4), or `nil` when not hovering one. Drives the
+    /// bottom status bar's left-field override (``StatusBarContent/make`` `hoverFullPath`, `full-path-hover.png`).
+    /// Set by the macOS renderer's `mouseMoved`/`flagsChanged` hit-test; cleared on ⌘ release / pointer-exit /
+    /// a move off any link. OBSERVABLE so the status strip updates as the pointer moves. Never set on iOS.
+    public var hoveredLinkFullPath: String?
+
+    /// The pane's last-known working directory (OSC 7 `PaneSpec.lastKnownCwd`), mirrored here by the leaf so the
+    /// AppKit renderer's ⌘-hover hit-test can resolve a RELATIVE detected path to its absolute form for the
+    /// status-bar preview. WIRING, not view state (`@ObservationIgnored`): syncing it must never invalidate a
+    /// view, and the SwiftUI ``LinkHighlightOverlay`` takes cwd as a parameter — only the renderer reads this.
+    @ObservationIgnored public var linkCwd: String?
+
+    /// Pure ⌘-hover hit-test (E10 WI-5 / ES-E10-4): map a top-left-origin POINT (in points, the surface's
+    /// coordinate space) to the detected link under it, returning that link's resolved absolute path — or its
+    /// raw text when no pure resolution exists (a `~`-path, a plain URL). `nil` when the point is over no
+    /// detected link, or the geometry is degenerate.
+    ///
+    /// `nonisolated` + `static` so it is unit-testable headlessly (``LinkHoverHitTestTests``) without a window
+    /// server — the renderer is only the thin actuator that feeds it the live `viewportTextRows()` + the WI-2
+    /// ``TerminalCellMetrics``. Plain separate `/` cell math (NEVER `addingProduct`/`fma`, CLAUDE.md §2 habit —
+    /// this is view geometry, not the codec/controller cluster, but the habit is kept). `Int(_:)` of a
+    /// guaranteed-non-negative ratio truncates toward zero, i.e. floors, giving the 0-based cell index.
+    public nonisolated static func hoveredLinkPath(
+        rows: [String],
+        cwd: String?,
+        schemes: LinkSchemePolicy,
+        metrics: TerminalCellMetrics,
+        pointX: CGFloat,
+        pointY: CGFloat,
+    ) -> String? {
+        guard metrics.cellWidth > 0, metrics.cellHeight > 0 else { return nil }
+        guard pointX >= metrics.originX, pointY >= metrics.originY else { return nil }
+        let column = Int((pointX - metrics.originX) / metrics.cellWidth)
+        let row = Int((pointY - metrics.originY) / metrics.cellHeight)
+        guard row >= 0, column >= 0 else { return nil }
+        let links = TerminalLinkDetector.detect(rows: rows, cwd: cwd, schemes: schemes)
+        for link in links where link.row == row && column >= link.colStart && column < link.colEnd {
+            return link.resolvedAbsolute ?? link.raw
+        }
+        return nil
+    }
+
+    // MARK: E10 Hint Mode (WI-9 — ES-E10-6)
+
+    /// The armed Hint Mode intent (open / copy / reveal), or `nil` when not in hint mode. OBSERVABLE so the
+    /// ``HintModeOverlay`` reveals / clears reactively, and the renderer's `keyDown` reads it to ROUTE keys to
+    /// ``handleHintKey(_:)`` instead of the PTY while it is non-nil. Always `nil` until ``beginHint(_:)`` arms it.
+    public var hintMode: HintIntent?
+
+    /// The label keys typed so far this hint session (0, 1, or 2 chars). OBSERVABLE so the overlay dims the
+    /// non-matching labels as the user types the first letter. Reset on enter / exit.
+    public var hintTyped = ""
+
+    /// The detected hintable targets for the active session (assigned 1:1 with ``hintLabels`` by index), set
+    /// once by ``beginHint(_:)`` and STABLE for the session (re-detecting per keystroke would re-shuffle the
+    /// labels). `@ObservationIgnored` (wiring/snapshot data, read by the overlay alongside the observable
+    /// `hintTyped`, which drives the re-render).
+    @ObservationIgnored public private(set) var hintTargets: [HintTarget] = []
+
+    /// The 2-letter Vimium labels assigned to ``hintTargets`` (same index). Set once by ``beginHint(_:)``.
+    @ObservationIgnored public private(set) var hintLabels: [String] = []
+
+    /// Fired when a hint label fully resolves (macOS key-resolve) or a label is tapped (iOS) — carries the
+    /// chosen target + the active intent. The VIEW layer wires it (in ``TerminalLeafView``) to the platform
+    /// actuation: open path → host RPC, open URL → client, copy → client pasteboard, reveal → host RPC. `nil`
+    /// for headless / preview callers. `@ObservationIgnored`: wiring, not view state.
+    @ObservationIgnored public var onHintConfirmed: ((HintTarget, HintIntent) -> Void)?
+
+    /// Arm Hint Mode over the VISIBLE viewport for `intent` (⌘⇧J open / ⌘⇧Y copy / reveal). Reads the live
+    /// surface's viewport rows (WI-2 ``TerminalViewportSnapshotting``), detects every hintable target
+    /// (``HintLabelAssigner/targets(rows:cwd:schemes:patterns:maxScanColumns:)``), and assigns collision-free
+    /// 2-letter labels. A NO-OP when there is no live surface (headless / placeholder), when the surface is on
+    /// the ALT screen (don't fight a TUI), or when no target is found — so the chord never enters an empty mode.
+    ///
+    /// CEILING: otty's "Hint to copy" also scans SCROLLBACK, but a label can only be SHOWN over a visible cell,
+    /// so all three intents scan the visible viewport here (a scrollback-copy refinement is deferred — DECISIONS).
+    public func beginHint(_ intent: HintIntent) {
+        guard !isAlternateScreen, let snapshot = surface as? TerminalViewportSnapshotting else { return }
+        let targets = HintLabelAssigner.targets(
+            rows: snapshot.viewportTextRows(),
+            cwd: linkCwd,
+            schemes: SettingsKey.linkSchemePolicy,
+            patterns: SettingsKey.hintPatternList,
+        )
+        guard !targets.isEmpty else { return }
+        let labels = HintLabelAssigner.labels(count: targets.count)
+        // `labels` is bounded at alphabet² — keep only as many targets as got a label (never an unlabelled one).
+        let count = min(targets.count, labels.count)
+        hintTargets = Array(targets.prefix(count))
+        hintLabels = Array(labels.prefix(count))
+        hintTyped = ""
+        hintMode = intent // observable flip LAST, so the overlay reads the ready targets/labels
+    }
+
+    /// An abstract Hint Mode key — the renderer maps an `NSEvent` to this via ``makeHintKey(event:)`` (the only
+    /// NSEvent-aware point), keeping ``handleHintKey(_:)`` pure + unit-testable without a window server.
+    public enum HintKey: Equatable, Sendable {
+        /// A label character (case-insensitive; only `a`–`z` are meaningful).
+        case character(Character)
+        /// `Esc` — cancel the mode, no action.
+        case escape
+        /// `Backspace` — undo the last typed label letter.
+        case delete
+    }
+
+    #if canImport(AppKit)
+    /// Maps a real `NSEvent` to the abstract ``HintKey`` (the ONLY NSEvent-touching point, called from the
+    /// app-target renderer's `keyDown` while ``hintMode`` is set). Excluded from the pure unit tests, which
+    /// build `HintKey` cases directly. Special keys (Esc / Backspace) by key code; any other key collapses to
+    /// its first character (Command-combos are app shortcuts intercepted upstream, never reaching here).
+    public static func makeHintKey(event: NSEvent) -> HintKey {
+        switch event.keyCode {
+        case 53: return .escape // Escape
+        case 51: return .delete // Backspace (Delete)
+        default: break
+        }
+        let char = event.charactersIgnoringModifiers?.first ?? "\u{0}"
+        return .character(char)
+    }
+    #endif
+
+    /// PURE Hint Mode dispatch: accumulate the typed label, dim via ``HintLabelAssigner/filter(typed:labels:)``,
+    /// and fire ``onHintConfirmed`` the instant a 2-letter label fully matches (no Enter). `Esc` cancels;
+    /// `Backspace` undoes a letter; a key that matches NO label is ignored (the typed prefix is kept), so a
+    /// stray keystroke neither corrupts the prefix nor leaks to the shell. A no-op when not in hint mode.
+    public func handleHintKey(_ key: HintKey) {
+        guard let intent = hintMode else { return }
+        switch key {
+        case .escape:
+            cancelHintMode()
+        case .delete:
+            if !hintTyped.isEmpty { hintTyped.removeLast() }
+        case let .character(character):
+            let candidate = hintTyped + String(character).lowercased()
+            let result = HintLabelAssigner.filter(typed: candidate, labels: hintLabels)
+            if let confirmed = result.confirmed, let index = hintLabels.firstIndex(of: confirmed) {
+                let target = hintTargets[index]
+                cancelHintMode()
+                onHintConfirmed?(target, intent)
+            } else if result.matched.isEmpty {
+                return // a non-matching key: ignore it, keep the prefix (never accumulate junk / leak)
+            } else {
+                hintTyped = candidate
+            }
+        }
+    }
+
+    /// Resolve a target by a DIRECT tap (iOS soft-keyboard fallback — the labels are tappable when typing two
+    /// keys is awkward; hint-mode spec). Fires the same ``onHintConfirmed`` path as a macOS key-resolve, then exits.
+    public func confirmHintTarget(_ target: HintTarget) {
+        guard let intent = hintMode else { return }
+        cancelHintMode()
+        onHintConfirmed?(target, intent)
+    }
+
+    /// Leave Hint Mode (Esc, an `×`/scrim tap, or after a resolve) — clears the mode + session state.
+    public func cancelHintMode() {
+        hintMode = nil
+        hintTyped = ""
+        hintTargets = []
+        hintLabels = []
+    }
 
     // MARK: Replay byte-ring (surface-rebuild survival)
 

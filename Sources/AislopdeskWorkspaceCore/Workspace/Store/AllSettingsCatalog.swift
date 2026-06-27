@@ -353,6 +353,52 @@ public enum AllSettingsCatalog {
             bucket: .advancedOnly,
             keywords: "undo prompt readline command z edit",
         ),
+
+        // E10 (Path/link detection — otty Settings → Controls → Open With / Link Schemes). Declared here so
+        // the Advanced "All Settings" list is complete; E10 WI-5/6/8/9 own the behaviour.
+        SettingEntry(
+            key: SettingsKey.linkDetection,
+            label: "Detect Links & Paths",
+            description: "Detect paths and URLs in terminal output and underline them on Cmd-hover.",
+            defaultText: "On",
+            bucket: .advancedOnly,
+            keywords: "link path url detect underline hover open clickable hyperlink osc 8",
+        ),
+        SettingEntry(
+            key: SettingsKey.linkCmdClickKey,
+            label: "Cmd-Click on Link",
+            description: "What Cmd+click on a detected link does — open in the best handler, copy, or nothing.",
+            defaultText: "Open",
+            bucket: .advancedOnly,
+            keywords: "link cmd click open copy nothing url path open with handler",
+        ),
+        SettingEntry(
+            key: SettingsKey.linkCmdShiftClickKey,
+            label: "Cmd-Shift-Click on Link",
+            description: "What Cmd+Shift+click on a detected link does — reveal on the host, or open with the "
+                + "system default.",
+            defaultText: "Reveal in Finder",
+            bucket: .advancedOnly,
+            keywords: "link cmd shift click reveal finder open system default host",
+        ),
+        SettingEntry(
+            key: SettingsKey.autoDetectLinkSchemesKey,
+            label: "Auto-Detect Link Schemes",
+            description: "Which URL schemes are underlined and clickable. All detects any scheme://; Custom "
+                + "restricts to your list. http(s), file, and mailto are always detected.",
+            defaultText: "All",
+            bucket: .advancedOnly,
+            keywords: "link scheme url detect custom all http https file mailto codex ssh vscode",
+        ),
+        SettingEntry(
+            key: SettingsKey.customLinkSchemes,
+            label: "Custom Link Schemes",
+            description: "Extra URL schemes to detect when Auto-Detect is set to Custom (e.g. codex, ssh, "
+                + "vscode).",
+            defaultText: "None",
+            bucket: .advancedOnly,
+            keywords: "custom link scheme url codex ssh vscode additional detect",
+        ),
         SettingEntry(
             key: SettingsKey.systemDialogPanes,
             label: "System Dialog Panes",

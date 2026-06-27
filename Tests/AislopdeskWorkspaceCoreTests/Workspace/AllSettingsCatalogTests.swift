@@ -79,6 +79,9 @@ final class AllSettingsCatalogTests: XCTestCase {
             SettingsKey.allowShiftClickKey, SettingsKey.clickToMove, SettingsKey.rightClickActionKey,
             SettingsKey.scrollPastLastLineKey, SettingsKey.scrollPastFirstLineKey, SettingsKey.smoothScroll,
             SettingsKey.undoAtPrompt,
+            // E10 (Path/link detection — Open With / Link Schemes)
+            SettingsKey.linkDetection, SettingsKey.linkCmdClickKey, SettingsKey.linkCmdShiftClickKey,
+            SettingsKey.autoDetectLinkSchemesKey, SettingsKey.customLinkSchemes,
             // Appearance (New Tab Position — tab-setting.png — + chrome orphans + density)
             SettingsKey.newTabPositionKey, SettingsKey.showBlockDividers, SettingsKey.hideStatusBar,
             SettingsKey.density,

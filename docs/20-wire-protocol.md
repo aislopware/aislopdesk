@@ -182,9 +182,20 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
     requests; the host echoes it **verbatim** (stateless responder, like `pong`). `verb` is the raw
     `UInt8` of `MetadataVerb`: `1` processes, `2` ports, `3` cwd, `4` gitStatus (subsumes branch +
     remote + repo toplevel + ahead/behind + changed files), `5` gitDiff, `6` listDirectory, `7` listAgentSessions,
-    `8` readAgentSession. `payload` is the verb's length-prefixed argument — empty for the pane-scoped
+    `8` readAgentSession — all **read-only** — plus the two **side-effecting** verbs `9` openPath and
+    `10` revealPath (E10). `payload` is the verb's length-prefixed argument — empty for the pane-scoped
     verbs (`processes`/`ports`/`cwd`/`gitStatus`), a UTF-8 path/id for the parameterized ones
-    (`gitDiff`/`listDirectory`/`listAgentSessions`/`readAgentSession`).
+    (`gitDiff`/`listDirectory`/`listAgentSessions`/`readAgentSession`), and a raw UTF-8 **absolute host
+    path** for `openPath`/`revealPath`.
+  - **`openPath` (9) / `revealPath` (10) are the ONLY side-effecting verbs** (E10 — the otty ⌘click /
+    ⌘⇧click link actions; the file lives on the host Mac, not the client). The host opens the path in its
+    default app / Finder (`NSWorkspace.open`) or reveals it in Finder
+    (`NSWorkspace.activateFileViewerSelecting`) and replies with an **empty payload** + a status: `ok` on
+    success, `notFound` if the path no longer exists, `error` for an empty/relative/un-openable path.
+    Because **no host bytes ever cross the wire** (only the status byte), they are not an exfiltration
+    vector and accept ANY absolute path **without cwd-subtree confinement** (unlike the read verbs below).
+    The host routes 9/10 to a thin macOS shim (`HostPathActionPerformer`) BEFORE the read-only responder,
+    which never performs a side effect; the iOS client routes open/reveal TO the host over this same wire.
   - **`metadataResponse`** body = `[UInt32 BE requestID][UInt8 status][UInt32 BE payloadLen][payload]`.
     The host **always replies** (so the client's pending-request registry never hangs — `status =
     error`/empty on any failure). `status` is the raw `UInt8` of `MetadataStatus`: `0` ok, `1`
@@ -196,10 +207,13 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
     decoder **validates the declared `payloadLen` before reading** (a short body → `truncated`, never
     an over-read of a hostile datagram); the `payload` is OPAQUE to this envelope (the per-verb
     `MetadataCodec` / typed client decoders validate the inner bytes, with strict UTF-8 on string
-    fields). The **host also treats the request `payload` as untrusted**: path args are confined to the
-    pane's cwd subtree (reject `..` escapes / absolute paths outside the repo root) and entry counts /
-    byte sizes are capped before reading, so a hostile `listDirectory("/etc")` /
-    `readAgentSession("../../secrets")` cannot exfiltrate arbitrary host files. Both ride the
+    fields). The **host also treats the request `payload` as untrusted**: for the **read verbs** (which
+    stream host file CONTENTS back) path args are confined to the pane's cwd subtree (reject `..` escapes
+    / absolute paths outside the repo root) and entry counts / byte sizes are capped before reading, so a
+    hostile `listDirectory("/etc")` / `readAgentSession("../../secrets")` cannot exfiltrate arbitrary host
+    files. The side-effecting `openPath`/`revealPath` (9/10) are exempt from cwd confinement — they return
+    only a status byte (no host bytes cross the wire, so there is nothing to exfiltrate) — but still
+    validate-then-drop (empty/relative → `error`, missing → `notFound`). All ride the
     head-of-line-independent CONTROL channel like `title`/`commandStatus` and are **not**
     sequenced/replayed.
 

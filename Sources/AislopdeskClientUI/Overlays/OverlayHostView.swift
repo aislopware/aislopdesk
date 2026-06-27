@@ -55,6 +55,13 @@ struct OverlayHostView: View {
                 Scrim { coordinator.closeRemotePicker() }
                 RemoteWindowPickerModal(coordinator: coordinator)
             }
+            // E10 / WI-8: the Jump-To panel (⌘J) — a centered, SCRIMMED quick-switcher over the focused pane
+            // (`jump-to.png`). It reads the active pane (its scrollback links + OSC-133 command index) itself,
+            // so it takes only the store + coordinator. Tapping the scrim closes it (like the other panels).
+            if coordinator.jumpToVisible {
+                Scrim { coordinator.closeJumpTo() }
+                JumpToView(store: store, coordinator: coordinator)
+            }
             // E3 WI-4: the busy-shell / policy close confirmation for a PANE or TAB (the ⌘W / ⌘⇧W /
             // close-button path parks `store.pendingClose` / `store.pendingTabCloseID`). The window-scope
             // confirmation is the macOS `NSAlert` (`WindowCloseConfirmationDelegate`); this in-app panel
