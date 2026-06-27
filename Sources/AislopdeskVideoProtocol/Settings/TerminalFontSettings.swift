@@ -8,9 +8,12 @@ import Foundation
 // (`FontSettingsView`, WI-8, up in `AislopdeskClientUI`) binds the SAME enums. Keeping them here keeps the
 // mapping pure + headlessly testable (no SwiftUI, no libghostty surface — the hang-safety rule).
 //
-// GOLDEN-SAFETY / byte-identity: only the NON-default value of each setting maps to an emitted libghostty
-// line. A default-constructed `TerminalPreferences` therefore produces NO new line, so the pre-E15 builder
-// output is byte-identical (the regression guard in `TerminalConfigBuilderTests`). otty's two controls that
+// GOLDEN-SAFETY: this config string is CLIENT-only (the libghostty surface) and NEVER on the wire, so it
+// can never move a golden vector regardless of what it emits. Most settings still map to a libghostty line
+// ONLY for their NON-default value; the ONE exception is `font-feature`, emitted UNCONDITIONALLY (ligatures
+// default `.off` ⇒ the disabling set `-calt,-liga,-dlig` must always be sent). So a default-constructed
+// `TerminalPreferences` is NOT byte-identical to the pre-E15 builder output — it gains exactly the one
+// `font-feature = -calt,-liga,-dlig` line (pinned by `TerminalConfigBuilderTests`). otty's two controls that
 // have no STOCK ghostty key (SGR underline-off, SGR blink) and the three blending modes that have no
 // verified key (`srgb-over` / `linear` / `perceptual`) are PERSISTED + surfaced but deliberately NOT emitted
 // — we only emit keys verified to exist (an unknown key risks a config-load warning). See
@@ -63,6 +66,20 @@ public enum FontStyleMode: String, Codable, Sendable, Equatable, CaseIterable {
     /// The `font-synthetic-style` token(s) this mode contributes for `kind` (`"bold"` / `"italic"`), or an
     /// empty list when the mode contributes nothing to the (single, combined) synthetic-style key. `auto`
     /// and `off` add nothing (`off` is handled by the separate `font-style-{kind} = false` line).
+    ///
+    /// `font-synthetic-style` IS a real ghostty key — `Config.zig:218` `@"font-synthetic-style": FontSyntheticStyle = .{}`,
+    /// a packed flag-set of `bold`/`italic`/`bold-italic` (`Config.zig:8516-8520`, every field defaulting
+    /// `true` ⇒ synthesis ENABLED by default). The token vocabulary is pinned by `Config.zig:201-205`: "You can
+    /// disable specific styles using `no-bold`, `no-italic`, and `no-bold-italic` … Available style keys are:
+    /// `bold`, `italic`, `bold-italic`." So both tokens this mode emits are VALID, not no-ops:
+    ///   • `primaryOnly` → `no-{kind}` — DISABLES synthesis for that style (the flag-set parser, `cli/args.zig`
+    ///     `parsePackedStruct`, seeds from the all-true struct default and only flips the named flag, so
+    ///     `no-bold` ⇒ `{bold:false, italic:true, bold-italic:true}` → no faux bold, the "primary face only"
+    ///     intent).
+    ///   • `synthetic` → `{kind}` — re-asserts the default-ON synthesis for that style (ghostty would
+    ///     synthesize anyway, but the explicit token makes the user's "Synthetic" choice self-documenting and
+    ///     survives a future default flip). Emitting it never disables a sibling style (the parser flips only
+    ///     the named flag).
     public func syntheticTokens(kind: String) -> [String] {
         switch self {
         case .auto,
@@ -132,9 +149,18 @@ public enum FontBlending: String, Codable, Sendable, Equatable, CaseIterable {
 /// The pure precedence resolver for otty's Font-Family SCOPE tabs (`Computed / Global / Light Theme /
 /// Dark Theme / Fallback`). The "Computed" tab shows the EFFECTIVE family for the active OS-appearance slot.
 ///
-/// PRECEDENCE (otty: Global "overrides theme; takes priority everywhere"): a non-empty Global override wins
-/// everywhere; else the active slot's per-theme font (`appearance.themeFonts[slug]`); else the bundled
-/// default. Trims whitespace and treats an empty/whitespace value as "unset" at every level.
+/// PRECEDENCE: an explicitly-set ACTIVE-slot per-theme font (`appearance.themeFonts[slug]`) WINS; else the
+/// Global family; else the bundled default — `scopeFont ?? globalFont ?? bundled`.
+///
+/// WHY scope-over-Global (E15 review #4): in otty the Global tab is "unset" by DEFAULT — the bundled
+/// JetBrains Mono is a fallback, NOT a Global override value — so otty's "Global overrides theme; takes
+/// priority everywhere" banner (`customization__fonts.md` font-setting-bold.png) only bites once the user
+/// EXPLICITLY sets Global. aislopdesk's Global slot (`terminal.fontFamily`) instead carries a NON-EMPTY
+/// default, which can't represent "unset". Under a "Global wins everywhere" rule that non-empty default
+/// would permanently SHADOW a per-theme font, so setting a Dark-theme font while Global sat at its default
+/// did NOTHING (the silent-no-op the review flagged). Letting an explicitly-set per-scope font win restores
+/// the intended otty behaviour (a per-theme override travels with the theme). Trims whitespace and treats an
+/// empty/whitespace value as "unset" at every level.
 public enum FontScopeResolver {
     /// Resolve the effective terminal font family for the active theme slot.
     /// - Parameters:
@@ -149,8 +175,10 @@ public enum FontScopeResolver {
         slug: String?,
         fallback: String,
     ) -> String {
-        if let g = nonEmpty(global) { return g }
+        // Scope-over-Global: an explicitly-set per-theme font for the active slot wins over the Global value
+        // (see the type doc — aislopdesk's Global default is non-empty, so it must NOT shadow a per-scope font).
         if let slug, let perTheme = nonEmpty(themeFonts?[slug]) { return perTheme }
+        if let g = nonEmpty(global) { return g }
         return fallback
     }
 

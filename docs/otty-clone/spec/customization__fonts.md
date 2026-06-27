@@ -161,7 +161,7 @@ Same light background. perceptual blending compensates for linear's tendency to 
 - **Maps.** Ghostty supports separate bold/italic font face specification. When auto-match is ON, pass only `font-family`; Ghostty selects bold/italic faces automatically. When OFF, surface `font-family-bold`, `font-family-italic`, `font-family-bold-italic` fields (map to Ghostty's equivalent config keys).
 
 ### Font size shortcuts (⌘+/⌘-/⌘0)
-- **Maps.** Implement in AislopdeskClientUI as window-level keybindings that increment/decrement the font size preference and trigger a TerminalConfigBuilder rebuild + libghostty `updateConfiguration`. The resize must NOT reflow/re-render PTY dimensions (cell count stays the same; cell pixel size changes).
+- **Maps.** Implement in AislopdeskClientUI as window-level keybindings that increment/decrement the font size preference and trigger a TerminalConfigBuilder rebuild + libghostty `updateConfiguration`. Note: a font-SIZE change DOES change the cell pixel size, so for a fixed pane viewport the cell COUNT changes → a SIGWINCH/PTY reflow (the same as a line-height change; coordinate with the existing resize debounce path). This is correct — only a font FAMILY/STYLE change is grid-preserving (cell box unchanged). The earlier "size is reflow-free" note was wrong; see `PreferencesStore.increaseFontSize()`.
 
 ### Line height
 - **Maps via Ghostty.** Ghostty has `cell-height` / line-height config. Map Default/Compact/Loose/Custom to the appropriate Ghostty values passed through TerminalConfigBuilder. Note: changing line height changes cell pixel dimensions, which triggers a SIGWINCH/resize; coordinate with the existing resize debounce path.

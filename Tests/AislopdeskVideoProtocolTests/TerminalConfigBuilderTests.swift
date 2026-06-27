@@ -372,6 +372,25 @@ final class TerminalConfigBuilderTests: XCTestCase {
         XCTAssertEqual(syntheticLines.count, 1, "bold + italic collapse into ONE font-synthetic-style key")
     }
 
+    /// `font-synthetic-style` is a REAL ghostty key (Config.zig:218, a `FontSyntheticStyle` packed flag-set of
+    /// `bold`/`italic`/`bold-italic`) and the tokens this builder emits are in its documented vocabulary
+    /// (Config.zig:201-205 — `no-bold`/`no-italic`/`no-bold-italic` disable; `bold`/`italic`/`bold-italic`
+    /// enable). This pins each mode's emitted token so the mapping is provably actuated, NOT a no-op:
+    /// `primaryOnly` ⇒ `no-{kind}` (disable synthesis), `synthetic` ⇒ `{kind}` (re-assert default-on synthesis).
+    func testFontSyntheticStyleTokensAreValidGhosttyValues() {
+        // primary-only bold → `no-bold` (disables synthetic bold; ghostty uses only the primary face).
+        let primaryOnly = parse(TerminalConfigBuilder.string(for: TerminalPreferences(fontBold: .primaryOnly)))
+        XCTAssertEqual(primaryOnly["font-synthetic-style"], "no-bold")
+        // synthetic italic → `italic` (re-asserts the default-ON synthesis for the italic face).
+        let synthetic = parse(TerminalConfigBuilder.string(for: TerminalPreferences(fontItalic: .synthetic)))
+        XCTAssertEqual(synthetic["font-synthetic-style"], "italic")
+        // Both at once collapse into ONE key with both tokens — pinned in builder order (bold then italic).
+        let both = parse(TerminalConfigBuilder.string(
+            for: TerminalPreferences(fontBold: .primaryOnly, fontItalic: .synthetic),
+        ))
+        XCTAssertEqual(both["font-synthetic-style"], "no-bold,italic")
+    }
+
     /// Line-height → `adjust-cell-height`: default → no line, compact → `0%`, loose → `20%`, custom →
     /// `(m-1)*100%` (integral-formatted), and an out-of-band / NaN custom multiplier is clamped (no trap).
     func testLineHeightModesMapToAdjustCellHeight() {

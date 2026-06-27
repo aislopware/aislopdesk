@@ -74,8 +74,10 @@ public enum ThemeTOMLParser {
         // STABLE slug from the on-disk FILE NAME (the `.ottytheme` basename), not the display name: a custom
         // theme is written as `<slug>.ottytheme`, so the file name IS its identity. Deriving the slug from the
         // mutable `[meta] name` would make a persisted `customLightSlug`/`customDarkSlug` unresolvable the
-        // moment the display name changed. The standalone parser tests (no `fallbackName`) keep deriving from
-        // the display name.
+        // moment the display name changed. This is the SINGLE SOURCE OF TRUTH for a custom theme's slug in
+        // production: `ThemeLibrary.scan()` carries this value through unchanged (it only de-collides duplicates
+        // with `-1`/`-2`) and never re-slugs from the display name. The standalone parser tests (no
+        // `fallbackName`) keep deriving from the display name.
         return ThemeDocument(
             displayName: displayName,
             slug: ThemeDocument.slug(from: fallbackName ?? displayName),

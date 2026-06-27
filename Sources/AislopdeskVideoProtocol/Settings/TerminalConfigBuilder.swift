@@ -60,10 +60,15 @@ public enum TerminalConfigBuilder {
     /// `nil` (or malformed — validate-then-drop) value emits NO `palette` line (byte-identical default).
     /// `selectionBackgroundOverride` (E15 WI-2) — the theme's selection-highlight colour. A valid 6-hex emits
     /// `selection-background` after the palette; `nil` / malformed ⇒ no line.
-    /// The FONT-PARITY keys (E15 WI-2) are read from `prefs` (``TerminalFontSettings``) and emitted ONLY for
-    /// the non-default value of each setting, so a default-constructed `prefs` stays byte-identical to the
-    /// pre-E15 output. otty's underline-off / SGR blink / and the `srgb-over`/`linear`/`perceptual` blending
-    /// modes are PERSISTED but NOT emitted (no verified libghostty key — deferred-apply; decision #5).
+    /// The FONT-PARITY keys (E15 WI-2) are read from `prefs` (``TerminalFontSettings``). All EXCEPT
+    /// `font-feature` are emitted only for the non-default value of each setting; `font-feature` is emitted
+    /// UNCONDITIONALLY (ligatures default `.off`, whose disabling set `-calt,-liga,-dlig` must always be sent
+    /// to un-ligate fonts that ship `calt`-on GSUB tables — see ``appendFontParity``). So a default-constructed
+    /// `prefs` gains exactly ONE new line versus pre-E15 — `font-feature = -calt,-liga,-dlig` — i.e. the default
+    /// config is NOT byte-identical to the pre-E15 output (the rest of the font-parity block stays gated). This
+    /// string is CLIENT-only (never on the wire), so the golden corpus is unaffected. otty's underline-off /
+    /// SGR blink / and the `srgb-over`/`linear`/`perceptual` blending modes are PERSISTED but NOT emitted (no
+    /// verified libghostty key — deferred-apply; decision #5).
     public static func string(
         for prefs: TerminalPreferences,
         keybinds: [String] = [],
@@ -96,8 +101,10 @@ public enum TerminalConfigBuilder {
         let weight = prefs.fontWeight.trimmingCharacters(in: .whitespaces)
         if !weight.isEmpty { lines.append("font-style = \(weight)") }
         // E15 WI-2: the font-parity block (fallback / per-face families / ligatures / bold-italic mode /
-        // line-height / blending). Grouped here with the other font keys; every line is gated so a
-        // default-constructed `prefs` emits nothing → byte-identical to the pre-E15 output.
+        // line-height / blending). Grouped here with the other font keys. Every line is gated on a non-default
+        // value EXCEPT `font-feature`, which is emitted unconditionally — so a default-constructed `prefs` gains
+        // exactly the one `font-feature = -calt,-liga,-dlig` line (NOT byte-identical to pre-E15; client-only,
+        // so the golden corpus is untouched).
         appendFontParity(&lines, prefs: prefs)
         let theme = prefs.theme.trimmingCharacters(in: .whitespaces)
         if !theme.isEmpty { lines.append("theme = \(theme)") }

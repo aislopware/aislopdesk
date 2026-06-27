@@ -246,16 +246,13 @@ public enum ThemeLibrary {
             }
         }
 
-        // The library is the slug authority ACROSS the folder: derive each slug from the display name (the
-        // `[meta] name`, which itself falls back to the file's base name) so two distinct files whose names
-        // slug to the same value get deduplicated. (The parser keeps the file-name slug for a single file's
-        // standalone identity; the folder-wide de-collision is this layer's job.)
-        let slugged = resolved.map { document -> ThemeDocument in
-            var copy = document
-            copy.slug = ThemeDocument.slug(from: document.displayName)
-            return copy
-        }
-        return resolveCollisions(slugged)
+        // SLUG SOURCE OF TRUTH: each document already carries the parser's STABLE file-name slug (the
+        // `.ottytheme` basename), which is a custom theme's persisted identity — do NOT re-derive it from the
+        // mutable `[meta]` display name, or a persisted `customLightSlug`/`customDarkSlug` would silently become
+        // unresolvable the moment the user renames the theme. This layer's only job is folder-wide
+        // DE-COLLISION: two distinct files whose base names slug to the same value get `-1`/`-2` (deterministic,
+        // file-name-sorted order), but each slug otherwise passes through the parser's value unchanged.
+        return resolveCollisions(resolved)
     }
 
     /// Serialise `document` to `<directory>/<slug>.ottytheme`, creating the directory if needed. Returns the

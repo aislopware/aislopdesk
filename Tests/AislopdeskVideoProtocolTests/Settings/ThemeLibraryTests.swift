@@ -164,13 +164,43 @@ final class ThemeLibraryTests: XCTestCase {
         XCTAssertEqual(scanned.map(\.slug), ["good"])
     }
 
-    func testScanDeduplicatesCollidingSlugs() throws {
-        // Two distinct files whose display names slug to the same value.
-        try writeFile("a", ThemeLibrary.serialize(Self.minimalDocument(name: "Theme A")))
-        try writeFile("b", ThemeLibrary.serialize(Self.minimalDocument(name: "Theme!A")))
+    func testScanDeduplicatesCollidingFileNameSlugs() throws {
+        // Two distinct files whose FILE NAMES (the `.ottytheme` basenames — the slug source of truth) slug to
+        // the same value get de-collided. The display names inside are irrelevant to the slug.
+        try writeFile("Theme A", ThemeLibrary.serialize(Self.minimalDocument(name: "First")))
+        try writeFile("Theme!A", ThemeLibrary.serialize(Self.minimalDocument(name: "Second")))
         let scanned = ThemeLibrary.scan(directory: tempDir)
         XCTAssertEqual(Set(scanned.map(\.slug)), ["theme-a", "theme-a-1"])
         XCTAssertEqual(scanned.count, 2)
+    }
+
+    /// INTEGRATION (the SLUG-STABILITY guarantee): a custom theme's persisted slug is the on-disk FILE NAME and
+    /// must SURVIVE a display-name rename, so a stored `customLightSlug`/`customDarkSlug` keeps resolving. Drives
+    /// the real serialise → write → scan → parse path. REVERT-TO-CONFIRM-FAIL: on the pre-fix `scan()` (which
+    /// re-slugged from the display name) the first slug is `"original-name"`, not the file name `"stable-id"`,
+    /// and the post-rename slug becomes `"a-totally-different-name"` — both assertions fail.
+    func testScanSlugSurvivesDisplayNameRename() throws {
+        // The file name deliberately differs from the display-name slug ("Original Name" → "original-name").
+        try writeFile("stable-id", ThemeLibrary.serialize(Self.minimalDocument(name: "Original Name")))
+
+        let firstScan = ThemeLibrary.scan(directory: tempDir)
+        XCTAssertEqual(firstScan.count, 1)
+        guard let slug = firstScan.first?.slug else {
+            XCTFail("expected the custom theme to scan")
+            return
+        }
+        XCTAssertEqual(slug, "stable-id", "slug is the file name, not the display-name slug")
+
+        // The user renames ONLY the display name; the on-disk file name (and thus its identity) is unchanged.
+        let renamed = Self.minimalDocument(name: "A Totally Different Name")
+        try writeFile("stable-id", ThemeLibrary.serialize(renamed))
+
+        let secondScan = ThemeLibrary.scan(directory: tempDir)
+        XCTAssertEqual(secondScan.count, 1)
+        XCTAssertEqual(secondScan.first?.displayName, "A Totally Different Name")
+        XCTAssertEqual(secondScan.first?.slug, slug, "the persisted slug must survive a display-name rename")
+        // The previously-persisted slug still resolves to a theme (the slot would not silently fall back).
+        XCTAssertTrue(secondScan.contains { $0.slug == slug })
     }
 
     func testScanResolvesInheritsAcrossFiles() throws {

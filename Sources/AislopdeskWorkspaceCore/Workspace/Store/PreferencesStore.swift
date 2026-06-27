@@ -175,10 +175,12 @@ public final class PreferencesStore {
         // E15 ES-E15-4: resolve the per-SCOPE font family. The Font → Light/Dark-Theme tabs persist a font
         // keyed by the slot's theme slug in `appearance.themeFonts`; that override never reached the live
         // terminal before (the builder read `terminal.fontFamily` raw). Resolve it via the pure
-        // ``FontScopeResolver`` precedence (a non-empty Global `terminal.fontFamily` wins everywhere — otty's
-        // "Global overrides theme"; else the ACTIVE slot's per-theme font; else fall back to the Global
-        // value), keyed by the GUI-resolved active theme slug. `nil` hook (headless) ⇒ Global stands, so a
-        // default build is byte-identical.
+        // ``FontScopeResolver`` precedence (an explicitly-set ACTIVE-slot per-theme font WINS; else the Global
+        // `terminal.fontFamily`; else the same value as the bundled fallback), keyed by the GUI-resolved active
+        // theme slug. Scope-over-Global is deliberate: aislopdesk's Global default is non-empty, so a
+        // "Global wins everywhere" rule would silently SHADOW a per-theme font (E15 review #4 — see
+        // ``FontScopeResolver``). `nil` hook (headless) ⇒ no slug ⇒ Global stands, so a default build is
+        // byte-identical.
         let resolvedFontFamily = FontScopeResolver.resolvedFamily(
             global: terminal.fontFamily,
             themeFonts: appearance.themeFonts,

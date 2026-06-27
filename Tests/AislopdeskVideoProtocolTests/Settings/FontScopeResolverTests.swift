@@ -3,22 +3,43 @@ import XCTest
 @testable import AislopdeskVideoProtocol
 
 /// E15 WI-2 — the pure ``FontScopeResolver`` that computes the "Computed" Font-Family scope value from the
-/// Global / per-theme / default layers. Pins the otty precedence (Global "takes priority everywhere" >
-/// active-slot per-theme > bundled default), headlessly. Each case checks the resolved family against the
-/// INDEPENDENTLY-known precedence rule (not the resolver's own derivation), so every case FAILS on a
-/// resolver with the wrong precedence.
+/// Global / per-theme / default layers. Pins the precedence (an explicitly-set active-slot per-theme font >
+/// Global > bundled default — `scopeFont ?? globalFont ?? bundled`; see the resolver doc for WHY scope wins
+/// over Global in aislopdesk), headlessly. Each case checks the resolved family against the INDEPENDENTLY-known
+/// precedence rule (not the resolver's own derivation), so every case FAILS on a resolver with the wrong
+/// precedence.
 final class FontScopeResolverTests: XCTestCase {
     private let fallback = "SF Mono"
 
-    /// A non-empty Global override WINS everywhere, even when the active slot has its own per-theme font.
-    func testGlobalOverrideWinsOverPerThemeAndDefault() {
+    /// E15 review #4: an explicitly-set ACTIVE-slot per-theme font WINS over a non-empty Global value (so the
+    /// non-empty Global DEFAULT can no longer silently shadow a per-scope font).
+    func testExplicitPerScopeFontWinsOverGlobal() {
         let resolved = FontScopeResolver.resolvedFamily(
-            global: "JetBrains Mono",
-            themeFonts: ["monokai-classic": "IBM Plex Mono"],
+            global: "JetBrains Mono", // the non-empty Global default
+            themeFonts: ["monokai-classic": "IBM Plex Mono"], // an explicit per-scope override
             slug: "monokai-classic",
             fallback: fallback,
         )
-        XCTAssertEqual(resolved, "JetBrains Mono", "Global takes priority everywhere")
+        XCTAssertEqual(resolved, "IBM Plex Mono", "an explicit per-scope font wins over the Global value")
+    }
+
+    /// THE E15 review #4 regression: Global sits at its non-empty bundled DEFAULT (the caller passes the same
+    /// value as both `global` and `fallback`), the user sets a Dark-scope font, and the active appearance is
+    /// dark. The resolved family MUST be the Dark-scope font, not the Global default. FAILS on the old
+    /// "Global wins everywhere" resolver (which returned the Global default ⇒ the Dark-scope font did nothing).
+    func testDarkScopeFontWinsWhileGlobalAtDefaultUnderDarkAppearance() {
+        let globalDefault = "JetBrains Mono"
+        let appearance = AppearancePreferences(
+            theme: .paper, themeDark: .dark, useSeparateDarkTheme: true,
+            themeFonts: [FontScopeResolver.darkSlotSlug(AppearancePreferences(themeDark: .dark)): "Fira Code"],
+        )
+        let resolved = FontScopeResolver.resolvedFamily(
+            global: globalDefault,
+            themeFonts: appearance.themeFonts,
+            slug: FontScopeResolver.activeSlotSlug(appearance, osIsDark: true),
+            fallback: globalDefault, // the live path passes `terminal.fontFamily` as both global AND fallback
+        )
+        XCTAssertEqual(resolved, "Fira Code", "the explicit Dark-scope font wins over the non-empty Global default")
     }
 
     /// With NO Global override, the active slot's per-theme font applies.
@@ -165,13 +186,14 @@ final class FontScopeResolverTests: XCTestCase {
             ),
             "JetBrains Mono", "OS-dark ⇒ the dark slot's per-theme font",
         )
-        // And a non-empty Global still wins everywhere (otty's "takes priority everywhere").
+        // And an explicit active-slot per-theme font wins EVEN when Global is also set (E15 review #4 — scope
+        // over Global, so the non-empty Global default can't shadow it).
         XCTAssertEqual(
             FontScopeResolver.resolvedFamily(
                 global: "Menlo", themeFonts: dual.themeFonts,
                 slug: FontScopeResolver.activeSlotSlug(dual, osIsDark: true), fallback: fallback,
             ),
-            "Menlo", "Global overrides the active slot's per-theme font",
+            "JetBrains Mono", "the active slot's per-theme font wins over a set Global",
         )
     }
 }

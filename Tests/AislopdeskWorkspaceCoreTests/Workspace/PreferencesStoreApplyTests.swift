@@ -116,18 +116,21 @@ final class PreferencesStoreApplyTests: XCTestCase {
         )
     }
 
-    /// With a non-empty Global `terminal.fontFamily`, the Global font WINS over the per-theme override
-    /// (otty's "Global overrides theme; takes priority everywhere") — the resolved override equals the Global
-    /// family, so the builder emits it.
-    func testGlobalFontWinsOverPerScopeFont() {
+    /// E15 review #4: an explicitly-set per-SCOPE font WINS over a non-empty Global `terminal.fontFamily` — so
+    /// the non-empty Global DEFAULT can never silently shadow a Light/Dark-theme font. The builder emits the
+    /// per-theme family, not the Global one. FAILS on the old "Global overrides theme" resolver.
+    func testPerScopeFontWinsOverSetGlobalFont() {
         AppearanceApplier.resolveActiveThemeSlug = { "dracula" }
         let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil)
         store.terminal.fontFamily = "JetBrains Mono"
         store.appearance.themeFonts = ["dracula": "Fira Code"]
 
         let config = TerminalConfigBroadcaster.shared.configString
-        XCTAssertTrue(config.contains("font-family = JetBrains Mono"), "a set Global font overrides the per-theme one")
-        XCTAssertFalse(config.contains("font-family = Fira Code"), "the per-theme font is suppressed by Global")
+        XCTAssertTrue(config.contains("font-family = Fira Code"), "the per-theme font wins over a set Global")
+        XCTAssertFalse(
+            config.contains("font-family = JetBrains Mono"),
+            "the Global font no longer shadows the explicit per-scope override",
+        )
     }
 
     // MARK: Appearance (D2 — client chrome; NEVER touches the overlay/sidecar)
