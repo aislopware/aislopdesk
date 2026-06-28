@@ -312,6 +312,28 @@ public enum SettingsKey {
     /// `window-height-px`), default `600`. Clamped by ``WindowSizeMath/clampPx(_:)`` at the sizing fire-site.
     public static let windowHeightPxKey = "window.heightPx"
 
+    // E20/WI-9 (First-launch flow + Shell → Aislopdesk CLI card — getting-started__first-launch.md). A new
+    // `firstLaunch.*` / `shell.cli.*` namespace, so a stale read decode-fails to the key default per
+    // [[rwork-no-backcompat]] (no migration). Fire-time `Defaults.Keys` flags, never folded into a typed prefs
+    // model → golden-safe (purely client-side; touchesWire:false). `hasCompletedFirstLaunch` gates the
+    // one-time guided sheet; the three `shell.cli.*` keys are the otty "Install CLI" / "Omit Prefix" /
+    // "Allow Overwrite" toggles, displayed on macOS (the `/usr/local/bin` install is `#if os(macOS)`).
+    /// Whether the guided first-launch sheet has already run (otty first-launch). Default OFF — a fresh install
+    /// presents the sheet exactly once; `FirstLaunchModel.finish()` flips it ON. Read at app launch via
+    /// ``FirstLaunchModel/shouldPresent(hasCompleted:automationActive:)``.
+    public static let hasCompletedFirstLaunch = "firstLaunch.completed"
+    /// Whether the `aislopdesk` CLI symlink (`/usr/local/bin/aislopdesk`) is installed (otty "Install CLI").
+    /// Default OFF. macOS-only behaviour (the symlink + admin escalation are `#if os(macOS)`); the key still
+    /// compiles + round-trips on iOS, inert there.
+    public static let cliInstalled = "shell.cli.installed"
+    /// otty "Omit `aislopdesk` Prefix" — expose `edit`/`view`/`watch`/`jump`/`learn` as bare shell functions in
+    /// app-launched shells (default OFF). The functions wrap `aislopdesk <name>`; see ``CLIShellShim``.
+    public static let omitCLIPrefix = "shell.cli.omitPrefix"
+    /// otty "Allow Overwrite" — whether the prefix-less shell functions overwrite an existing user-defined
+    /// command of the same name (default OFF — only define a function when none already exists). See
+    /// ``CLIShellShim``.
+    public static let allowPrefixOverwrite = "shell.cli.allowPrefixOverwrite"
+
     // E16 (Recipes — Command Replay + at-prompt snippet auto-expand). Fire-time `Defaults.Keys` flags, never
     // folded into a typed prefs model → golden-safe (recipes are 100% client-side; touchesWire:false). The two
     // replay-mode keys store the bare ``RecipeReplayMode`` rawValue via the `RawRepresentableBridge` (the
@@ -606,6 +628,24 @@ public enum SettingsKey {
     /// clamped by ``WindowSizeMath/clampPx(_:)``.
     public static var windowHeightPx: Int { Defaults[.windowHeightPx] }
 
+    // MARK: E20/WI-9 first-launch + Aislopdesk CLI (otty getting-started__first-launch.md)
+
+    /// Whether the guided first-launch sheet has already run (otty first-launch), default OFF. Read at app
+    /// launch; the sheet presents only when this is OFF (and no automation env is set).
+    public static var hasCompletedFirstLaunchEnabled: Bool { Defaults[.hasCompletedFirstLaunch] }
+
+    /// Whether the `aislopdesk` CLI symlink is installed (otty "Install CLI"), default OFF. macOS-only
+    /// behaviour; inert on iOS. Read fire-time by the Shell CLI card + the first-launch Install-CLI step.
+    public static var cliInstalledEnabled: Bool { Defaults[.cliInstalled] }
+
+    /// Whether the prefix-less shell functions are exposed in app-launched shells (otty "Omit Prefix"),
+    /// default OFF. Read fire-time by the shell-shim injection path (``CLIShellShim``).
+    public static var omitCLIPrefixEnabled: Bool { Defaults[.omitCLIPrefix] }
+
+    /// Whether the prefix-less functions overwrite an existing same-named command (otty "Allow Overwrite"),
+    /// default OFF. Read fire-time by ``CLIShellShim/snippet(allowOverwrite:binary:)``.
+    public static var allowPrefixOverwriteEnabled: Bool { Defaults[.allowPrefixOverwrite] }
+
     // MARK: E16 Recipes (Command Replay modes + at-prompt snippet auto-expand)
 
     /// The replay mode for INTERNALLY-saved recipes (otty Command Replay, E16), default
@@ -869,6 +909,15 @@ public extension Defaults.Keys {
     static let windowRows = Key<Int>(SettingsKey.windowRowsKey, default: 24)
     static let windowWidthPx = Key<Int>(SettingsKey.windowWidthPxKey, default: 1000)
     static let windowHeightPx = Key<Int>(SettingsKey.windowHeightPxKey, default: 600)
+    // E20/WI-9 first-launch + Aislopdesk CLI (getting-started__first-launch.md). Fire-time flags (never folded
+    // into a typed prefs model → golden-safe; purely client-side). `hasCompletedFirstLaunch` gates the one-time
+    // sheet (default OFF — present once on a fresh install); the three `shell.cli.*` toggles default OFF (the
+    // CLI is opt-in, the prefix-less functions are opt-in, and they never clobber a user command unless Allow
+    // Overwrite is on). macOS surfaces the install toggles; the keys round-trip inert on iOS.
+    static let hasCompletedFirstLaunch = Key<Bool>(SettingsKey.hasCompletedFirstLaunch, default: false)
+    static let cliInstalled = Key<Bool>(SettingsKey.cliInstalled, default: false)
+    static let omitCLIPrefix = Key<Bool>(SettingsKey.omitCLIPrefix, default: false)
+    static let allowPrefixOverwrite = Key<Bool>(SettingsKey.allowPrefixOverwrite, default: false)
     // E16 Recipes — Command Replay modes + at-prompt snippet auto-expand. Fire-time flags (never folded into a
     // typed prefs model → golden-safe; recipes are 100% client-side). The replay modes store the bare
     // `RecipeReplayMode` rawValue via the `RawRepresentableBridge` (the conformance below), repairing a stale

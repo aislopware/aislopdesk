@@ -3217,6 +3217,17 @@ public final class WorkspaceStore {
     /// pane-keyed `reconcileRegistry` cache-prune).
     public internal(set) var tabLastActiveAt: [TabID: Date] = [:]
 
+    /// E20 ES-E20-3: the per-TAB MANUAL status-badge override set by `aislopdesk tab badge --kind <kind>`
+    /// (the client-control CLI). An EXPLICIT override that wins over the per-pane DERIVED badge
+    /// (``TabBadgeResolver`` — agent / completion / busy / progress) for the tab's REPRESENTATIVE (active)
+    /// pane row in the sidebar rail and the `tab list` badge column. Keyed by ``TabID`` (otty's badge is
+    /// per-tab); because it is an explicit affordance, it bypasses the per-pane agent-badge gates. Pure VIEW
+    /// state, NOT persisted (a runtime affordance like ``tabLastActiveAt`` / ``paneAgentBadgeOverrides``).
+    /// Written by ``setTabBadgeOverride(_:for:)``; PRUNED to the live tab set on every ``reconcileTree()``
+    /// (TabID-keyed → in ``pruneTreeSidebarMirrors``, not the pane-keyed `reconcileRegistry` prune) so a
+    /// closed tab's override drops out (no unbounded growth, no stale badge on a recycled id).
+    public internal(set) var tabBadgeOverrides: [TabID: TabBadgeKind] = [:]
+
     /// Per-pane cached git toplevel (the absolute `git rev-parse --show-toplevel`) used as the precise
     /// ``TabGrouping/byProject`` key. Populated by the debounced E6 WI-7 fetch (``refreshProjectKeysIfNeeded()``)
     /// while grouping By-Project, carried on the E4 `gitStatus` RPC's `repoRoot` field. Until the first fetch

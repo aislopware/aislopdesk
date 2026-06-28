@@ -106,6 +106,74 @@ final class RailRowBuilderTests: XCTestCase {
         XCTAssertEqual(RailRowsBuilder.rows(for: store)[0].badge, .awaitingInput)
     }
 
+    // MARK: - E20 ES-E20-3: manual `tab badge --kind` override on the representative row
+
+    /// A manual tab-badge override (the store seam the `tab badge --kind` CLI writes) renders on the tab's
+    /// REPRESENTATIVE pane row, winning over the derived badge — proving the command is no longer a no-op
+    /// end-to-end through the rail. Fails on the pre-fix builder, which never consulted the override.
+    func testManualTabBadgeOverrideShowsOnRepresentativeRow() {
+        let store = makeStore()
+        let tab = RailRowsBuilder.rows(for: store)[0].tabID
+        XCTAssertNil(RailRowsBuilder.rows(for: store)[0].badge, "all-clear before any override")
+
+        store.setTabBadgeOverride(.error, for: tab)
+        XCTAssertEqual(
+            RailRowsBuilder.rows(for: store)[0].badge, .error,
+            "the manual override surfaces on the tab's representative row",
+        )
+
+        store.setTabBadgeOverride(nil, for: tab)
+        XCTAssertNil(RailRowsBuilder.rows(for: store)[0].badge, "clearing the override returns to all-clear")
+    }
+
+    /// The manual override BYPASSES the per-pane agent-badge gates (it is an explicit CLI affordance, not an
+    /// agent signal): with the pane's `whileProcessing` gate OFF — which would suppress a DERIVED `.running`
+    /// spinner — a manual `.running` override still renders. Fails if the override were routed through
+    /// `AgentBadgeGates.gated`.
+    func testManualTabBadgeOverrideBypassesAgentBadgeGates() {
+        let store = makeStore()
+        let pane = paneID(store, row: 0)
+        let tab = RailRowsBuilder.rows(for: store)[0].tabID
+        store.setAgentBadgeOverride(
+            AgentBadgeGates(badgeWhileProcessing: false, badgeWhenComplete: true, badgeWhenAwaitingInput: true),
+            for: pane,
+        )
+        store.setTabBadgeOverride(.running, for: tab)
+        XCTAssertEqual(
+            RailRowsBuilder.rows(for: store)[0].badge, .running,
+            "an explicit manual override is not subject to the agent-badge gates",
+        )
+    }
+
+    /// The override is strictly per-tab: badging tab #1 leaves tab #2's row unbadged.
+    func testManualTabBadgeOverrideIsPerTab() {
+        let store = makeStore()
+        store.newTab(kind: .terminal, launchGrace: .zero) // a 2nd tab
+        let rows = RailRowsBuilder.rows(for: store)
+        XCTAssertEqual(rows.count, 2)
+        store.setTabBadgeOverride(.error, for: rows[0].tabID)
+
+        let after = RailRowsBuilder.rows(for: store)
+        XCTAssertEqual(after.first { $0.tabID == rows[0].tabID }?.badge, .error, "tab #1 shows the override")
+        XCTAssertNil(after.first { $0.tabID == rows[1].tabID }?.badge, "tab #2 is untouched")
+    }
+
+    /// In a SPLIT tab the override renders on the REPRESENTATIVE (active) pane row ONLY, not its sibling —
+    /// one badge per tab, mirroring otty's per-tab badge and the `tab list` representative.
+    func testManualTabBadgeOverrideOnlyOnRepresentativePaneOfSplitTab() {
+        let store = makeStore()
+        store.splitActivePane(axis: .horizontal, kind: .terminal, leading: false, launchGrace: .zero)
+        let rows = RailRowsBuilder.rows(for: store)
+        XCTAssertEqual(rows.count, 2, "the split tab contributes two pane rows")
+        store.setTabBadgeOverride(.error, for: rows[0].tabID)
+
+        let after = RailRowsBuilder.rows(for: store)
+        let representative = store.tree.activeSession?.activeTab?.activePane
+        let badged = after.filter { $0.badge == .error }
+        XCTAssertEqual(badged.count, 1, "exactly one row carries the per-tab override")
+        XCTAssertEqual(badged.first?.id, representative, "and it is the tab's representative (active) pane row")
+    }
+
     // MARK: - Foreground-process label + privilege badges
 
     /// The row mirrors the host-reported foreground process and classifies a `caffeinate` session (at rest)

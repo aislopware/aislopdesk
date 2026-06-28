@@ -477,6 +477,11 @@ private struct ShellSettingsTab: View {
     @Default(.workingDirectoryNewWindow) private var workingDirNewWindow
     @Default(.workingDirectoryNewTab) private var workingDirNewTab
     @Default(.workingDirectoryNewSplit) private var workingDirNewSplit
+    // E20 WI-9: the otty "Aislopdesk CLI" card (Install CLI / Omit Prefix / Allow Overwrite). macOS-only — the
+    // `/usr/local/bin` symlink + admin escalation are `#if os(macOS)`; iOS omits the section (no dead toggle).
+    #if os(macOS)
+    @State private var cliInstaller = CLIInstaller()
+    #endif
 
     /// The two policy choices the picker surfaces. A custom-path policy (set from the config / Advanced
     /// editor) is shown as `home` here; editing the path lands in WI-3's All-Settings raw editor.
@@ -501,8 +506,21 @@ private struct ShellSettingsTab: View {
                 Picker("New split", selection: workingDirBinding($workingDirNewSplit)) { workingDirOptions }
                 timingFooter(.live)
             }
+
+            // AISLOPDESK CLI (E20 WI-9 — otty Settings → Shell → CLI card). macOS-only: the `/usr/local/bin`
+            // symlink + admin escalation are `#if os(macOS)`, so iOS omits the section rather than ship a dead
+            // toggle. Shares `CLIInstallCardBody` with the first-launch Install-CLI step (one source).
+            #if os(macOS)
+            Section("Aislopdesk CLI") {
+                CLIInstallCardBody(installer: cliInstaller)
+                timingFooter(.live)
+            }
+            #endif
         }
         .formStyle(.grouped)
+        #if os(macOS)
+            .onAppear { cliInstaller.refreshInstalled() }
+        #endif
     }
 
     /// The full otty NOTIFICATION group (notification-setting.png): the System Permission status row at the

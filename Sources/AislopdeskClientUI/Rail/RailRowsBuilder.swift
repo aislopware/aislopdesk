@@ -51,6 +51,11 @@ enum RailRowsBuilder {
         var out: [RailRow] = []
         for (tabIndex, tab) in session.tabs.enumerated() {
             let tabIsActive = tabIndex == activeTabIndex
+            // E20 ES-E20-3: a MANUAL `tab badge --kind` override (if any) is rendered on the tab's
+            // REPRESENTATIVE (active) pane row — otty's badge is per-tab, so it lands on the one row that
+            // stands in for the tab (the same representative `tab list` reports). Resolved once per tab.
+            let representativePane = tab.activePane ?? tab.allPaneIDs().first
+            let manualBadge = store.tabBadgeOverride(for: tab.id)
             // E21 ES-E21-2/-4: enumerate the FULL pane set (`tab.allPaneIDs()` = tree + floating layer), not
             // just `tab.root.allPaneIDs()`, so a floated pane (incl. a floated `.remoteGUI` remote window)
             // stays a first-class peer in the sidebar rail — matching OpenQuickly, which uses `tab.allPaneIDs()`.
@@ -90,7 +95,10 @@ enum RailRowsBuilder {
                 // override (the tab context-menu) beats the global default. `error`/`sudo`/`caffeinate` survive
                 // the gate (never an agent-badge opt-out); `running`/`completed`/`finished`/`awaitingInput` drop
                 // when their toggle is OFF.
-                let badge = AgentBadgeGates.gated(resolvedBadge, by: store.agentBadgeGates(for: paneID))
+                let gatedBadge = AgentBadgeGates.gated(resolvedBadge, by: store.agentBadgeGates(for: paneID))
+                // E20 ES-E20-3: an explicit `tab badge --kind` override wins for the representative row,
+                // bypassing the agent-badge gates (it is an explicit CLI affordance, not an agent signal).
+                let badge = (paneID == representativePane ? manualBadge : nil) ?? gatedBadge
                 out.append(RailRow(
                     id: paneID,
                     tabID: tab.id,

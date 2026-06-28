@@ -201,6 +201,14 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// bar, NOT recorded for echo-dedup (a programmatic send has no local pre-echo to suppress).
     public func sendBytes(_ bytes: [UInt8]) { inputBar?.sendRaw(bytes, record: false) }
 
+    /// `aislopdesk pane capture --lines N`: the last `count` lines of this pane's scrollback, read through
+    /// the same `TerminalSurfaceActions` seam find/copy-mode use (``TerminalViewModel/searchScrollbackLines()``
+    /// → `[]` on a headless / preview surface, hang-safety). `nil` terminal (a `.remoteGUI` pane) ⇒ `[]`.
+    public func captureScrollback(lines count: Int) -> [String] {
+        guard count > 0, let lines = terminalModel?.searchScrollbackLines() else { return [] }
+        return Array(lines.suffix(count))
+    }
+
     /// GENERIC resize-scrim signal: TRUE while this pane's content has been resized but the fresh
     /// (reflowed / re-captured) pixels have not yet rendered — so ``PaneContainer`` holds its calm resize
     /// overlay until they do, instead of clearing on a geometry settle timer. Kind-agnostic: a terminal

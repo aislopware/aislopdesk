@@ -149,6 +149,14 @@ final class RecipeTOMLCodecTests: XCTestCase {
         XCTAssertNil(RecipeTOMLCodec.parse("[recipe]\nname = \"unterminated\nscope = \"tab\""))
     }
 
+    func testEmptyAndWhitespaceInputReturnNil() {
+        // An empty / whitespace-only `.ottyrecipe` has no `[recipe]` table → there is nothing to open
+        // (validate-then-drop on the `aislopdesk open <recipe>` path), never a trap.
+        XCTAssertNil(RecipeTOMLCodec.parse(""))
+        XCTAssertNil(RecipeTOMLCodec.parse("   \n\t\n   "))
+        XCTAssertNil(RecipeTOMLCodec.parse("# just a comment\n"))
+    }
+
     func testMissingRecipeTableReturnsNil() {
         // A file with tabs but NO `[recipe]` table → there is no recipe to open.
         let toml = """

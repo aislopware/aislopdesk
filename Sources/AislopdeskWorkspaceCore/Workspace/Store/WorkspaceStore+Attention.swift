@@ -100,6 +100,25 @@ public extension WorkspaceStore {
         setAgentBadgeOverride(agentBadgeGates(for: id).toggling(gate), for: id)
     }
 
+    // MARK: E20 ES-E20-3 — manual per-tab status-badge override (the `tab badge --kind` CLI)
+
+    /// The MANUAL status-badge override for tab `id` (`nil` ⇒ the tab follows its DERIVED per-pane badge).
+    /// Set by the client-control `tab badge --kind` verb (``setTabBadgeOverride(_:for:)``); consulted by
+    /// ``RailRowsBuilder`` for the tab's representative pane row and by the control backend's `tab list`
+    /// badge column, AHEAD of the resolved badge.
+    func tabBadgeOverride(for id: TabID) -> TabBadgeKind? {
+        tabBadgeOverrides[id]
+    }
+
+    /// Sets (or clears, on `nil`) tab `id`'s MANUAL status-badge override (otty `tab badge --kind`).
+    /// Idempotent (a no-op when unchanged so it never churns the rail). Passing `nil` drops the override so
+    /// the tab follows its derived per-pane badge again. This is the seam the E20 client-control backend
+    /// writes — the override the rail/`tab list` actually render, so `tab badge --kind` is no longer a no-op.
+    func setTabBadgeOverride(_ kind: TabBadgeKind?, for id: TabID) {
+        guard tabBadgeOverrides[id] != kind else { return }
+        if let kind { tabBadgeOverrides[id] = kind } else { tabBadgeOverrides.removeValue(forKey: id) }
+    }
+
     /// otty "Clear Badge" (the tab right-click action): ACKNOWLEDGE pane `id`'s completion / attention so its
     /// badge drops. Clears any pending ✓/✗ completion badge AND, when the agent is at ``ClaudeStatus/done``
     /// (the finished-turn dot), settles it to ``ClaudeStatus/idle`` (acknowledged — contributes no badge). A

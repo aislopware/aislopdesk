@@ -69,6 +69,12 @@ public struct AislopdeskClientApp: App {
     /// menu item and the menu can't swallow a sequence's follow-up before the terminal first responder).
     /// Installed once at launch in a scene `.task`.
     @State private var keyDispatcher: WorkspaceKeyDispatcher
+    /// E20 WI-3: the CLIENT-side control socket server (`AF_UNIX` NDJSON), the runtime surface the new
+    /// `aislopdesk` CLI drives the running GUI through (windows/tabs/panes, jump/config/theme/keybind, pane
+    /// capture/send-keys, agent status). Built once here over a ``WorkspaceControlBackend`` adapter and bound
+    /// in a launch `.task`; compiled-only + never unit-tested (hang-safety, mirroring the host's
+    /// `AgentControlListener`). macOS-only — the CLI install + OS integration are `#if os(macOS)`.
+    @State private var clientControlServer: ClientControlServer
     #endif
     /// E19 WI-4: the chrome flags (sidebar / inspector collapse + window PIN) the toolbar / menu / palette
     /// drive. OWNED HERE (not view-local `@State` inside ``WorkspaceRootView``) so the macOS scene's blessed
@@ -89,6 +95,13 @@ public struct AislopdeskClientApp: App {
     /// is otherwise reached via Settings → Recipes). It has no store flag, so the app owns it; the recipe
     /// save / open / trust sheets ride the store's `recipes.pending*` flags instead (see ``recipeSheets``).
     @State private var snippetEditorPresented = false
+    /// E20 WI-9 (ES-E20-4): the PURE first-launch gating model (which steps for this platform, present-once).
+    /// Built once; the guided sheet presents when ``FirstLaunchModel/shouldPresent(hasCompleted:automationActive:)``
+    /// (a fresh install, no automation) — resolved in a launch `.task` into ``presentFirstLaunch``. Both
+    /// platforms (iOS keeps the cross-platform steps; the macOS-only steps drop out of `model.steps`).
+    @State private var firstLaunchModel = FirstLaunchModel()
+    /// Whether the first-launch sheet is up — set true once at launch when ``FirstLaunchModel/shouldPresent``.
+    @State private var presentFirstLaunch = false
 
     public init() {
         // Promote `AISLOPDESK_<KEY>=<VALUE>` launch arguments into the process environment BEFORE any
@@ -472,6 +485,15 @@ public struct AislopdeskClientApp: App {
             // switched a background tab behind the open dialog (the chord leaked past the focused field).
             isOverlayCapturingKeys: { [overlay] in overlay.capturesKeyboardWhileVisible },
         ))
+        // E20 WI-3: the client control socket server over a ``WorkspaceControlBackend`` adapter on the SAME
+        // live stores the GUI uses (the backend holds them WEAKLY — the app retains the originals). Built
+        // here so it outlives the scene; BOUND in a launch `.task` (the bind/listen is deferred off init).
+        // The socket path is `AISLOPDESK_CLIENT_SOCKET` env > the Application Support default.
+        _clientControlServer = State(initialValue: ClientControlServer(
+            backend: WorkspaceControlBackend(
+                store: store, preferences: preferences, folders: folderFrecency,
+            ),
+        ))
         #endif
     }
 
@@ -524,6 +546,23 @@ public struct AislopdeskClientApp: App {
                 // Save-Snippet editor off the app-owned `snippetEditorPresented`. Cross-platform — the same
                 // sheets ride the iOS shell.
                 .recipeSheets(store: store, snippetEditor: $snippetEditorPresented)
+                // E20 WI-9 (ES-E20-4): the guided first-launch sheet — composes On-Launch / Default-Terminal /
+                // Install-CLI / Theme / Install-Claude-hooks. Presents once on a fresh install (the
+                // `hasCompletedFirstLaunch` Defaults flag) and never under automation (it would steal the
+                // autoconnect focus). Dismissing by ANY path persists the flag (FirstLaunchView's
+                // `.onDisappear → model.finish()`), so it never re-presents. The sheet inherits the injected
+                // `agentHooksController` (re-injected here defensively) for the Claude-hooks step.
+                .sheet(isPresented: $presentFirstLaunch) {
+                    FirstLaunchView(model: firstLaunchModel, store: preferences)
+                        .agentHooksController(agentHooks)
+                        .tint(Otty.State.accent)
+                }
+                .task {
+                    presentFirstLaunch = FirstLaunchModel.shouldPresent(
+                        hasCompleted: SettingsKey.hasCompletedFirstLaunchEnabled,
+                        automationActive: Self.hasAutomationEnvironment(),
+                    )
+                }
                 // L6: the otty chrome is a PINNED palette (default Monokai Pro Classic — flat dark filter).
                 // Pin the window's colour scheme to the active theme so every system semantic colour we don't
                 // tokenize resolves with the right contrast, and route the global tint to the otty accent so
@@ -554,6 +593,22 @@ public struct AislopdeskClientApp: App {
                 // drives); the monitor swallows ONLY the prefix + armed follow-ups + bound chords and passes
                 // every bare key through, so it never interferes with autoconnect typing.
                 .task { keyDispatcher.install() }
+                // E20 WI-3: bind the client control socket so the `aislopdesk` CLI can drive this running
+                // GUI. The bind/listen is a couple of syscalls + a detached accept thread (the per-connection
+                // read loops stay OFF the cooperative pool — hang-safety, mirroring the host ctl socket). A
+                // bind failure (stale path the OS won't reclaim, etc.) is swallowed: the CLI control plane is
+                // a convenience, never load-bearing, and must never crash the app. Runs under automation too
+                // (Phase-3 HW E2E drives the CLI against a live app).
+                .task {
+                    do {
+                        try clientControlServer.start()
+                    } catch {
+                        // Best-effort: log + continue; the GUI is fully usable without the CLI socket.
+                        FileHandle.standardError.write(Data(
+                            "client-control: socket bind failed: \(error)\n".utf8,
+                        ))
+                    }
+                }
                 // E14/K5/K8: drive the macOS Dock tile from the store's resolved aggregate. `dockTileModel`
                 // reads `paneProgress` + `panePendingCompletion` (@Observable), so a progress/completion edge
                 // re-renders here and re-applies the tile; a last-session-end edge resolves to `.inert` → the

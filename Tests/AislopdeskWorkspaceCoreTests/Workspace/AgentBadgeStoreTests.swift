@@ -112,4 +112,42 @@ final class AgentBadgeStoreTests: XCTestCase {
         store.clearAgentBadge(id)
         XCTAssertEqual(store.agentStatus(for: id), .working, "a working agent is untouched by Clear Badge")
     }
+
+    // MARK: E20 ES-E20-3 — manual per-tab badge override (the `tab badge --kind` CLI seam)
+
+    private func firstTab(_ store: WorkspaceStore) throws -> TabID {
+        try XCTUnwrap(store.tree.activeSession?.activeTab?.id)
+    }
+
+    /// Set / replace / clear: a manual override lands under its ``TabID``, reads back, a follow-up call
+    /// replaces it, and `nil` drops it (the tab falls back to its derived badge). Without
+    /// `setTabBadgeOverride` actually writing the dict, every read here would be nil.
+    func testTabBadgeOverrideSetReplaceClear() throws {
+        let store = makeStore()
+        let tab = try firstTab(store)
+
+        XCTAssertNil(store.tabBadgeOverride(for: tab), "no manual override by default")
+        store.setTabBadgeOverride(.error, for: tab)
+        XCTAssertEqual(store.tabBadgeOverride(for: tab), .error, "the override is stored under the tab id")
+        store.setTabBadgeOverride(.running, for: tab)
+        XCTAssertEqual(store.tabBadgeOverride(for: tab), .running, "a follow-up `tab badge` replaces it")
+        store.setTabBadgeOverride(nil, for: tab)
+        XCTAssertNil(store.tabBadgeOverride(for: tab), "nil clears the override")
+    }
+
+    /// A closed tab's manual override is pruned on the ``reconcileTree`` sidebar-mirror sweep (it is
+    /// TabID-keyed, like the recency mirror) — no stale badge on a recycled id, no unbounded growth.
+    func testTabBadgeOverridePrunedWhenTabCloses() throws {
+        let store = makeStore()
+        store.newTab(kind: .terminal, launchGrace: .zero)
+        let newTab = try firstTab(store)
+        store.setTabBadgeOverride(.completed, for: newTab)
+        XCTAssertEqual(store.tabBadgeOverride(for: newTab), .completed)
+
+        store.closeTab(newTab)
+        XCTAssertNil(
+            store.tabBadgeOverride(for: newTab),
+            "a closed tab's manual badge override drops out on the reconcileTree prune",
+        )
+    }
 }

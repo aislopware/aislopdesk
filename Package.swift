@@ -218,6 +218,11 @@ let package = Package(
                 // a direct dependency of WorkspaceCore, but a `swift build` import needs the module
                 // declared here; this does NOT widen the headless graph (no HW deps in Transport).
                 "AislopdeskTransport",
+                // E20/WI-5: `WorkspaceControlBackend.jump` resolves the frecency/$HOME-toggle/`--no-cd`
+                // target through the PURE `JumpResolver` (the single source of truth the CLI tests pin).
+                // CLICore is a headless internal target (deps CtlCore/Protocol/WorkspaceCore, all already
+                // below ClientUI) — no HW deps, no cycle.
+                "AislopdeskCLICore",
                 // L8: external UI libraries (otty chrome). Cross-platform: SwiftUIIntrospect (reach AppKit
                 // under SwiftUI), SFSafeSymbols (type-safe SF Symbols), Pow (micro-interactions).
                 .product(name: "SwiftUIIntrospect", package: "swiftui-introspect"),
@@ -297,6 +302,37 @@ let package = Package(
         // the testable logic lives in AislopdeskCtlCore.
         .executableTarget(name: "aislopdesk-ctl", dependencies: ["AislopdeskCtlCore"]),
 
+        // PURE, testable core of the user-facing `aislopdesk` CLI (otty-clone E20): the global-flag
+        // parser (`CLIArgs`), the `version` summary builder (`CLIVersion`), the per-shell completion
+        // generator (`CLICompletions`), and (later WIs) list formatting / watch-progress / jump
+        // resolution. No socket I/O, no exit — Foundation-only so it builds macOS + iOS and is
+        // exhaustively unit-testable without an AF_UNIX socket or a GUI (hang-safety rule). The thin
+        // `aislopdesk` executable imports this and adds the socket I/O + GUI launch + dispatch.
+        // Reuses the `AislopdeskCtlCore` NDJSON line protocol; reads `AislopdeskProtocol` for the
+        // wire-version summary and `AislopdeskWorkspaceCore` for the frecency/progress reuse seams.
+        .target(
+            name: "AislopdeskCLICore",
+            // AislopdeskAgentDetect supplies `ClaudeStatus`, which `WatchClaudeOutcome` (WI-8) maps to
+            // the `watch:claude` exit codes. It is a transitive dep via AislopdeskWorkspaceCore, but
+            // declared here so the `import` is explicit.
+            dependencies: [
+                "AislopdeskCtlCore",
+                "AislopdeskProtocol",
+                "AislopdeskWorkspaceCore",
+                "AislopdeskAgentDetect",
+            ],
+        ),
+
+        // The user-facing `aislopdesk` CLI: arg → `CLIArgs`, dispatch, GUI-launch passthrough for the
+        // bare / `-e <cmd>` invocation, the local `version` / `completions` / `config path|edit|validate`
+        // ops, and the AF_UNIX NDJSON client socket I/O for the app-driving subcommands. Pure logic
+        // (parsing, formatting, the `ClientControlProtocol` method/param vocabulary) lives in
+        // AislopdeskCLICore / AislopdeskWorkspaceCore; this thin shell adds the socket + GUI launch + exit.
+        .executableTarget(
+            name: "aislopdesk",
+            dependencies: ["AislopdeskCLICore", "AislopdeskCtlCore", "AislopdeskWorkspaceCore"],
+        ),
+
         // Interactive remote terminal client. Sources under Sources/aislopdesk-client.
         .executableTarget(
             name: "aislopdesk-client",
@@ -375,6 +411,26 @@ let package = Package(
         // AislopdeskCtlCore logic (parseGlobal, encodeRequestLine, verb param builders) is
         // exercised directly (hang-safety: no AF_UNIX in tests).
         .testTarget(name: "AislopdeskCtlTests", dependencies: ["AislopdeskCtlCore"]),
+
+        // The user-facing `aislopdesk` CLI core: global-flag parsing (`CLIArgs`), the `version`
+        // summary builder, and the per-shell completion generator. PURE — no socket, no GUI, no
+        // subprocess (the `aislopdesk` executable's socket I/O + GUI launch are compiled-only and
+        // never exercised here, per the hang-safety rule).
+        // WorkspaceCore: `JumpResolverTests` constructs `FolderEntry` values to drive the PURE
+        // `JumpResolver` (WI-5). Protocol: `WatchProgressTests` (WI-7) asserts the emitted OSC 9;4
+        // bytes round-trip through `ProgressOSCParser`/`ProgressState`. Both are transitive deps of
+        // CLICore, but declared here so the imports are explicit.
+        .testTarget(
+            name: "AislopdeskCLITests",
+            // AislopdeskAgentDetect: `WatchClaudeOutcomeTests` (WI-8) drives the `ClaudeStatus` →
+            // exit-code mapping directly. Transitive via CLICore, but declared so the import is explicit.
+            dependencies: [
+                "AislopdeskCLICore",
+                "AislopdeskWorkspaceCore",
+                "AislopdeskProtocol",
+                "AislopdeskAgentDetect",
+            ],
+        ),
 
         .testTarget(name: "AislopdeskProtocolTests", dependencies: ["AislopdeskProtocol"]),
         // W7: the pure detection core — state-machine transitions (incl. injected-clock

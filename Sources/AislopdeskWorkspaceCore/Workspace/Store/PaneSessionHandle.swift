@@ -78,6 +78,15 @@ public protocol PaneSessionHandle: AnyObject, Identifiable {
     /// `InputBarModel`, test fakes record it.
     func sendBytes(_ bytes: [UInt8])
 
+    // MARK: Scrollback capture (`aislopdesk pane capture`)
+
+    /// The last `count` lines of this pane's scrollback (newest screen + retained scrollback), as a flat
+    /// line-oriented text mirror — the source for `aislopdesk pane capture --lines N`. `count <= 0` ⇒ empty.
+    /// Default returns `[]` (no terminal / nothing captured); ``LivePaneSession`` reads libghostty truth
+    /// ONLY through the `TerminalSurfaceActions` seam (a headless / preview surface does not conform → `[]`,
+    /// hang-safety), so it is never a hang-prone real surface in a test.
+    func captureScrollback(lines count: Int) -> [String]
+
     // MARK: Terminal bell (attention signal)
 
     /// Whether the remote rang the terminal bell (BEL / `\a`) since it was last cleared — drives the
@@ -105,6 +114,9 @@ public extension PaneSessionHandle {
 
     /// Default: no text funnel. ``LivePaneSession`` overrides for terminal/Claude panes.
     func sendBytes(_: [UInt8]) {}
+
+    /// Default: no terminal ⇒ nothing to capture. ``LivePaneSession`` overrides for terminal panes.
+    func captureScrollback(lines _: Int) -> [String] { [] }
 
     /// Default: no terminal, never rings. ``LivePaneSession`` overrides via its terminal model.
     var bellPending: Bool { false }

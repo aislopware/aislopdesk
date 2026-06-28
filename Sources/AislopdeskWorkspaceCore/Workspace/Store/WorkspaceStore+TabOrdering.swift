@@ -116,13 +116,21 @@ public extension WorkspaceStore {
     }
 
     /// Prunes the TREE-keyed sidebar mirrors to the live tree on every ``reconcileTree()``: the tab-recency
-    /// map (keyed by ``TabID``) and the per-pane git-toplevel cache (a tree-only By-Project key, E6 WI-7).
-    /// A closed tab / pane must not keep a stale stamp (so `.updated` can't reference a ghost and neither
-    /// dict grows unbounded across a long session of open/close). Both are empty in the common case ⇒ cheap.
+    /// map + the E20 manual tab-badge override (both keyed by ``TabID``) and the per-pane git-toplevel cache
+    /// (a tree-only By-Project key, E6 WI-7). A closed tab / pane must not keep a stale stamp (so `.updated`
+    /// can't reference a ghost, a closed tab can't keep a manual badge, and no dict grows unbounded across a
+    /// long session of open/close). All are empty in the common case ⇒ cheap.
     func pruneTreeSidebarMirrors() {
-        if !tabLastActiveAt.isEmpty {
+        // Both the recency mirror and the E20 manual tab-badge override are TabID-keyed → share one live-tab
+        // set, computed once only when either needs pruning (both empty in the common case ⇒ cheap).
+        if !tabLastActiveAt.isEmpty || !tabBadgeOverrides.isEmpty {
             let liveTabs = Set(tree.sessions.flatMap { session in session.tabs.map(\.id) })
-            tabLastActiveAt = tabLastActiveAt.filter { liveTabs.contains($0.key) }
+            if !tabLastActiveAt.isEmpty {
+                tabLastActiveAt = tabLastActiveAt.filter { liveTabs.contains($0.key) }
+            }
+            if !tabBadgeOverrides.isEmpty {
+                tabBadgeOverrides = tabBadgeOverrides.filter { liveTabs.contains($0.key) }
+            }
         }
         if !paneGitToplevel.isEmpty {
             let liveLeaves = Set(tree.allPaneIDs())

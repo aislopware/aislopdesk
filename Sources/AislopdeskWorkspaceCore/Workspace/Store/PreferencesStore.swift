@@ -317,6 +317,17 @@ public final class PreferencesStore {
         }
     }
 
+    /// Re-fire the live CLIENT apply paths (theme retint + terminal reflow + keybinding overrides) WITHOUT
+    /// mutating any model — the concrete effect behind `aislopdesk config reload` (E20). It deliberately
+    /// SKIPS ``applyVideoAndAgent()``: those host flags are "applies on reconnect", and the path rewrites
+    /// the process-wide ``EnvConfig/overlay`` (a `nonisolated(unsafe)` static the realtime pipeline reads),
+    /// so a reload must not race-rewrite it. ``applyAppearance()`` already rebuilds the terminal config, so
+    /// the chrome + the terminal cells both re-apply.
+    public func reapplyLiveSettings() {
+        applyAppearance()
+        applyKeybindings()
+    }
+
     // MARK: Convenience for the UI
 
     /// Reset EVERY pref to its model default (the "Reset All Settings" affordance). The `didSet`s persist
