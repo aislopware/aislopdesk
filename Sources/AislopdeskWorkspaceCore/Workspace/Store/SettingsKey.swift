@@ -51,6 +51,16 @@ public enum SettingsKey {
     public static let agentNotifyTaskComplete = "notifications.agentTaskComplete"
     /// otty "Code Agent — Notify When Awaiting Input" — agent needs approval / input (default ON; Claude-only).
     public static let agentNotifyAwaitInput = "notifications.agentAwaitInput"
+    // E13/WI-3 (agents__agents-overview.md "Agent Behaviour"). The three otty BADGE toggles, fire-time
+    // `Defaults.Keys` flags (never folded into a typed prefs model → golden-safe, like `agentNotify*`). They
+    // gate which fused tab badge the sidebar SHOWS via the pure ``AgentBadgeGates`` (the resolver stays pure +
+    // unchanged); a per-pane override in ``WorkspaceStore`` beats this global default. Claude-only.
+    /// otty "Badge while processing" — show the running spinner badge (default ON; Claude-only).
+    public static let agentBadgeWhileProcessing = "agents.badgeWhileProcessing"
+    /// otty "Badge when complete" — show the completed-checkmark / finished-dot badge (default ON; Claude-only).
+    public static let agentBadgeWhenComplete = "agents.badgeWhenComplete"
+    /// otty "Badge when awaiting input" — show the awaiting-input hand badge (default ON; Claude-only).
+    public static let agentBadgeWhenAwaitingInput = "agents.badgeWhenAwaitingInput"
     // Controls / scroll / copy (otty Controls section). These are FIRE-TIME `Defaults.Keys` flags — they
     // are deliberately NOT folded into any typed prefs model, so they never reach the `EnvConfig` overlay
     // or the `video-prefs.json` sidecar (golden-safe by construction, like `oscNotifications`). E8 owns the
@@ -343,6 +353,28 @@ public enum SettingsKey {
 
     /// otty "Code Agent — Notify When Awaiting Input" (default ON; Claude-only). Read at fire-time.
     public static var agentNotifyAwaitInputEnabled: Bool { Defaults[.agentNotifyAwaitInput] }
+
+    // MARK: E13/WI-3 agent badge gates (the global default the per-pane override falls back to)
+
+    /// otty "Badge while processing" — show the running spinner badge (default ON; Claude-only). Read fire-time.
+    public static var agentBadgeWhileProcessingEnabled: Bool { Defaults[.agentBadgeWhileProcessing] }
+
+    /// otty "Badge when complete" — show the completed/finished badge (default ON; Claude-only). Read fire-time.
+    public static var agentBadgeWhenCompleteEnabled: Bool { Defaults[.agentBadgeWhenComplete] }
+
+    /// otty "Badge when awaiting input" — show the awaiting-input badge (default ON; Claude-only). Read fire-time.
+    public static var agentBadgeWhenAwaitingInputEnabled: Bool { Defaults[.agentBadgeWhenAwaitingInput] }
+
+    /// The resolved GLOBAL ``AgentBadgeGates`` the pure gating consumes — the ONE seam ``RailRowsBuilder`` reads
+    /// (via ``WorkspaceStore/agentBadgeGates(for:)``, which prefers a per-pane override) so the three badge
+    /// toggles are applied in exactly one place (mirrors ``notificationSettings`` / ``linkSchemePolicy``).
+    public static var agentBadgeGates: AgentBadgeGates {
+        AgentBadgeGates(
+            badgeWhileProcessing: agentBadgeWhileProcessingEnabled,
+            badgeWhenComplete: agentBadgeWhenCompleteEnabled,
+            badgeWhenAwaitingInput: agentBadgeWhenAwaitingInputEnabled,
+        )
+    }
 
     /// The resolved ``NotificationSettings`` bundle the pure ``NotificationPolicy`` consumes — the ONE seam
     /// the macOS poster (``CommandCompletionNotifier``) reads so the notification toggles are applied in
@@ -735,6 +767,12 @@ public extension Defaults.Keys {
     static let soundOnErrorExit = Key<Bool>(SettingsKey.soundOnErrorExit, default: false)
     static let agentNotifyTaskComplete = Key<Bool>(SettingsKey.agentNotifyTaskComplete, default: true)
     static let agentNotifyAwaitInput = Key<Bool>(SettingsKey.agentNotifyAwaitInput, default: true)
+    // E13/WI-3 agent badge gates (agents__agents-overview.md "Agent Behaviour"). Fire-time flags, never folded
+    // into a typed prefs model → golden-safe. All default ON (every agent badge shows, byte-identical to the
+    // pre-E13 rail). Consumed via `SettingsKey.agentBadgeGates` → `AgentBadgeGates.gated` in `RailRowsBuilder`.
+    static let agentBadgeWhileProcessing = Key<Bool>(SettingsKey.agentBadgeWhileProcessing, default: true)
+    static let agentBadgeWhenComplete = Key<Bool>(SettingsKey.agentBadgeWhenComplete, default: true)
+    static let agentBadgeWhenAwaitingInput = Key<Bool>(SettingsKey.agentBadgeWhenAwaitingInput, default: true)
     static let systemDialogPanes = Key<Bool>(SettingsKey.systemDialogPanes, default: true)
     static let autoSwitchLayouts = Key<Bool>(SettingsKey.autoSwitchLayouts, default: true)
     static let redactSecrets = Key<Bool>(SettingsKey.redactSecrets, default: true)

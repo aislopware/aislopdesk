@@ -22,6 +22,7 @@
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
+import Defaults
 import SFSafeSymbols
 import SwiftUI
 
@@ -234,6 +235,7 @@ struct NavigatorColumn: View {
             ),
             row: row,
         )
+        .contextMenu { rowContextMenu(row) }
     }
 
     private func emptyLabel(_ text: String) -> some View {
@@ -317,8 +319,45 @@ struct NavigatorColumn: View {
             .tag(row.id),
             row: row,
         )
+        .contextMenu { rowContextMenu(row) }
     }
     #endif
+
+    // MARK: - Tab context menu (E13 WI-3 — Clear Badge + per-pane badge overrides + notify toggles)
+
+    /// The right-click / long-press menu for a sidebar row (`open-code-agent-history.png`): the otty
+    /// Agent-Behaviour toggles surfaced on the tab. "Clear Badge" acknowledges the pane's completion/attention;
+    /// the three BADGE items are PER-PANE override toggles (seeded from the pane's CURRENT effective gates, so
+    /// the first flip preserves the other two — an absent override follows the global Settings → Agents
+    /// default); the two NOTIFY items toggle the GLOBAL fire-time keys (no per-pane notify in otty). Claude-only.
+    /// **Prevent Sleep While Processing** is a host-LOCAL `AgentPreferences` flag living in `PreferencesStore`,
+    /// which the AppKit-hosted sidebar does not receive — it is surfaced in Settings → Agent Behaviour (host);
+    /// adding the tab-menu item needs `PreferencesStore` threaded into the split-view host (a follow-up).
+    @ViewBuilder
+    private func rowContextMenu(_ row: RailRow) -> some View {
+        Button("Clear Badge") { store.clearAgentBadge(row.id) }
+        Divider()
+        Toggle("Badge While Processing", isOn: Binding(
+            get: { store.agentBadgeGates(for: row.id).badgeWhileProcessing },
+            set: { _ in store.toggleAgentBadgeGate(.whileProcessing, for: row.id) },
+        ))
+        Toggle("Badge When Task Completes", isOn: Binding(
+            get: { store.agentBadgeGates(for: row.id).badgeWhenComplete },
+            set: { _ in store.toggleAgentBadgeGate(.whenComplete, for: row.id) },
+        ))
+        Toggle("Badge When Awaiting Input", isOn: Binding(
+            get: { store.agentBadgeGates(for: row.id).badgeWhenAwaitingInput },
+            set: { _ in store.toggleAgentBadgeGate(.whenAwaitingInput, for: row.id) },
+        ))
+        Toggle("Notify When Task Completes", isOn: Binding(
+            get: { Defaults[.agentNotifyTaskComplete] },
+            set: { Defaults[.agentNotifyTaskComplete] = $0 },
+        ))
+        Toggle("Notify When Awaiting Input", isOn: Binding(
+            get: { Defaults[.agentNotifyAwaitInput] },
+            set: { Defaults[.agentNotifyAwaitInput] = $0 },
+        ))
+    }
 
     /// Make the row's tab active (if it isn't) then focus its pane. Both go through the store.
     private func select(_ paneID: PaneID) {

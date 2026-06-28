@@ -160,6 +160,15 @@ public final class HostServer: @unchecked Sendable {
     /// `AISLOPDESK_DETACH_TTL_SECS`, default 3600 = 1 hour). Resolved once at init.
     public let detachTTL: Duration
 
+    /// E13 WI-3 (ES-E13-6) — the otty "Resume Session on Recovery" host policy (client toggle
+    /// ``AgentPreferences/resumeOnRecovery`` → `AISLOPDESK_AGENT_RESUME_ON_RECOVERY`, default-ON `!= "0"`).
+    /// otty maps this toggle directly onto ``DetachedSessionStore`` (spec
+    /// `getting-started__first-launch` §"Resume Session on Recovery"): when ON, a recovered terminal
+    /// reattaches to the still-running detached agent session; when OFF, the host neither keeps nor
+    /// reattaches detached sessions, so recovery yields a FRESH shell. Resolved once at init and AND-ed into
+    /// ``detachEnabled`` (the single reattach gate), so this flag actually actuates rather than no-op'ing.
+    public let resumeOnRecovery: Bool
+
     /// S3 — the store for detached sessions. `nil` when `detachEnabled == false`.
     private let detachedStore: DetachedSessionStore?
 
@@ -175,6 +184,7 @@ public final class HostServer: @unchecked Sendable {
         blocksEnabled: Bool = true,
         detachEnabled: Bool? = nil,
         detachTTLSecs: Int? = nil,
+        resumeOnRecovery: Bool? = nil,
     ) {
         self.port = port
         self.shellPath = shellPath ?? HostEnvironment.loginShell()
@@ -189,7 +199,14 @@ public final class HostServer: @unchecked Sendable {
 
         // S3: resolve detach from env (default-ON: only "0" disables) unless overridden by the caller.
         let envDetach = ProcessInfo.processInfo.environment["AISLOPDESK_DETACH_ENABLED"]
-        let effectiveDetach = detachEnabled ?? (envDetach != "0")
+        // E13 WI-3 (ES-E13-6): "Resume on Recovery" gates the SAME reattach machinery (otty maps the toggle
+        // onto DetachedSessionStore). Resolve once (default-ON; the client sidecar reaches it via
+        // AISLOPDESK_AGENT_RESUME_ON_RECOVERY) and AND it into the detach gate — when OFF, detached sessions
+        // are neither kept (handleLinkDown hard-shuts down) nor reattached (spawnMuxChannel sees a nil store),
+        // so recovery yields a fresh shell. This is the consumer that makes the flag actuate.
+        let effectiveResume = resumeOnRecovery ?? HostEnvironment.agentResumeOnRecoveryEnabled()
+        self.resumeOnRecovery = effectiveResume
+        let effectiveDetach = (detachEnabled ?? (envDetach != "0")) && effectiveResume
         self.detachEnabled = effectiveDetach
 
         let envTTL = ProcessInfo.processInfo.environment["AISLOPDESK_DETACH_TTL_SECS"]
@@ -721,6 +738,9 @@ public final class HostServer: @unchecked Sendable {
             // close the master fd. The shell is already dead, so no kill needed.
             Task {
                 await store?.remove(id)
+                // E13 WI-3 (prevent-sleep strict balance): a parked shell that exits mid-turn never
+                // delivered a non-working transition — fan a final `.none` so a `.working` observer clears it.
+                if let session { self?.fanAgentTeardown(session) }
                 // shutdownDetached is safe on an already-dead shell (idempotent fd close).
                 session?.shutdownDetached()
             }
@@ -744,6 +764,10 @@ public final class HostServer: @unchecked Sendable {
         // peer-close / child-exit race, so a second remove of the same key is a no-op and must
         // not re-emit an unchanged count).
         if session != nil { emitConnectionCount() }
+        // E13 WI-3 (prevent-sleep strict balance): a pane closed WHILE its agent is working never
+        // delivers a non-working transition on its own — fan a final `.none` so observers clear it.
+        // Guarded by the map-removal idempotency above (a second remove sees `nil` → no double-fan).
+        if let session { fanAgentTeardown(session) }
         // shutdownDetached() (NOT shutdown()): this method is reached SYNCHRONOUSLY from the mux
         // connection's receive loop for a peer `channelClose` / link drop (route/finishLink →
         // hostCloseHandler → here). `shutdown()` blocks the caller up to ~0.5s (SIGTERM → wait →
@@ -808,6 +832,18 @@ public final class HostServer: @unchecked Sendable {
         agentStatusObserversLock.unlock()
     }
 
+    /// E13 WI-3 — registers a PROCESS-LIFETIME observer of cross-pane agent-status transitions, the public
+    /// seam `aislopdesk-hostd` uses to drive the prevent-sleep `IOPMAssertion` off the `.working` aggregate.
+    /// Reuses the existing P1 fan-out (``registerAgentStatusObserver(id:_:)``); the observer receives
+    /// `(paneId, state)` where `state` is the stable ctl supervision string (``AgentControlState`` — `"working"`
+    /// while a turn runs). No deregistration is exposed: the daemon holds it for its whole lifetime.
+    @preconcurrency
+    public func observeAgentStatusForPreventSleep(
+        _ observer: @escaping @Sendable (_ paneId: String, _ state: String) -> Void,
+    ) {
+        registerAgentStatusObserver(id: UUID()) { paneId, state, _, _ in observer(paneId, state) }
+    }
+
     /// Fans one pane's status transition to every registered cross-pane observer. Snapshots the
     /// observer map under its lock, then calls each observer OUTSIDE the lock (an observer's NDJSON
     /// write must never serialise the next pane's transition). Maps the host ``ClaudeStatus`` to the
@@ -831,6 +867,26 @@ public final class HostServer: @unchecked Sendable {
             let title = session?.currentTitle ?? ""
             self?.fanAgentStatusChanged(paneId: paneId, title: title, status: status)
         }
+    }
+
+    /// E13 WI-3 (prevent-sleep STRICT BALANCE): fans a FINAL `.none` agent status for a pane that is being
+    /// torn down WHILE it still carries a non-`.none` agent status. A pane normally delivers its own
+    /// `working → done/idle` transition (the detector poll / hook), but a pane that is CLOSED mid-turn — a
+    /// tab close (`removeMuxSession`), a child that exits mid-turn (`removeMuxSession`/`removeControlSession`),
+    /// a link drop, or a ctl `kill` (`killPaneForControl`) — never delivers a non-working transition on its
+    /// own. Without this fan, a `.working`-tracking observer (the `aislopdesk-hostd` prevent-sleep driver)
+    /// keeps that dead paneId in its set forever, `anyAgentWorking` stays true, and the
+    /// `IOPMAssertion` is held for the daemon's whole lifetime — a leaked assertion that keeps the Mac awake
+    /// forever (the balance directive the EnableSecureEventInput lesson mirrors). Reuses the existing P1
+    /// fan-out so EVERY observer (prevent-sleep + cross-pane subscribers) clears the pane uniformly. Gated on
+    /// a non-`.none` prior status so a plain shell with no agent never emits a spurious teardown event.
+    private func fanAgentTeardown(_ session: MuxChannelSession) {
+        guard session.agentStatusForControl != .none else { return }
+        fanAgentStatusChanged(
+            paneId: session.sessionID.uuidString,
+            title: session.currentTitle,
+            status: .none,
+        )
     }
 
     /// Looks up a pane by its `sessionID.uuidString` across both live and control maps.
@@ -858,6 +914,8 @@ public final class HostServer: @unchecked Sendable {
         for (key, session) in muxSessions where session.sessionID.uuidString == paneId {
             muxSessions.removeValue(forKey: key)
             lock.unlock()
+            // E13 WI-3 (prevent-sleep strict balance): clear a working pane killed mid-turn by ctl.
+            fanAgentTeardown(session)
             session.shutdownDetached()
             return true
         }
@@ -865,6 +923,8 @@ public final class HostServer: @unchecked Sendable {
         for (id, session) in controlSessions where id.uuidString == paneId {
             controlSessions.removeValue(forKey: id)
             lock.unlock()
+            // E13 WI-3 (prevent-sleep strict balance): clear a working pane killed mid-turn by ctl.
+            fanAgentTeardown(session)
             session.shutdownDetached()
             return true
         }
@@ -980,8 +1040,11 @@ public final class HostServer: @unchecked Sendable {
     /// Synchronously removes a control session (called from the exit callback).
     private func removeControlSession(_ id: UUID) {
         lock.lock()
-        controlSessions.removeValue(forKey: id)
+        let session = controlSessions.removeValue(forKey: id)
         lock.unlock()
+        // E13 WI-3 (prevent-sleep strict balance): a standalone pane whose child exits mid-turn never
+        // delivers a non-working transition — fan a final `.none` so a `.working` observer clears it.
+        if let session { fanAgentTeardown(session) }
     }
 
     /// Errors thrown by the agent-control spawn path.

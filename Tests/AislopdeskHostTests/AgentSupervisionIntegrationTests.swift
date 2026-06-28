@@ -126,6 +126,70 @@ final class AgentSupervisionIntegrationTests: XCTestCase {
         XCTAssertTrue(text.contains("PANE=\(paneId)"), "AISLOPDESK_PANE_ID == the returned paneId; got:\n\(text)")
     }
 
+    /// E13 WI-3 (prevent-sleep STRICT BALANCE): tearing down a pane that is currently `.working` must fan a
+    /// FINAL non-working agent status for that pane, so a `.working`-tracking observer (the
+    /// `aislopdesk-hostd` prevent-sleep driver) clears the dead paneId and releases its `IOPMAssertion`. This
+    /// models the driver's exact working-set accounting and asserts teardown empties it — a leaked assertion
+    /// otherwise keeps the Mac awake forever. FAILS on the un-fixed code, where `killPaneForControl` (and the
+    /// `removeMuxSession` / child-exit teardown paths) fanned NOTHING: the working report was the last event,
+    /// so the set kept the closed pane forever.
+    func testTeardownOfWorkingPaneReleasesPreventSleepTracking() async throws {
+        let server = HostServer(port: 0)
+        defer { Task { await server.stop() } }
+
+        let paneId = try await server.spawnStandalonePane(
+            cmd: nil, cwd: nil, env: nil, rows: 24, cols: 80,
+        )
+
+        // A faithful mirror of the daemon's PreventSleepDriver: insert on "working", remove on anything
+        // else; `anyWorking` is what gates the IOPMAssertion (assert iff non-empty).
+        final class WorkingSet: @unchecked Sendable {
+            private let lock = NSLock()
+            private var working: Set<String> = []
+            func note(_ paneId: String, _ state: String) {
+                lock.lock()
+                defer { lock.unlock() }
+                if state == "working" { working.insert(paneId) } else { working.remove(paneId) }
+            }
+
+            func contains(_ paneId: String) -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                return working.contains(paneId)
+            }
+
+            var anyWorking: Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                return !working.isEmpty
+            }
+        }
+        let set = WorkingSet()
+        let obsID = UUID()
+        server.registerAgentStatusObserver(id: obsID) { pid, state, _, _ in set.note(pid, state) }
+        defer { server.removeAgentStatusObserver(id: obsID) }
+
+        guard let session = server.lookupPaneForControl(paneId: paneId) else {
+            XCTFail("spawned pane not found")
+            return
+        }
+        // The agent enters a turn → the driver would now hold the assertion.
+        session.reportAgentStatusForControl(state: "working", message: nil)
+        for _ in 0..<40 where !set.contains(paneId) { try? await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertTrue(set.contains(paneId), "precondition: the working pane is tracked (assertion held)")
+
+        // Close the pane WHILE it is working (tab close / link drop / ctl kill all reach the same fan).
+        XCTAssertTrue(server.killPaneForControl(paneId: paneId), "the working pane is found + killed")
+
+        // The teardown fan must clear the pane → the working set empties → the assertion releases.
+        for _ in 0..<40 where set.contains(paneId) { try? await Task.sleep(nanoseconds: 50_000_000) }
+        XCTAssertFalse(
+            set.contains(paneId),
+            "teardown fans a final non-working status; the dead pane is pruned from the working set",
+        )
+        XCTAssertFalse(set.anyWorking, "no pane remains working ⇒ the prevent-sleep IOPMAssertion releases")
+    }
+
     /// A freshly-spawned pane reports a state in the closed supervision set (a live pane with no
     /// claude → "idle"), never an enum case name or empty string.
     func testFreshPaneStateIsInClosedSet() async throws {

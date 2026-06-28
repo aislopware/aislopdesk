@@ -155,6 +155,16 @@ struct MetadataResponseBuilder {
             // builder, so they never reach here in production. Reaching this case is a routing bug;
             // answer `.error` defensively (this pure reducer must NEVER perform a host side effect).
             return reply(requestID, .error, Data())
+
+        case .installAgentHooks,
+             .uninstallAgentHooks,
+             .agentHookStatus:
+            // E13 WI-1: the agent-hooks verbs are likewise NOT this READ-ONLY builder's job —
+            // `MuxChannelSession.serveMetadata` routes them to `HostAgentActionPerformer` BEFORE the
+            // builder (install/uninstall touch the host's `~/.claude/settings.json`; status reads the
+            // marker), so they never reach here in production. Reaching this case is a routing bug;
+            // answer `.error` defensively (this pure reducer must NEVER perform a host side effect).
+            return reply(requestID, .error, Data())
         }
     }
 

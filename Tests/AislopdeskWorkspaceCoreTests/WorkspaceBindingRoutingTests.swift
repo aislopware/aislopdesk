@@ -9,8 +9,8 @@ import XCTest
 ///
 /// REVERT-TO-CONFIRM-FAIL: with the routing stubs left as `case .composer: break` / `.promptQueue: break`
 /// the composer never opens and the callbacks never fire — `testComposerActionTogglesActivePaneComposer`
-/// and `testPromptQueueActionOpensActivePaneComposer` both fail. `.sendToChat` is the deliberate inert E13
-/// stub (a guard test, unchanged before/after).
+/// and `testPromptQueueActionOpensActivePaneComposer` both fail. `.sendToChat` (E13 WI-5) forwards to the
+/// VIEW-owned dialog toggle, so with NO toggle passed here it must have no composer side-effect (a guard).
 ///
 /// HANG-SAFE: the recording session uses a headless ``RecordingSurfaceActions`` (no GhosttySurface /
 /// VideoToolbox / Metal / SCStream) — the hang-safety rule holds.
@@ -74,11 +74,12 @@ final class WorkspaceBindingRoutingTests: XCTestCase {
         XCTAssertEqual(queueOpened, 2, "each ⌘⇧M re-fires the queue-mode focus nudge")
     }
 
-    // MARK: - .sendToChat (E13 — stays inert here)
+    // MARK: - .sendToChat (E13 WI-5 — forwards to the view dialog toggle, no direct composer effect)
 
-    /// `.sendToChat` is the deliberate inert E13 stub: routing it has NO composer effect and fires no
-    /// composer/queue callback (E12 ships ONLY composer + prompt-queue input mechanics, per E12-carryovers).
-    func testSendToChatStaysInert() throws {
+    /// `.sendToChat` (E13 WI-5) opens the view-owned Send-to-Chat DIALOG via a passed-in toggle — it never
+    /// touches the active pane's composer directly. So routing it with NO toggle (this call) has no composer
+    /// effect and fires no composer/queue callback (the dialog, not this action, drives any composer send).
+    func testSendToChatHasNoDirectComposerEffect() throws {
         let store = makeStore()
         let session = try activeSession(store)
         let composer = try XCTUnwrap(session.composer)
@@ -86,9 +87,104 @@ final class WorkspaceBindingRoutingTests: XCTestCase {
         session.terminalModel?.onRequestComposer = { anyCallback += 1 }
         session.terminalModel?.onRequestPromptQueue = { anyCallback += 1 }
 
-        WorkspaceBindingRegistry.route(.sendToChat, to: store)
-        XCTAssertFalse(composer.isVisible, ".sendToChat is an inert stub (E13) — no composer effect")
+        WorkspaceBindingRegistry.route(.sendToChat, to: store) // no toggle ⇒ graceful no-op
+        XCTAssertFalse(composer.isVisible, ".sendToChat has no DIRECT composer effect (it opens the dialog)")
         XCTAssertEqual(anyCallback, 0, ".sendToChat fires no composer/queue callback")
+    }
+
+    /// `.sendToChat` WITH a `toggleSendToChat` closure FORWARDS to it EXACTLY once (the live wiring the app
+    /// threads from `WorkspaceKeyDispatcher` / `WorkspaceCommands` so ⌘⌃↩ + the Agents ▸ Send to Chat menu row
+    /// actually open the dialog). REVERT-TO-CONFIRM-FAIL: with the route arm left `case .sendToChat: break` the
+    /// closure never fires — `fired` stays 0 and this fails. Pairs with the no-toggle guard above: together they
+    /// prove the chord is LIVE when wired and a graceful no-op when not (never a dead chord).
+    func testSendToChatRoutesToTheToggleOnce() throws {
+        let store = makeStore()
+        let session = try activeSession(store)
+        let composer = try XCTUnwrap(session.composer)
+        let before = store.tree
+        var fired = 0
+
+        WorkspaceBindingRegistry.route(.sendToChat, to: store, toggleSendToChat: { fired += 1 })
+
+        XCTAssertEqual(fired, 1, ".sendToChat invokes toggleSendToChat exactly once")
+        XCTAssertFalse(composer.isVisible, "...and STILL has no direct composer effect (the dialog owns the send)")
+        XCTAssertEqual(store.tree, before, "opening the dialog is a view affordance — the tree is unchanged")
+    }
+
+    // MARK: - E13 WI-5: capture → agentChatSessions() → sendChatMessage() → focus (the full store flow)
+
+    /// THE integration pin (ES-E13-5): the active pane's SELECTION is captured, the Claude-only agent panes are
+    /// the only `agentChatSessions()` targets, and `sendChatMessage(_:to:)` delivers the VERBATIM payload to the
+    /// CHOSEN target's composer out-sink AND auto-switches focus to it — leaving the source pane untouched. This
+    /// is the seam the Send-to-Chat dialog binds; it FAILS on the un-wired code (no capture method, an empty
+    /// picker, or a send that never reached the composer / never re-focused).
+    func testCaptureAgentSessionsSendAndFocusEndToEnd() throws {
+        let store = makeStore()
+        // The active (first) pane is the SOURCE — stage a mouse-made selection to quote.
+        let source = try XCTUnwrap(store.tree.activeSession?.activeTab?.activePane)
+        let sourceSession = try XCTUnwrap(store.handle(for: source) as? RecordingTerminalPaneSession)
+        sourceSession.surfaceRecorder?.selectionText = "let answer = 42"
+
+        // A SECOND pane that hosts a live Claude agent — the only valid Send-to-Chat target.
+        store.newTab(kind: .terminal)
+        let target = try XCTUnwrap(store.tree.activeSession?.activeTab?.activePane)
+        let targetSession = try XCTUnwrap(store.handle(for: target) as? RecordingTerminalPaneSession)
+        targetSession.agentActive = true
+        store.focusPaneTree(source) // capture reads the ACTIVE pane's selection
+
+        // Capture: the active pane's selection wins (the primary otty path).
+        let context = try XCTUnwrap(store.captureSendToChatContext(), "a live selection yields a capture")
+        XCTAssertEqual(context.quoted, "let answer = 42", "the captured quote is the verbatim selection")
+
+        // Picker: ONLY the live agent pane is offered (the non-agent source is excluded; Claude-only badge).
+        let sessions = store.agentChatSessions()
+        XCTAssertEqual(sessions.map(\.id), [target], "only the live agent pane is a Send-to-Chat target")
+        XCTAssertEqual(sessions.first?.agentLabel, "Claude Code", "the picker badge is Claude-only")
+
+        // Send: the composed message lands on the TARGET's composer out-sink VERBATIM, and focus switches there.
+        let message = SendToChatModel.compose(context: context, comment: "please review")
+        XCTAssertTrue(store.sendChatMessage(message, to: target), "the live agent composer accepted the message")
+        XCTAssertEqual(
+            store.tree.activeSession?.activeTab?.activePane, target,
+            "sendChatMessage auto-switches focus to the target pane (the spec's final-frame tab switch)",
+        )
+        XCTAssertEqual(
+            targetSession.sentInput.last, SendToChatModel.payload(for: message),
+            "the VERBATIM Send-to-Chat payload landed on the chosen agent pane's ordered-OUT sink",
+        )
+        XCTAssertTrue(sourceSession.sentInput.isEmpty, "nothing was injected into the SOURCE pane")
+    }
+
+    /// The no-selection case (M1 fix): with NO selection the capture is `nil` (the dialog stays closed — the
+    /// honest no-op), EVEN when a completed command block exists. The send-to-chat spec's no-selection fallback
+    /// is the last command's OUTPUT body, which is NOT available synchronously here (async OSC-133 wire
+    /// round-trip); quoting the command LINE instead would mislead (it sends the command you typed, not its
+    /// output), so the fallback is DISABLED rather than quoting the wrong text.
+    /// REVERT-TO-CONFIRM-FAIL: the pre-fix code passed `blocks.latest?.commandText` as `lastOutput`, so the
+    /// command-block branch returned a non-nil context quoting "npm test" — the second `XCTAssertNil` fails.
+    func testCaptureReturnsNilWithoutSelectionEvenWithACommandBlock() throws {
+        let store = makeStore()
+        let active = try XCTUnwrap(store.tree.activeSession?.activeTab?.activePane)
+        let session = try XCTUnwrap(store.handle(for: active) as? RecordingTerminalPaneSession)
+        let model = try XCTUnwrap(session.terminalModel)
+
+        // No selection, no block → nothing to quote.
+        session.surfaceRecorder?.selectionText = nil
+        XCTAssertNil(store.captureSendToChatContext(), "no selection + no command block ⇒ no capture (no-op)")
+
+        // A completed command block must NOT become a (wrong) command-LINE quote — the fallback is disabled.
+        model.blocks.upsert(
+            index: 1, commandText: "npm test", exitCode: 0, durationMS: 10, complete: true, outputLen: 0,
+        )
+        XCTAssertNil(
+            store.captureSendToChatContext(),
+            "no selection ⇒ still no capture: the command LINE is the wrong text and the OUTPUT body is async",
+        )
+
+        // The selection path (the faithful common case) is unchanged — a real selection still captures.
+        session.surfaceRecorder?.selectionText = "let answer = 42"
+        let captured = try XCTUnwrap(store.captureSendToChatContext(), "a live selection still yields a capture")
+        XCTAssertEqual(captured.quoted, "let answer = 42", "the selection path is untouched by the fallback fix")
     }
 
     // MARK: - .pinWindow (E19 ES-E19-1 / WI-3 — Pin Window)

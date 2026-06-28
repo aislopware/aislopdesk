@@ -87,7 +87,7 @@ final class RecordingSurfaceActions: TerminalSurface, TerminalSurfaceActions, @u
 @MainActor
 @Observable
 final class RecordingTerminalPaneSession: @MainActor PaneSessionHandle, @MainActor Identifiable,
-    PaneSessionIDAdopting, TerminalModelProviding, ComposerProviding
+    PaneSessionIDAdopting, TerminalModelProviding, ComposerProviding, LiveAgentSessionProviding
 {
     private(set) var id: PaneID
     let kind: PaneKind
@@ -102,6 +102,22 @@ final class RecordingTerminalPaneSession: @MainActor PaneSessionHandle, @MainAct
 
     /// `ComposerProviding`: the composer the store's active-pane composer ops resolve.
     var composerModel: ComposerModel? { composer }
+
+    /// E13 WI-5: a test-settable "this pane hosts a live Claude agent" flag (mirrors `LivePaneSession`'s
+    /// `claudeStatus != .none`). Drives ``composerAgentActive`` so the store's `agentChatSessions()` picker
+    /// list can be exercised — a `RecordingTerminalPaneSession` defaults to a plain (non-agent) terminal.
+    var agentActive = false
+
+    /// `ComposerProviding`: whether this pane is a live agent (the Send-to-Chat picker filter).
+    var composerAgentActive: Bool { agentActive }
+
+    /// E13 WI-6: a test-settable "the Claude session id this pane is CURRENTLY running" (mirrors
+    /// `LivePaneSession.liveAgentSessionID`). Drives the store's `liveAgentSessionIDs()` Resume jump map — a
+    /// `nil` (the default) means this pane hosts no live agent session and never appears in the map.
+    var liveSessionID: String?
+
+    /// `LiveAgentSessionProviding`: the live Claude session id (the Resume jump map's key for this pane).
+    var liveAgentSessionID: String? { liveSessionID }
 
     /// The recording surface backing `terminalModel` (so a test reads `surfaceRecorder.actions`).
     let surfaceRecorder: RecordingSurfaceActions?

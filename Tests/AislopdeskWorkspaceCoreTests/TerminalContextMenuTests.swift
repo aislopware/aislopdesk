@@ -32,8 +32,35 @@ final class TerminalContextMenuTests: XCTestCase {
     func testItemOrderAndCoverage() {
         XCTAssertEqual(
             TerminalContextMenu.items,
-            [.copy, .paste, .pasteAsKeystrokes, .selectAll, .clear, .copyOutput, .splitRight, .splitDown, .find],
+            [
+                .copy, .paste, .pasteAsKeystrokes, .selectAll, .clear, .copyOutput,
+                // E13 WI-5: "Send to Chat" sits in the blocks/agent group (after Copy Command Output).
+                .sendToChat, .splitRight, .splitDown, .find,
+            ],
         )
+    }
+
+    /// E13 WI-5 (ES-E13-5): "Send to Chat" is live ONLY when the dialog hook is wired (`canSendToChat`) AND
+    /// there is something to quote (a selection OR a completed command block) — otherwise it greys out
+    /// honestly (mirroring `pasteToComposer`'s `hasComposer` gate). Never a dead row.
+    func testSendToChatRequiresWiringAndAQuote() {
+        // Hook unwired (headless / preview) ⇒ always disabled, even with a selection.
+        let unwired = TerminalContextMenu.Context(hasSelection: true, clipboardHasText: false, canSendToChat: false)
+        XCTAssertFalse(TerminalContextMenu.isEnabled(.sendToChat, context: unwired))
+
+        // Wired but nothing to quote ⇒ disabled.
+        let nothing = TerminalContextMenu.Context(
+            hasSelection: false, clipboardHasText: false, hasCommandOutput: false, canSendToChat: true,
+        )
+        XCTAssertFalse(TerminalContextMenu.isEnabled(.sendToChat, context: nothing))
+
+        // Wired + a selection ⇒ enabled; wired + a command block ⇒ enabled.
+        let withSel = TerminalContextMenu.Context(hasSelection: true, clipboardHasText: false, canSendToChat: true)
+        let withOut = TerminalContextMenu.Context(
+            hasSelection: false, clipboardHasText: false, hasCommandOutput: true, canSendToChat: true,
+        )
+        XCTAssertTrue(TerminalContextMenu.isEnabled(.sendToChat, context: withSel))
+        XCTAssertTrue(TerminalContextMenu.isEnabled(.sendToChat, context: withOut))
     }
 
     func testSeparatorsGroupClipboardEditBlocksSplitFind() {

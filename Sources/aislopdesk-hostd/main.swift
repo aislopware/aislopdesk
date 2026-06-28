@@ -131,6 +131,29 @@ let server = HostServer(
 )
 server.onLog = log
 
+// E13 WI-3 (ES-E13-3): hold a system-sleep assertion while ANY agent is processing. DEFAULT-OFF — only
+// `AISLOPDESK_AGENT_PREVENT_SLEEP=1` (the client `preventSleep` toggle, via the video-prefs.json sidecar)
+// enables it. macOS-host-only: the `IOPMAssertion` glue (`PreventSleepAssertion`) lives behind `#if
+// os(macOS)`. The driver aggregates each pane's `claudeStatus` transition (the existing P1 fan-out) into a
+// `.working` set and asks the pure `PreventSleepPolicy` whether to hold the assertion — asserting on the
+// first working pane, releasing when none remain (strictly balanced, so a quiet host always sleeps).
+#if os(macOS)
+// The driver (`PreventSleepDriver`, in AislopdeskHost) guards the working-pane set AND the balanced
+// `IOPMAssertion` apply under ONE lock, so the agent-status fan-out (which calls observers OUTSIDE its own
+// lock, from BOTH the foreground-poll thread and the mux teardown fan) can never apply a stale state that
+// leaks the assertion. The macOS-only `PreventSleepAssertion` is injected as its `PreventSleepAsserting`
+// sink; the driver asks the pure `PreventSleepPolicy` whether to hold the assertion each edge.
+let preventSleepEnabled = HostEnvironment.agentPreventSleepEnabled()
+if preventSleepEnabled {
+    let preventSleepDriver = PreventSleepDriver(enabled: preventSleepEnabled, asserter: PreventSleepAssertion())
+    server.observeAgentStatusForPreventSleep { paneId, state in
+        // "working" is the ctl supervision string for `ClaudeStatus.working` (see `AgentControlState`).
+        preventSleepDriver.note(paneId: paneId, working: state == "working")
+    }
+    log("prevent-sleep: AISLOPDESK_AGENT_PREVENT_SLEEP=1 — holding a system-sleep assertion while any agent works")
+}
+#endif
+
 // Construct the control listener (needs a reference to the server for verb dispatch).
 var agentControlListener: AgentControlListener?
 if !agentControlSocketPath.isEmpty {

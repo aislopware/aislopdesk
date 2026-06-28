@@ -107,5 +107,34 @@ final class DispatcherOverlayYieldTests: XCTestCase {
             XCTAssertNotNil(result, "a bare key always reaches the focused responder (capturing=\(capturing))")
         }
     }
+
+    // MARK: - M3: the Send-to-Chat dialog yields the keyboard through the REAL overlay gate
+
+    /// END-TO-END (M3): the dispatcher reads the SAME `overlay.capturesKeyboardWhileVisible` seam the app's
+    /// `isOverlayCapturingKeys` closure does, so opening the Send-to-Chat dialog makes a modeled ⌘W PASS
+    /// THROUGH to the dialog's focused comment field instead of destroying a background pane behind it. Driven
+    /// over a real `OverlayCoordinator` (no view) so the gate is the production composition, not a re-declared
+    /// predicate.
+    /// REVERT-TO-CONFIRM-FAIL: drop `|| sendToChatVisible` from `capturesKeyboardWhileVisible` and the open
+    /// dialog no longer trips the gate — ⌘W is swallowed + routes `.closePane`, dropping a leaf (this fails).
+    func testSendToChatDialogOpenYieldsCloseChordThroughTheRealOverlayGate() {
+        let store = makeTwoLeafStore()
+        let overlay = OverlayCoordinator(store: store)
+        overlay.captureSendToChat = { SendToChatContext(title: "src.swift", quoted: "let x = 1") }
+        let dispatcher = WorkspaceKeyDispatcher(
+            store: store, isOverlayCapturingKeys: { overlay.capturesKeyboardWhileVisible },
+        )
+
+        // Closed dialog: the monitor still OWNS ⌘W (the load-bearing control) — swallowed, no yield yet.
+        XCTAssertFalse(overlay.capturesKeyboardWhileVisible, "precondition: nothing up")
+
+        overlay.openSendToChat()
+        XCTAssertTrue(overlay.sendToChatVisible, "precondition: the Send-to-Chat dialog is open")
+
+        let result = dispatcher.handle(keyDown("w", keyCode: 13, command: true))
+        XCTAssertNotNil(result, "⌘W is passed through to the open Send-to-Chat dialog (not swallowed)")
+        XCTAssertEqual(store.tree.allPaneIDs().count, 2, "⌘W must NOT close a pane behind the open dialog")
+        XCTAssertNil(store.pendingCloseSpec, "⌘W must NOT even park a close behind the open dialog")
+    }
 }
 #endif

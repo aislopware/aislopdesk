@@ -314,7 +314,7 @@ final class MetadataResponseBuilderTests: XCTestCase {
     }
 
     func testZeroVerbByteReturnsUnsupported() {
-        // 0 is not a defined MetadataVerb (verbs are 1...10) — must be tolerated, not trap.
+        // 0 is not a defined MetadataVerb (verbs are 1...13) — must be tolerated, not trap.
         let fake = FakeQuery()
         let r = decode(MetadataResponseBuilder(query: fake).response(requestID: 1, verb: 0, payload: Data()))
         XCTAssertEqual(r.status, MetadataStatus.unsupportedVerb.rawValue)
@@ -335,6 +335,23 @@ final class MetadataResponseBuilderTests: XCTestCase {
             XCTAssertEqual(r.status, MetadataStatus.error.rawValue, "\(verb): the read-only builder never actuates")
             XCTAssertTrue(r.payload.isEmpty)
             // The read query seam was never touched (the builder did no work for a side-effecting verb).
+            XCTAssertTrue(fake.gitDiffCalls.isEmpty && fake.listDirectoryCalls.isEmpty)
+        }
+    }
+
+    // MARK: - Agent-hooks verbs are NOT this read-only builder's job (E13 WI-1)
+
+    func testAgentHooksVerbsReachingTheReadOnlyBuilderReturnError() {
+        // installAgentHooks (11) / uninstallAgentHooks (12) / agentHookStatus (13) are routed to
+        // `HostAgentActionPerformer` by `serveMetadata` BEFORE the builder; if one ever reaches this PURE
+        // reducer it must reply .error and perform NO side effect (no settings.json write / marker read),
+        // never trap on the now-exhaustive switch, never silently report success.
+        for verb in [MetadataVerb.installAgentHooks, .uninstallAgentHooks, .agentHookStatus] {
+            let fake = FakeQuery()
+            let r = response(MetadataResponseBuilder(query: fake), verb, Data(), requestID: 44)
+            XCTAssertEqual(r.requestID, 44)
+            XCTAssertEqual(r.status, MetadataStatus.error.rawValue, "\(verb): the read-only builder never actuates")
+            XCTAssertTrue(r.payload.isEmpty)
             XCTAssertTrue(fake.gitDiffCalls.isEmpty && fake.listDirectoryCalls.isEmpty)
         }
     }

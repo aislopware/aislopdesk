@@ -151,6 +151,13 @@ public enum WorkspaceAction: Hashable, Sendable {
     case composer // ⌘⇧E — open the agent prompt composer (E12 stub)
     case promptQueue // ⌘⇧M — open the agent prompt queue (E12 stub)
     case sendToChat // ⌘⌃↩ — send the active pane's selection / command to the agent chat (E13 stub)
+    // Fork / Branch (E13 ES-E13-7): on a detected `/branch` (a NEW Claude session id), spawn the forked
+    // thread in a split / new tab running VERBATIM `claude --resume <new-id>`. Palette / menu only (no chord —
+    // fork is initiated INSIDE the agent's own `/branch`, then routed here), Claude-only. "Fork in New Window"
+    // is suppressed (no multi-window on the remote / iOS arch); Split Left / Up are not surfaced.
+    case forkInSplitRight
+    case forkInSplitDown
+    case forkInNewTab
 }
 
 public extension WorkspaceAction {
@@ -245,7 +252,13 @@ public extension WorkspaceAction {
              // targets the active pane, NOT a global surface).
              .composer,
              .promptQueue,
-             .sendToChat:
+             .sendToChat,
+             // Fork (E13 ES-E13-7) routes the ACTIVE pane's detected `/branch` session id into a new split /
+             // tab — so it needs an active pane, but degrades gracefully (a non-agent / no-fork-detected pane
+             // just no-ops). Same graceful-no-op family as the composer / send-to-chat affordances above.
+             .forkInSplitRight,
+             .forkInSplitDown,
+             .forkInNewTab:
             // Block / find / scroll / font / composer affordances target the active TERMINAL pane (its
             // blocks / scrollback / prompt marks / glyphs / PTY), so they need one — but they degrade
             // gracefully (a no-pane shell just no-ops), so they are not greyed out aggressively.
@@ -905,6 +918,30 @@ public enum WorkspaceBindingRegistry {
             id: "agent.sendToChat", action: .sendToChat, title: "Send to Chat",
             category: .agents, chord: KeyChord(.return, [.command, .control]),
             symbol: "arrow.up.message", keywords: "send chat agent selection command share forward",
+        ),
+        // Fork / Branch (E13 ES-E13-7, otty `agents__fork-branch-session`): the palette "Fork in…" entries
+        // that route a detected `/branch` (a NEW Claude session id) into a split / new tab running VERBATIM
+        // `claude --resume <new-id>`. PALETTE / MENU ONLY (`chord: nil`) — the fork is initiated inside the
+        // agent's own `/branch` slash command, then the user picks a destination here; there is no key
+        // equivalent. Claude-only. "Fork in New Window" is suppressed (no multi-window on the remote / iOS
+        // arch), and Split Left / Up are not surfaced (right / down / new-tab match otty's shipped trio).
+        WorkspaceBinding(
+            id: "agent.forkSplitRight", action: .forkInSplitRight, title: "Fork in Split Right",
+            category: .agents, chord: nil,
+            symbol: "rectangle.split.2x1",
+            keywords: "fork branch session split right column side parallel claude /branch new pane",
+        ),
+        WorkspaceBinding(
+            id: "agent.forkSplitDown", action: .forkInSplitDown, title: "Fork in Split Down",
+            category: .agents, chord: nil,
+            symbol: "rectangle.split.1x2",
+            keywords: "fork branch session split down row stacked below parallel claude /branch new pane",
+        ),
+        WorkspaceBinding(
+            id: "agent.forkNewTab", action: .forkInNewTab, title: "Fork in New Tab",
+            category: .agents, chord: nil,
+            symbol: "plus.rectangle.on.rectangle",
+            keywords: "fork branch session new tab parallel claude /branch open",
         ),
     ]
 

@@ -47,6 +47,10 @@ public struct AislopdeskClientApp: App {
     #endif
     @State private var appLaunchMonitor: AppLaunchMonitor
     @State private var preferences: PreferencesStore
+    /// E13 WI-2: the Agents settings-card model (install / uninstall / status of the Claude Code host hooks).
+    /// Owned here so it outlives the separate `Settings` scene; its async seams resolve the active
+    /// connection's first connected pane ``MetadataClient`` lazily at call time (a connection comes and goes).
+    @State private var agentHooks: AgentHooksController
     /// E2/WI-1: the single overlay coordinator — command palette (⌘⇧P), keyboard cheat sheet (⌘/), the
     /// toast stack, and the Connect-to-Host / remote-window-picker modals. Built once in `init()` after the
     /// store + app connection, injected into the scene env (`\.overlayCoordinator`) and handed to
@@ -247,6 +251,18 @@ public struct AislopdeskClientApp: App {
         // pill). Retained for the scene lifetime by `_overlayCoordinator` / `_folderFrecency` below.
         let overlay = OverlayCoordinator(store: store, folders: folderFrecency)
         overlay.connectionTarget = { [weak appConnection] in appConnection?.target ?? .default }
+        // E13 / WI-5 (ES-E13-5): the Send-to-Chat dialog reads the active pane's quote off the live store, and
+        // its "Copy Message" writes the system pasteboard. Inject both so the coordinator stays store- and
+        // clipboard-framework-agnostic (the headless / test defaults capture instead of touching AppKit).
+        overlay.captureSendToChat = { [weak store] in store?.captureSendToChatContext() }
+        overlay.copyToPasteboard = { text in
+            #if canImport(AppKit)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            #elseif canImport(UIKit)
+            UIPasteboard.general.string = text
+            #endif
+        }
 
         #if os(macOS)
         // EXPLICIT NOTIFICATIONS (OSC 9 / OSC 777) + long-command + agent-attention → local macOS
@@ -362,8 +378,29 @@ public struct AislopdeskClientApp: App {
             },
             target: { [weak appConnection] in appConnection?.target ?? .default },
         )
+        // E13 WI-2: the Agents settings-card model. Its seams resolve the active session's FIRST connected
+        // pane metadata façade at CALL time (not at construction — no pane is connected yet) and route the
+        // install/uninstall/status verb through it. The card is host-global but `MetadataClient` is one-per-
+        // pane, so any live channel suffices; with no connected pane the status seam returns `nil` and the
+        // card lands on `.disconnected` ("Connect a session to manage hooks"), never a dead button.
+        let agentHooks = AgentHooksController(
+            install: { [weak store] in
+                guard let store, let client = Self.firstConnectedMetadataClient(store) else { return false }
+                return await client.installAgentHooks()
+            },
+            uninstall: { [weak store] in
+                guard let store, let client = Self.firstConnectedMetadataClient(store) else { return false }
+                return await client.uninstallAgentHooks()
+            },
+            refreshStatus: { [weak store] in
+                guard let store, let client = Self.firstConnectedMetadataClient(store) else { return nil }
+                return await client.agentHookStatus()
+            },
+        )
+
         _store = State(initialValue: store)
         _connection = State(initialValue: appConnection)
+        _agentHooks = State(initialValue: agentHooks)
         _overlayCoordinator = State(initialValue: overlay)
         _folderFrecency = State(initialValue: folderFrecency)
         _dialogMonitor = State(initialValue: monitor)
@@ -384,15 +421,26 @@ public struct AislopdeskClientApp: App {
         // `text:`/`csi:`/`esc:` config binding injects via `sendBytes` and an `unbind:` passes through, both
         // resolved from `WorkspaceBindingRegistry.activeOverrides`. E2/WI-1 threads the palette (⌘⇧P) +
         // cheat-sheet (⌘/) toggles into THIS monitor so the overlay layer is driven by the SAME single chord
-        // owner (never a competing `.keyboardShortcut`). `toggleFind`/`togglePeekReply` stay nil — their
-        // `route` arms already fall back to the tree-path behaviour (`requestFindInActivePane()` /
-        // `jumpToOldestAttentionPane()`); the Find BAR view lands in E5.
+        // owner (never a competing `.keyboardShortcut`). `toggleFind` stays nil — its `route` arm falls back
+        // to the tree-path `requestFindInActivePane()`. `togglePeekReply` IS wired here (E13 / WI-8): ⌘⌥J now
+        // opens the Peek & Reply overlay (replacing the old `jumpToOldestAttentionPane()` route fallback).
         // E5/WI-4: thread the ⇧⌘F Global Search toggle into the SAME NSEvent monitor that owns every chord, so
         // the cross-tab results surface opens from the keyboard (and the View ▸ Global Search… menu item below).
         _keyDispatcher = State(initialValue: WorkspaceKeyDispatcher(
             store: store,
             togglePalette: { [overlay] in overlay.togglePalette() },
             toggleCheatSheet: { [overlay] in overlay.toggleCheatSheet() },
+            // E13 / WI-8 (P4): ⌘⌥J opens the Peek & Reply card over the oldest pane needing attention through
+            // the SAME NSEvent monitor that owns every chord. The coordinator's `togglePeekReply()` HONESTLY
+            // no-ops when nothing needs attention (so the chord does nothing rather than flashing an empty
+            // card) — replacing the prior `jumpToOldestAttentionPane()` fallback in `route`. ⌘⇧J stays E10's
+            // Hint-to-Open (NOT restored to peek-reply).
+            togglePeekReply: { [overlay] in overlay.togglePeekReply() },
+            // E13 / WI-5 (ES-E13-5): ⌘⌃↩ opens the Send-to-Chat dialog over the active pane's captured quote
+            // through the SAME NSEvent monitor that owns every chord. The coordinator HONESTLY no-ops when
+            // there is nothing to quote (no selection + no command block), so the chord does nothing rather
+            // than flashing an empty card.
+            toggleSendToChat: { [overlay] in overlay.toggleSendToChat() },
             toggleGlobalSearch: { [overlay] in overlay.toggleGlobalSearch() },
             // E10 / WI-8 → E11 / WI-7: ⌘J now opens the folded-in Jump-To — the Open-Quickly picker at the
             // `.current` pill — through the SAME NSEvent monitor that owns every chord.
@@ -406,7 +454,13 @@ public struct AislopdeskClientApp: App {
             // ⌘K). Without this the app monitor — which PREEMPTS the responder chain — resolves the GLOBAL
             // chord behind the picker, so ⌘1–9 switched the background tab (not quick-pick) and ⌘W destroyed
             // the focused pane. Esc / a scrim-tap still close it; ⌘⇧O / ⌘J stay global only while it is hidden.
-            isOverlayCapturingKeys: { [overlay] in overlay.openQuicklyVisible },
+            // E13 / WI-8: the Peek & Reply card YIELDS the same way — its reply field must receive normal
+            // typing + the bare-1–9 quick-answer (which a global ⌘-less chord can't steal, but a yield keeps
+            // any modeled chord from firing behind the focused card). Esc / a scrim-tap close it.
+            // E13 / WI-5: the Send-to-Chat dialog (its auto-focused comment field) folds into the SAME gate via
+            // `capturesKeyboardWhileVisible` — without it a modeled ⌘W destroyed a background pane / ⌘1–9
+            // switched a background tab behind the open dialog (the chord leaked past the focused field).
+            isOverlayCapturingKeys: { [overlay] in overlay.capturesKeyboardWhileVisible },
         ))
         #endif
     }
@@ -445,6 +499,12 @@ public struct AislopdeskClientApp: App {
                 // L4: hand the single live PreferencesStore to deep views (the agent footer's W4
                 // notification dismissal/enable persistence reads it via `\.preferencesStore`).
                 .preferencesStore(preferences)
+                // E13 (ES-E13-1/ES-E13-2 iOS halves): inject the app-owned Agents install-hooks controller so
+                // the iOS `WorkspaceRootView` can hand it to the settings `SettingsSheet` (the macOS `Settings`
+                // scene injects it separately). Harmless on macOS (the main window does not host the Agents
+                // card). Without this the iOS Agents card was permanently `.disconnected` and the whole
+                // Agent-Behaviour toggle block greyed out (the controller's `@Environment` resolved nil).
+                .agentHooksController(agentHooks)
                 // E2/WI-1: inject the single overlay coordinator so deep views (the agent footer's "open
                 // settings" hook, future toast emitters) reach it via `\.overlayCoordinator`. The host view
                 // that renders the palette / cheat sheet / toasts lands in WI-5.
@@ -570,12 +630,19 @@ public struct AislopdeskClientApp: App {
         // `NSEvent` monitor (`keyDispatcher`) owns chord dispatch (incl. the multi-key prefix), so a menu
         // shortcut would double-fire / swallow a prefix tail. E2/WI-1 threads the palette + cheat-sheet
         // toggles (capturing the SAME coordinator the NSEvent dispatcher drives) so the menu items toggle the
-        // identical overlays — cheap parity. `toggleFind`/`togglePeekReply` stay nil (tree-path route arms).
+        // identical overlays — cheap parity. `toggleFind` stays nil (tree-path route arm); `togglePeekReply`
+        // is wired (E13 / WI-8) so the View ▸ Peek & Reply menu row drives the same ⌘⌥J overlay.
         .commands {
             WorkspaceCommands(
                 store: store,
                 togglePalette: { [overlayCoordinator] in overlayCoordinator.togglePalette() },
                 toggleCheatSheet: { [overlayCoordinator] in overlayCoordinator.toggleCheatSheet() },
+                // E13 / WI-8 (P4): the View ▸ Peek & Reply menu row opens the SAME overlay the ⌘⌥J chord
+                // drives (the menu mirrors the chord; the NSEvent dispatcher owns the chord itself).
+                togglePeekReply: { [overlayCoordinator] in overlayCoordinator.togglePeekReply() },
+                // E13 / WI-5 (ES-E13-5): the Agents ▸ Send to Chat menu row opens the SAME ⌘⌃↩ dialog the
+                // chord drives (the menu mirrors the chord; the NSEvent dispatcher owns the chord itself).
+                toggleSendToChat: { [overlayCoordinator] in overlayCoordinator.toggleSendToChat() },
                 toggleGlobalSearch: { [overlayCoordinator] in overlayCoordinator.toggleGlobalSearch() },
                 // E10 / WI-8 → E11 / WI-7: the View ▸ Jump To… menu item opens the folded-in Jump-To (the
                 // Open-Quickly picker at the `.current` pill), the SAME overlay the ⌘J chord drives.
@@ -610,8 +677,23 @@ public struct AislopdeskClientApp: App {
         #if os(macOS)
         // Thread the live `WorkspaceStore` into the Settings scene so the Advanced → Workspace rows (E7
         // WI-4) can export/import (the Settings scene is separate from the WindowGroup above).
-        AislopdeskSettingsScene(store: preferences, workspaceStore: store)
+        AislopdeskSettingsScene(store: preferences, workspaceStore: store, agentHooks: agentHooks)
         #endif
+    }
+
+    /// E13 WI-2: the FIRST connected pane's metadata façade in the active session, or `nil` when no pane
+    /// carries a live channel. The Agents settings card (install/uninstall/status) is host-global but
+    /// `MetadataClient` is one-per-pane, so it routes through whichever pane is connected; a `nil` here lets
+    /// the card show "Connect a session to manage hooks" instead of a dead button. Resolved at CALL time so a
+    /// reconnect transparently re-points the seam.
+    @MainActor
+    private static func firstConnectedMetadataClient(_ store: WorkspaceStore) -> MetadataClient? {
+        for id in store.tree.activeSession?.allPaneIDs() ?? [] {
+            if let client = (store.handle(for: id) as? LivePaneSession)?.connection?.activeMetadataClient {
+                return client
+            }
+        }
+        return nil
     }
 
     /// Promotes every `AISLOPDESK_<KEY>=<VALUE>` launch argument into the process environment via `setenv`.

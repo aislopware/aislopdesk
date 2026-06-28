@@ -33,6 +33,10 @@ struct WorkspaceCommands: Commands {
     var toggleCheatSheet: (() -> Void)?
     var toggleFind: (() -> Void)?
     var togglePeekReply: (() -> Void)?
+    /// E13 / WI-5 (ES-E13-5): the Agents ▸ Send to Chat menu row opens the SAME ⌘⌃↩ dialog (the menu mirrors
+    /// the chord; the NSEvent dispatcher owns the chord itself). `nil` keeps the menu item a graceful no-op via
+    /// `route`, never a dead menu item.
+    var toggleSendToChat: (() -> Void)?
     var toggleDetailsPanel: (() -> Void)?
     var toggleSidebar: (() -> Void)?
     /// E5 / WI-4: the cross-tab Global Search overlay toggle (otty ⇧⌘F, the View ▸ Global Search… menu item).
@@ -137,6 +141,7 @@ struct WorkspaceCommands: Commands {
                 toggleCheatSheet: toggleCheatSheet,
                 toggleFind: toggleFind,
                 togglePeekReply: togglePeekReply,
+                toggleSendToChat: toggleSendToChat,
                 toggleDetailsPanel: toggleDetailsPanel,
                 toggleSidebar: toggleSidebar,
                 toggleGlobalSearch: toggleGlobalSearch,

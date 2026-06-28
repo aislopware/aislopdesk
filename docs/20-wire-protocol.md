@@ -184,8 +184,11 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
     `UInt8` of `MetadataVerb`: `1` processes, `2` ports, `3` cwd, `4` gitStatus (subsumes branch +
     remote + repo toplevel + ahead/behind + changed files), `5` gitDiff, `6` listDirectory, `7` listAgentSessions,
     `8` readAgentSession — all **read-only** — plus the two **side-effecting** verbs `9` openPath and
-    `10` revealPath (E10). `payload` is the verb's length-prefixed argument — empty for the pane-scoped
-    verbs (`processes`/`ports`/`cwd`/`gitStatus`), a UTF-8 path/id for the parameterized ones
+    `10` revealPath (E10), and the **agent-hooks** verbs `11` installAgentHooks / `12` uninstallAgentHooks
+    (side-effecting) / `13` agentHookStatus (a pure read returning a 1-byte flag) (E13). `payload` is the
+    verb's length-prefixed argument — empty for the pane-scoped verbs (`processes`/`ports`/`cwd`/`gitStatus`)
+    AND for the host-global agent-hooks verbs (`installAgentHooks`/`uninstallAgentHooks`/`agentHookStatus`),
+    a UTF-8 path/id for the parameterized ones
     (`gitDiff`/`listDirectory`/`listAgentSessions`/`readAgentSession`), and a raw UTF-8 **absolute host
     path** for `openPath`/`revealPath`.
   - **`openPath` (9) / `revealPath` (10) are the ONLY side-effecting verbs** (E10 — the otty ⌘click /
@@ -197,6 +200,18 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
     vector and accept ANY absolute path **without cwd-subtree confinement** (unlike the read verbs below).
     The host routes 9/10 to a thin macOS shim (`HostPathActionPerformer`) BEFORE the read-only responder,
     which never performs a side effect; the iOS client routes open/reveal TO the host over this same wire.
+  - **`installAgentHooks` (11) / `uninstallAgentHooks` (12) / `agentHookStatus` (13) are the agent-hooks
+    verbs** (E13 — the Agents settings card). 11/12 are **side-effecting** like 9/10: the host writes (the
+    hook script + a merge into `~/.claude/settings.json`) or strips exactly our entries via `AgentInstaller`
+    and replies with an **empty payload** + a status (`ok` on a successful write, `error` if it threw).
+    13 is a **pure read** of the install marker that returns status `ok` + a **1-byte** payload (`1`
+    installed / `0` not) — it reads ONLY the marker, NO host file contents cross the wire, so (unlike the
+    read verbs below) it is not an exfiltration vector and needs no cwd confinement. All three carry an
+    **empty request payload** and are **host-global** (install/uninstall act on the host's single
+    `~/.claude/settings.json` regardless of which pane's channel carried the request). The host routes
+    11/12/13 to a thin macOS shim (`HostAgentActionPerformer`) BEFORE the read-only responder; the iOS
+    client routes install/uninstall/status TO the host over this same wire. **Claude Code only** (no
+    codex/opencode install path is ever surfaced).
   - **`metadataResponse`** body = `[UInt32 BE requestID][UInt8 status][UInt32 BE payloadLen][payload]`.
     The host **always replies** (so the client's pending-request registry never hangs — `status =
     error`/empty on any failure). `status` is the raw `UInt8` of `MetadataStatus`: `0` ok, `1`
@@ -212,9 +227,11 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
     stream host file CONTENTS back) path args are confined to the pane's cwd subtree (reject `..` escapes
     / absolute paths outside the repo root) and entry counts / byte sizes are capped before reading, so a
     hostile `listDirectory("/etc")` / `readAgentSession("../../secrets")` cannot exfiltrate arbitrary host
-    files. The side-effecting `openPath`/`revealPath` (9/10) are exempt from cwd confinement — they return
-    only a status byte (no host bytes cross the wire, so there is nothing to exfiltrate) — but still
-    validate-then-drop (empty/relative → `error`, missing → `notFound`). All ride the
+    files. The side-effecting `openPath`/`revealPath` (9/10) and the agent-hooks verbs (11/12/13) are
+    exempt from cwd confinement — they return only a status byte (and, for `agentHookStatus`, a single
+    flag byte), so no host file contents cross the wire and there is nothing to exfiltrate — but still
+    validate-then-drop (`openPath`/`revealPath`: empty/relative → `error`, missing → `notFound`;
+    `install`/`uninstall`: a thrown disk write → `error`). All ride the
     head-of-line-independent CONTROL channel like `title`/`commandStatus` and are **not**
     sequenced/replayed.
 

@@ -260,6 +260,14 @@ public final class TerminalViewModel {
     /// `nil` (Composer unwired) the submenu row greys out. `@ObservationIgnored`: wiring, not view state.
     @ObservationIgnored public var onPasteToComposer: (() -> Void)?
 
+    /// E13 WI-5 (ES-E13-5): the right-click "Send to Chat" item — instead of acting on the byte stream, the
+    /// renderer TRIGGERS this (parameterless) so the leaf focuses THIS pane and opens the client Send-to-Chat
+    /// dialog (the ``OverlayCoordinator`` captures the pane's selection / last command and routes the composed
+    /// message to a chosen agent pane). The presence of this hook also DRIVES the menu item's enablement
+    /// (``TerminalContextMenu/Context/canSendToChat``): while it is `nil` (Send-to-Chat unwired — headless /
+    /// preview) the row greys out. `@ObservationIgnored`: wiring, not view state. Nil for headless callers.
+    @ObservationIgnored public var onRequestSendToChat: (() -> Void)?
+
     /// W14 #5: the ⌘F / right-click "Find…" action — opens the find-in-terminal bar over THIS pane. The
     /// renderer's menu (and the `find:` responder selector) call it; the leaf wires it to the find-bar
     /// `@State`. `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
@@ -310,6 +318,17 @@ public final class TerminalViewModel {
     @discardableResult
     public func performSearchSurfaceAction(_ action: String) -> Bool {
         (surface as? TerminalSurfaceActions)?.performBindingAction(action) ?? false
+    }
+
+    /// E13 WI-5 (Send to Chat): the active mouse-made libghostty selection text, or `nil` when there is no
+    /// selection (or it is empty). Reads libghostty truth ONLY through the same ``TerminalSurfaceActions``
+    /// seam copy-mode uses (``copyCurrentSelectionOrScrollback``) — never a client-guessed range, never a
+    /// hang-prone real surface in a test (a headless / preview surface does not conform → `nil`). The
+    /// Send-to-Chat capture quotes this when present (selection wins over the last-command fallback).
+    public func currentSelectionText() -> String? {
+        guard let actions = surface as? TerminalSurfaceActions, actions.hasSelection(),
+              let selection = actions.readSelection(), !selection.isEmpty else { return nil }
+        return selection
     }
 
     /// WS-B / B4·B5: the PURE keybinding interceptor (prefix engine + override-aware single-chord table) the

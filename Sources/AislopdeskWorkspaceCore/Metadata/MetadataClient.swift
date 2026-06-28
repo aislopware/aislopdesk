@@ -153,6 +153,37 @@ public final class MetadataClient {
         return status == .ok
     }
 
+    /// E13 WI-1 — installs the aislopdesk Claude Code hooks ON THE HOST (``MetadataVerb/installAgentHooks``;
+    /// the Agents settings-card "Install" action). Host-global (acts on `~/.claude/settings.json`
+    /// regardless of this pane), so the request carries an EMPTY payload. Returns `true` only on a host
+    /// `.ok`; `false` for `.error` (the install threw) / an unsupported verb / a dropped reply (the
+    /// registry's timeout → `.error`). The response payload is empty (side-effect-only verb).
+    public func installAgentHooks() async -> Bool {
+        let (status, _) = await request(.installAgentHooks)
+        return status == .ok
+    }
+
+    /// E13 WI-1 — uninstalls the aislopdesk Claude Code hooks ON THE HOST (``MetadataVerb/uninstallAgentHooks``;
+    /// the Agents settings-card "Uninstall" action). Strips exactly our entries, leaving the user's own
+    /// hooks intact. Empty request payload (host-global). Returns `true` only on a host `.ok`; `false`
+    /// otherwise (timeout → `.error`). The response payload is empty.
+    public func uninstallAgentHooks() async -> Bool {
+        let (status, _) = await request(.uninstallAgentHooks)
+        return status == .ok
+    }
+
+    /// E13 WI-1 — reports whether the aislopdesk Claude Code hooks are installed on the host
+    /// (``MetadataVerb/agentHookStatus``; drives the Agents card's status row). Empty request payload.
+    /// Returns `true` when the host replied `.ok` with a leading `1` byte, `false` on a leading `0` byte,
+    /// and `nil` on ANY other outcome — a non-`.ok` status, an empty payload, an unsupported verb, or a
+    /// dropped reply (timeout → `.error`). The `nil` (status-unknown) case is what lets the card show
+    /// "Connect a session to manage hooks" instead of a false "Not Installed".
+    public func agentHookStatus() async -> Bool? {
+        let (status, payload) = await request(.agentHookStatus)
+        guard status == .ok, let flag = payload.first else { return nil }
+        return flag == 1
+    }
+
     // MARK: Core round-trip
 
     /// Sends `verb` + `payload`, awaits the reply, and maps the raw status byte to ``MetadataStatus``

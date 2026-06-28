@@ -97,6 +97,51 @@ public final class OverlayCoordinator {
     /// is open. Defaults to ``.all`` (the ⌘⇧O entry).
     public private(set) var openQuicklyFilter: OpenQuicklyFilter = .all
 
+    // MARK: Peek & Reply state (P4 / E13 WI-8 — answer a blocked agent INLINE, ⌘⌥J)
+
+    /// Whether the Peek & Reply overlay (⌘⌥J) is presented. A centered, SCRIMMED card over the oldest pane
+    /// needing attention (``WorkspaceStore/peekReplyTargetPane(excluding:)``) that lets the user ANSWER a
+    /// blocked agent INLINE — observe + reply, **NEVER an approval gate** (E13 binding directive 2; the agent
+    /// is never paused pending an aislopdesk confirmation). Included in ``anyModalVisible`` and mounted behind
+    /// a ``Scrim`` by ``OverlayHostView``.
+    public private(set) var peekReplyVisible = false
+
+    /// The advance-to-next exclusion set accumulated while the overlay is open (E13 WI-8): each answered pane
+    /// is added here so ``peekReplyTarget()`` skips it on the immediate advance (the just-answered pane may
+    /// still report `.needsPermission` until the host re-reports). Reset on every open / close so a fresh open
+    /// re-targets cleanly.
+    public private(set) var peekReplyExcluding: Set<PaneID> = []
+
+    // MARK: Send-to-Chat state (E13 WI-5 / ES-E13-5 — ⌘⌃↩)
+
+    /// Whether the Send-to-Chat dialog (⌘⌃↩) is presented. A centered, SCRIMMED card over the workspace
+    /// (`send-to-chat-frame-03/04.png`) that quotes the active pane's selection / last command and routes the
+    /// composed message to a chosen Claude-only agent pane. Included in ``anyModalVisible`` and mounted behind
+    /// a ``Scrim`` by ``OverlayHostView``. Opening HONESTLY no-ops when there is nothing to quote (no selection
+    /// + no command block), so ⌘⌃↩ on an empty pane does nothing rather than flashing an empty card.
+    public private(set) var sendToChatVisible = false
+    /// The captured quote shown in the dialog (the source title + the verbatim quoted text). `nil` until a
+    /// successful capture opens the dialog.
+    public private(set) var sendToChatContext: SendToChatContext?
+    /// The live Claude-only agent panes the quote can be routed to (built off the store on open). Empty ⇒ the
+    /// picker offers only "New session".
+    public private(set) var sendToChatSessions: [SendToChatSession] = []
+    /// The picker's pre-selected target on open — the last-used session if still live, else the first live
+    /// agent pane, else `nil` ("New session"). Resolved via ``SendToChatModel/defaultSession(in:lastUsed:)``.
+    public private(set) var sendToChatInitialSelection: PaneID?
+    /// The in-memory last-used Send-to-Chat target (the spec's "last-used session is the default"). Updated on
+    /// every send + on a manual picker change so the next open pre-selects it.
+    @ObservationIgnored private var lastChatTarget: PaneID?
+    /// Captures the active pane's quote (selection / last command). Injected by ``WorkspaceRootView`` to read
+    /// the live store (``WorkspaceStore/captureSendToChatContext()``); the default reads the attached store, so
+    /// a test can override it with a synthetic context. `nil` from it ⇒ nothing to quote ⇒ the dialog stays
+    /// closed (the honest no-op).
+    @ObservationIgnored public var captureSendToChat: (@MainActor () -> SendToChatContext?)?
+    /// Writes the composed message to the system pasteboard (the dialog's "Copy Message"). Injected by the
+    /// root (AppKit / UIKit) so the coordinator stays clipboard-framework-agnostic; default no-op (tests /
+    /// previews).
+    @ObservationIgnored public var copyToPasteboard: @MainActor (String) -> Void = { _ in }
+
     // MARK: Remote-window picker state (L6)
 
     /// Whether the Remote-Window picker modal is presented (the `/remote-control` pill + the "New Remote
@@ -141,6 +186,18 @@ public final class OverlayCoordinator {
     /// gates Global Search's hit-testing separately on ``globalSearchVisible``.
     public var anyModalVisible: Bool {
         paletteVisible || cheatSheetVisible || connectVisible || remotePickerVisible || openQuicklyVisible
+            || peekReplyVisible || sendToChatVisible
+    }
+
+    /// Whether a presented overlay must OWN the keyboard — the narrower subset of ``anyModalVisible`` the app's
+    /// `isOverlayCapturingKeys` gate reads so the global ``WorkspaceKeyDispatcher`` NSEvent monitor (which
+    /// PREEMPTS the responder chain) YIELDS modeled chords to the focused card instead of resolving them
+    /// behind it. The Open-Quickly picker, the Peek & Reply card, AND (E13 / WI-5) the Send-to-Chat dialog
+    /// each host a focused field / quick-answer chords (`.onKeyPress`), so a modeled ⌘W / ⌘1–9 / ⌘T must reach
+    /// them, never destroy / switch a background pane. SINGLE source of truth for that gate (the app's closure
+    /// reads THIS), so adding an overlay here keeps the dispatcher honest without duplicating the predicate.
+    public var capturesKeyboardWhileVisible: Bool {
+        openQuicklyVisible || peekReplyVisible || sendToChatVisible
     }
 
     // MARK: Toasts
@@ -460,6 +517,114 @@ public final class OverlayCoordinator {
     /// chords (⌘0/⌘W/⌘R/⌘Z/⌘G/⌘J) drive this while the panel is open.
     public func setOpenQuicklyFilter(_ filter: OpenQuicklyFilter) {
         openQuicklyFilter = filter
+    }
+
+    // MARK: Peek & Reply (⌘⌥J — answer a blocked agent INLINE · E13 WI-8 / P4)
+
+    /// Present the Peek & Reply overlay over the oldest pane needing attention. HONEST no-op when nothing
+    /// needs attention (no target ⇒ the card would be empty) — exactly mirroring the routing contract "the
+    /// toggle closure itself no-ops when nothing needs attention", so ⌘⌥J on a calm workspace does nothing
+    /// rather than flashing an empty card. Resets the advance-exclusion so each open starts fresh.
+    public func openPeekReply() {
+        peekReplyExcluding = []
+        guard store?.peekReplyTargetPane() != nil else { return }
+        peekReplyVisible = true
+    }
+
+    /// Dismiss the Peek & Reply overlay and clear the advance-exclusion (so the next open targets fresh).
+    public func closePeekReply() {
+        peekReplyVisible = false
+        peekReplyExcluding = []
+    }
+
+    /// Toggle the Peek & Reply overlay (the ⌘⌥J binding the app threads into the key dispatcher + the menu).
+    public func togglePeekReply() {
+        if peekReplyVisible { closePeekReply() } else { openPeekReply() }
+    }
+
+    /// The pane the overlay currently targets: the focused-blocked-first / oldest-attention selection
+    /// (``WorkspaceStore/peekReplyTargetPane(excluding:)``) over the panes NOT yet answered this session.
+    /// `nil` when nothing is left to answer (the view then closes). Reads the store's `@Observable`
+    /// per-pane status + the exclusion set, so a SwiftUI body that calls it re-resolves on either change.
+    public func peekReplyTarget() -> PaneID? {
+        store?.peekReplyTargetPane(excluding: peekReplyExcluding)
+    }
+
+    /// Deliver one formatted reply to `pane` then ADVANCE. The caller pre-formats via ``PeekReplyFormatter``
+    /// (digit / bang-shell / plain), which already appends the single trailing newline — so `text` is sent
+    /// **VERBATIM** down the same per-pane PTY funnel (``WorkspaceStore/sendPeekReply(_:to:)``), NEVER through
+    /// `SendKeysParser`. Then the just-answered pane is excluded and, when nothing is left needing attention,
+    /// the overlay closes. Observe + reply, **never a gate** — the agent was never blocked waiting on us.
+    public func deliverPeekReply(_ text: String, to pane: PaneID) {
+        store?.sendPeekReply(text, to: pane)
+        advancePeekReply(answered: pane)
+    }
+
+    /// Advance past the just-answered `pane`: add it to the exclusion set, then close the overlay when no pane
+    /// still needs attention. Public so the view's submit / quick-answer paths (and a test) drive it directly.
+    public func advancePeekReply(answered pane: PaneID) {
+        peekReplyExcluding.insert(pane)
+        if peekReplyTarget() == nil { closePeekReply() }
+    }
+
+    // MARK: Send to Chat (⌘⌃↩ — quote the active pane → a chosen agent · E13 WI-5 / ES-E13-5)
+
+    /// Present the Send-to-Chat dialog over the active pane's captured quote. HONEST no-op when there is
+    /// nothing to quote (no selection + no command block) — mirroring ``openPeekReply()`` — so ⌘⌃↩ on an empty
+    /// pane does nothing rather than flashing an empty card. Builds the Claude-only session picker off the
+    /// store and pre-selects the last-used (or first live) agent pane.
+    public func openSendToChat() {
+        guard let store else { return }
+        // The injected capture wins (the app wires it to the live store; a test overrides it); falling back to
+        // the attached store keeps the default working even if the app forgot to inject one.
+        guard let context = captureSendToChat?() ?? store.captureSendToChatContext() else { return }
+        sendToChatContext = context
+        sendToChatSessions = store.agentChatSessions()
+        sendToChatInitialSelection = SendToChatModel.defaultSession(
+            in: sendToChatSessions, lastUsed: lastChatTarget,
+        )?.id
+        sendToChatVisible = true
+    }
+
+    /// Dismiss the Send-to-Chat dialog and clear its captured quote / session list (so a stale capture can't
+    /// leak into the next open).
+    public func closeSendToChat() {
+        sendToChatVisible = false
+        sendToChatContext = nil
+        sendToChatSessions = []
+        sendToChatInitialSelection = nil
+    }
+
+    /// Toggle the Send-to-Chat dialog (the ⌘⌃↩ binding the app threads into the key dispatcher + the menu).
+    public func toggleSendToChat() {
+        if sendToChatVisible { closeSendToChat() } else { openSendToChat() }
+    }
+
+    /// Record a manual picker change as the new last-used default (the dialog's `onSelectionChange`), so the
+    /// next open pre-selects it even if the user cancels this one.
+    public func recordSendToChatSelection(_ target: PaneID?) {
+        if let target { lastChatTarget = target }
+    }
+
+    /// Deliver the composed `message` to the chosen target then close. A live agent pane (`target`) routes
+    /// through ``WorkspaceStore/sendChatMessage(_:to:)`` (the per-pane ordered-OUT VERBATIM sink — which also
+    /// AUTO-SWITCHES focus to that pane); a `nil` target ("New session") spawns a fresh terminal tab and
+    /// injects the message after the launch grace (``WorkspaceStore/sendChatToNewSession(_:)``). The chosen
+    /// live target is remembered as the last-used default for the next open.
+    public func sendChat(to target: PaneID?, message: String) {
+        if let target {
+            store?.sendChatMessage(message, to: target)
+            lastChatTarget = target
+        } else {
+            store?.sendChatToNewSession(message)
+        }
+        closeSendToChat()
+    }
+
+    /// Copy the composed `message` to the pasteboard WITHOUT sending (the dialog's "Copy Message"), then close.
+    public func copyChatMessage(_ message: String) {
+        copyToPasteboard(message)
+        closeSendToChat()
     }
 
     // MARK: Remote-window picker (L6 / W1)

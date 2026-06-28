@@ -17,9 +17,19 @@
 // `\.preferencesStore`); the live `WorkspaceStore` rides the `\.workspaceStore` environment slot (injected
 // at the sheet root in `WorkspaceRootView`) so the Advanced → Workspace export/import works on iOS too.
 //
+// E13 (ES-E13-1/ES-E13-2 iOS halves): the app-owned `AgentHooksController` is THREADED in here and injected
+// onto the section content via `.agentHooksController(_:)`, mirroring the macOS `AislopdeskSettingsScene`.
+// Without it the Agents card was permanently `.disconnected` and the entire Agent-Behaviour toggle block was
+// greyed out on iOS (the controller's `@Environment` resolved nil).
+//
+// CROSS-PLATFORM COMPILE: although this is only ever PRESENTED on iOS, the struct compiles on every platform
+// (the lone iOS-only modifier `.navigationBarTitleDisplayMode` is abstracted behind `inlineNavTitle()`) so
+// the iOS settings host is unit-testable on the headless macOS `swift test` host — iOS view code otherwise
+// rots silently (CLAUDE.md). It is referenced only inside `WorkspaceRootView`'s `#if os(iOS)` branch.
+//
 // Otty.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
 
-#if os(iOS) && canImport(SwiftUI)
+#if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
 import SwiftUI
 
@@ -31,6 +41,12 @@ struct SettingsSheet: View {
     /// and the `@Observable` store re-renders whichever leaf reads a changed field.
     let store: PreferencesStore
 
+    /// E13: the app-owned Agents install-hooks controller, threaded from `AislopdeskClientApp` (held as
+    /// `@State` on every platform) so the iOS Agents card's Install/Uninstall/Status round-trips AND the
+    /// gated Agent-Behaviour toggles are LIVE — mirrors the macOS `AislopdeskSettingsScene` injection. `nil`
+    /// (a preview / no scene) → the card renders the disabled "Connect a session" state rather than crashing.
+    let agentHooks: AgentHooksController?
+
     @Environment(\.dismiss) private var dismiss
 
     /// A local selected-section state ONLY to satisfy the All-Settings ✎ jump binding. On the compact iOS
@@ -38,8 +54,9 @@ struct SettingsSheet: View {
     /// (recorded as a nice-to-have in WI-3), so on iOS setting this is a harmless no-op.
     @State private var selectedSection: SettingsSection = .general
 
-    init(store: PreferencesStore) {
+    init(store: PreferencesStore, agentHooks: AgentHooksController? = nil) {
         self.store = store
+        self.agentHooks = agentHooks
     }
 
     var body: some View {
@@ -50,15 +67,18 @@ struct SettingsSheet: View {
                         SettingsSectionContent(
                             section: section, store: store, selectedSection: $selectedSection,
                         )
+                        // E13: thread the app-owned controller into the pushed section so the Agents card +
+                        // behaviour toggles resolve a live `@Environment(\.agentHooksController)` on iOS too.
+                        .agentHooksController(agentHooks)
                         .navigationTitle(section.title)
-                        .navigationBarTitleDisplayMode(.inline)
+                        .inlineNavTitle()
                     } label: {
                         Label(section.title, systemImage: section.systemImage)
                     }
                 }
             }
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -67,6 +87,19 @@ struct SettingsSheet: View {
         }
         .tint(Otty.State.accent)
         .preferredColorScheme(Otty.colorScheme)
+    }
+}
+
+private extension View {
+    /// `.navigationBarTitleDisplayMode(.inline)` is iOS/tvOS/watchOS-only; a cross-platform no-op elsewhere so
+    /// the settings sheet compiles (and unit-tests) on the macOS host even though it is only PRESENTED on iOS.
+    @ViewBuilder
+    func inlineNavTitle() -> some View {
+        #if os(iOS)
+        navigationBarTitleDisplayMode(.inline)
+        #else
+        self
+        #endif
     }
 }
 #endif

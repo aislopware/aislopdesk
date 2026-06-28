@@ -3,6 +3,7 @@ import AislopdeskClient
 import AislopdeskInspector
 import AislopdeskVideoProtocol // W12: EnvConfig — the behaviour-preserving config resolver (env → overlay → default)
 import Foundation
+import Observation // E13 WI-7: withObservationTracking — drive fork detection off the inspector's session id
 
 // MARK: - LivePaneSession (the production handle)
 
@@ -88,6 +89,31 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// `.needsPermission` the host set via a hook, so type-26 updates THIS string and nothing else. `nil`
     /// until the host reports one. Observed so any chrome that shows it re-renders.
     public private(set) var foregroundProcessName: String?
+
+    // MARK: Fork / Branch detection (E13 WI-7 — a `/branch` mints a NEW Claude session id)
+
+    /// The BASELINE Claude session id last seen for this pane (the inspector channel's reported
+    /// ``AislopdeskInspector/SessionInfo/sessionID``). Updated on every advertised id; a NEW id appearing
+    /// AFTER this is non-nil is the `/branch` fingerprint. Private — only the fork-signal fold reads/writes it.
+    private var knownAgentSessionID: String?
+
+    /// The PENDING fork target: the new Claude session id a detected `/branch` minted, awaiting a "Fork in…"
+    /// palette action to spawn `claude --resume <id>` (VERBATIM) into a split / tab. `nil` until a branch is
+    /// detected; CONSUMED (cleared) by ``consumeForkSessionID()`` so one branch is resumed exactly once.
+    /// Observed so any chrome that gates the fork affordance on a pending branch re-renders on the edge.
+    public private(set) var forkSessionID: String?
+
+    /// One-shot guard so the inspector-session observation (which re-arms itself) is started ONCE, not stacked
+    /// per subscribe / iOS resume cycle.
+    private var forkObservationArmed = false
+
+    /// E13 WI-6 (ES-E13-6): the Claude session id this pane is CURRENTLY running — its baseline
+    /// ``knownAgentSessionID`` exposed ONLY while a live agent hosts it (`claudeStatus != .none`), so a pane
+    /// whose claude has exited (id retained, status fallen back to `.none`) drops out of the Resume jump map
+    /// and a Resume of that session SPAWNS a fresh run rather than wrongly "jumping" to a dead tab. `nil`
+    /// otherwise. Drives ``WorkspaceStore/liveAgentSessionIDs()`` via the ``LiveAgentSessionProviding`` seam.
+    var liveAgentSessionID: String? { claudeStatus == .none ? nil : knownAgentSessionID }
+
     /// The live inspector second-channel client. Set when the inspector is subscribed; nilled on
     /// pause/teardown. Private so callers go through the lifecycle methods.
     private var inspectorClient: InspectorClient?
@@ -515,6 +541,9 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         if newStatus == .done { composer?.notePromptIdle() }
         if !wasActive, isActive {
             // A claude just appeared in this terminal → open the read-only inspector second channel.
+            // E13 WI-7: also start tracking this pane's Claude session id so a later `/branch` (a NEW id) is
+            // caught for the fork action. Idempotent (the observation re-arms itself; the guard set-once).
+            armForkSessionObservation()
             inspectorTask?.cancel()
             inspectorTask = Task { [weak self] in await self?.subscribeInspector() }
         } else if wasActive, !isActive {
@@ -527,6 +556,61 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
                 Task { await toClose.close() }
             }
         }
+    }
+
+    // MARK: - Fork / Branch detection fold (E13 WI-7 / ES-E13-7)
+
+    /// Folds one ``ClaudeSignal`` carrying a session id into the fork state. When ``ForkSessionDetector``
+    /// reports a NEW (different) id: update the baseline, and — when a baseline was ALREADY established (so the
+    /// id is a `/branch`, not the pane's FIRST claude) — record it as the pending ``forkSessionID``. The
+    /// first-ever session for a pane only seeds the baseline (it is never a fork). `@discardableResult` +
+    /// internal so it is independently exercisable; the live driver is ``trackForkSessionID()`` off the
+    /// inspector channel. Returns the recorded fork id (or `nil` when the signal was baseline / no-change).
+    @discardableResult
+    func feedForkSignal(_ signal: ClaudeSignal) -> String? {
+        guard let newID = ForkSessionDetector.detectNewSession(previous: knownAgentSessionID, signal: signal)
+        else { return nil }
+        let hadBaseline = knownAgentSessionID != nil
+        knownAgentSessionID = newID
+        guard hadBaseline else { return nil } // the pane's FIRST claude is the baseline, not a fork
+        forkSessionID = newID
+        return newID
+    }
+
+    /// Reads AND clears the pending fork target. A branch is resumed EXACTLY ONCE — two panes running
+    /// `claude --resume <same-id>` would put two clients on one session — so the "Fork in…" routing consumes
+    /// it here. `nil` when no `/branch` is pending (a graceful no-op fork, never a dead palette entry).
+    func consumeForkSessionID() -> String? {
+        defer { forkSessionID = nil }
+        return forkSessionID
+    }
+
+    /// Starts the (self-re-arming) observation of the inspector channel's reported Claude session id, ONCE
+    /// (the `forkObservationArmed` guard). A no-op for a pane with no inspector (never an agent).
+    private func armForkSessionObservation() {
+        guard !forkObservationArmed, inspector != nil else { return }
+        forkObservationArmed = true
+        trackForkSessionID()
+    }
+
+    /// Observes the inspector model's session id and feeds each change into ``feedForkSignal(_:)``.
+    /// `withObservationTracking`'s `onChange` fires DURING the property's `willSet`, so the new value is read
+    /// on the next main-actor turn (a `Task`), which also re-arms the one-shot tracker. A `/branch` flips
+    /// `inspector.session.sessionID` to a fresh id (a new `SessionStart` replayed over the read-only channel)
+    /// → the fold records the fork target.
+    private func trackForkSessionID() {
+        withObservationTracking {
+            _ = inspector?.session?.sessionID
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.handleForkSessionChange() }
+        }
+    }
+
+    /// Reads the inspector's CURRENT session id (after the mutation that woke `onChange` committed), folds it
+    /// into the fork state, and re-arms the tracker for the next change.
+    private func handleForkSessionChange() {
+        feedForkSignal(.hook(.sessionStart(sessionID: inspector?.session?.sessionID)))
+        trackForkSessionID()
     }
 
     // MARK: - PaneSessionHandle: video activation
@@ -650,3 +734,9 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         if composer != nil { SettingsKey.setComposerPinned(false, paneID: id) }
     }
 }
+
+// MARK: - LiveAgentSessionProviding (E13 WI-6 — the Resume jump map's session-id seam)
+
+/// Exposes the pane's live Claude session id (``liveAgentSessionID``) to ``WorkspaceStore/liveAgentSessionIDs()``
+/// so the History viewer's Resume can JUMP to a tab already running a session instead of spawning a duplicate.
+extension LivePaneSession: LiveAgentSessionProviding {}

@@ -74,6 +74,20 @@ final class EnvBridgeTests: XCTestCase {
         XCTAssertFalse(EnvConfig.boolDefaultOff("AISLOPDESK_AGENT_HOOKS"))
     }
 
+    /// E13 WI-3: the two new sidecar agent flags map 1:1 to their host env keys; an unset field emits nothing.
+    func testAgentPreferencesMapsPreventSleepAndResumeKeys() {
+        // Only the new fields set — the detect/hooks keys stay absent (unset emits nothing).
+        let onOff = EnvBridge.toEnv(AgentPreferences(preventSleep: true, resumeOnRecovery: false))
+        XCTAssertEqual(onOff["AISLOPDESK_AGENT_PREVENT_SLEEP"], "1")
+        XCTAssertEqual(onOff["AISLOPDESK_AGENT_RESUME_ON_RECOVERY"], "0")
+        XCTAssertNil(onOff["AISLOPDESK_AGENT_DETECT"], "an unset field emits nothing")
+        XCTAssertNil(onOff["AISLOPDESK_AGENT_HOOKS"])
+
+        let offOn = EnvBridge.toEnv(AgentPreferences(preventSleep: false, resumeOnRecovery: true))
+        XCTAssertEqual(offOn["AISLOPDESK_AGENT_PREVENT_SLEEP"], "0")
+        XCTAssertEqual(offOn["AISLOPDESK_AGENT_RESUME_ON_RECOVERY"], "1")
+    }
+
     // MARK: Symmetric keys
 
     func testSymmetricKeysFlagged() {

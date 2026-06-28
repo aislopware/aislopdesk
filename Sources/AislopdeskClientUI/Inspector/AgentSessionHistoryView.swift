@@ -27,11 +27,23 @@ struct AgentSessionHistoryView: View {
     /// Dismisses the viewer (the Info tab clears its `showSessionHistory` flag). Defaults to a no-op so a
     /// preview / test can instantiate the view standalone.
     var onClose: () -> Void = {}
+    /// Live agent session id → the pane currently running it (the store's live agent panes). Resume JUMPS to
+    /// a matching live tab instead of spawning a duplicate; empty (the default) ⇒ Resume always spawns.
+    /// E13/WI-6.
+    var liveSessionIDs: [String: PaneID] = [:]
+    /// Performs a Resume for the open session: jump to its live pane, or spawn one running the VERBATIM
+    /// `claude --resume <id>`. No-op default so the viewer is standalone-mountable (previews / tests). E13/WI-6.
+    var onResume: (AgentResumeRouter.ResumeTarget) -> Void = { _ in }
 
     /// The session whose transcript is open, or `nil` while showing the session LIST (master view).
     @State private var selectedSession: MetadataCodec.AgentSessionInfo?
     /// The parsed transcript of `selectedSession` (empty while loading / on failure / for an empty log).
     @State private var entries: [AgentTranscriptEntry] = []
+    /// The open transcript's RAW JSONL text (the bytes `readAgentSession` returned), shown when `showRaw`.
+    /// E13/WI-6.
+    @State private var rawText = ""
+    /// The transcript header's rendered ⇄ raw-JSONL toggle (otty's `agent-history.png` toggle). E13/WI-6.
+    @State private var showRaw = false
     /// True while the `readAgentSession` round-trip for `selectedSession` is in flight.
     @State private var loading = false
     /// True when the most recent read failed (a `nil` byte reply) — distinct from a legitimately empty log.
@@ -70,6 +82,10 @@ struct AgentSessionHistoryView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: Otty.Metric.space2)
+            if selectedSession != nil {
+                rawToggleButton
+                resumeButton
+            }
             Button(action: onClose) {
                 HStack(spacing: Otty.Metric.space1) {
                     Image(systemName: "xmark")
@@ -85,6 +101,37 @@ struct AgentSessionHistoryView: View {
         .padding(.horizontal, Otty.Metric.space3)
         .frame(height: 40)
         .background(Otty.Surface.sidebar)
+    }
+
+    /// The rendered ⇄ raw-JSONL toggle (transcript header, otty `agent-history.png`): when showing the
+    /// rendered transcript it offers "Raw" (the `{}` log), and vice-versa. Only shown with a session open.
+    private var rawToggleButton: some View {
+        Button { showRaw.toggle() } label: {
+            HStack(spacing: Otty.Metric.space1) {
+                Image(systemName: showRaw ? "doc.plaintext" : "curlybraces")
+                Text(showRaw ? "Rendered" : "Raw")
+            }
+            .font(.system(size: Otty.Typeface.footnote, weight: .medium))
+            .foregroundStyle(Otty.Text.secondary)
+        }
+        .buttonStyle(.plain)
+        .help(showRaw ? "Show the rendered transcript" : "Show the raw JSONL log")
+    }
+
+    /// The Resume button (transcript header, top-right of `agent-history.png`): re-opens the session via the
+    /// pure ``AgentResumeRouter`` — jump to a live tab already running it, else spawn `claude --resume <id>`.
+    /// Claude-only (the resume verb is fixed; BINDING directive 1).
+    private var resumeButton: some View {
+        Button(action: resume) {
+            HStack(spacing: Otty.Metric.space1) {
+                Image(systemName: "play.circle")
+                Text("Resume")
+            }
+            .font(.system(size: Otty.Typeface.footnote, weight: .medium))
+            .foregroundStyle(Otty.Text.primary)
+        }
+        .buttonStyle(.plain)
+        .help("Resume this session")
     }
 
     private var headerTitle: String {
@@ -172,6 +219,8 @@ struct AgentSessionHistoryView: View {
                 systemImage: "exclamationmark.triangle",
                 note: "The session transcript could not be read from the host",
             )
+        } else if showRaw {
+            rawTranscriptView
         } else if entries.isEmpty {
             emptyState(
                 "Empty Transcript",
@@ -179,15 +228,46 @@ struct AgentSessionHistoryView: View {
                 note: "This session has no rendered turns yet",
             )
         } else {
-            VStack(alignment: .leading, spacing: 0) {
-                if let selectedSession { sessionMeta(selectedSession) }
-                Rectangle().fill(Otty.Line.divider).frame(height: 1)
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(entries) { entry in
-                            transcriptRow(entry)
-                        }
+            renderedTranscriptView
+        }
+    }
+
+    /// The human-readable transcript: the session meta header over the parsed speaker turns. The rendered
+    /// path is byte-identical to the pre-WI-6 detail view (the raw branch is parallel, not a rewrite).
+    private var renderedTranscriptView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let selectedSession { sessionMeta(selectedSession) }
+            Rectangle().fill(Otty.Line.divider).frame(height: 1)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(entries) { entry in
+                        transcriptRow(entry)
                     }
+                }
+            }
+        }
+    }
+
+    /// The RAW JSONL log (the "Raw" toggle, otty `agent-history.png`): the verbatim bytes `readAgentSession`
+    /// returned, monospaced + selectable. An empty log shows the empty state rather than a blank pane.
+    private var rawTranscriptView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let selectedSession { sessionMeta(selectedSession) }
+            Rectangle().fill(Otty.Line.divider).frame(height: 1)
+            if rawText.isEmpty {
+                emptyState(
+                    "Empty Transcript",
+                    systemImage: "doc.plaintext",
+                    note: "This session's log is empty",
+                )
+            } else {
+                ScrollView([.vertical, .horizontal]) {
+                    Text(rawText)
+                        .font(.system(size: Otty.Typeface.small, design: .monospaced))
+                        .foregroundStyle(Otty.Text.primary)
+                        .textSelection(.enabled)
+                        .padding(Otty.Metric.space3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -273,6 +353,7 @@ struct AgentSessionHistoryView: View {
     private func open(_ session: MetadataCodec.AgentSessionInfo) {
         selectedSession = session
         entries = []
+        rawText = ""
         loadFailed = false
         loading = true
         let assistantName = AgentTranscript.agentLabel(session.agentKind)
@@ -280,20 +361,35 @@ struct AgentSessionHistoryView: View {
             let bytes = await model.readAgentSession(id: session.id)
             guard selectedSession?.id == session.id else { return }
             if let bytes {
+                // LOSSY by design (the raw JSONL toggle shows what decodes, never traps on a stray byte) —
+                // the same tolerance `AgentTranscript.entries(from:)` applies to the rendered parse.
+                // swiftlint:disable:next optional_data_string_conversion
+                rawText = String(decoding: bytes, as: UTF8.self)
                 entries = AgentTranscript.entries(from: bytes, assistantName: assistantName)
                 loadFailed = false
             } else {
                 entries = []
+                rawText = ""
                 loadFailed = true
             }
             loading = false
         }
     }
 
-    /// Returns to the session list (master), discarding the open transcript.
+    /// Resumes the open session (E13/WI-6): the pure ``AgentResumeRouter`` decides jump-to-live vs spawn off
+    /// `liveSessionIDs`, and the injected `onResume` performs it (the inspector focuses the live pane or sends
+    /// the VERBATIM `claude --resume <id>`). Claude-only — the resume verb is fixed (BINDING directive 1).
+    private func resume() {
+        guard let session = selectedSession else { return }
+        onResume(AgentResumeRouter.target(sessionID: session.id, liveSessionIDs: liveSessionIDs))
+    }
+
+    /// Returns to the session list (master), discarding the open transcript and resetting the raw toggle.
     private func back() {
         selectedSession = nil
         entries = []
+        rawText = ""
+        showRaw = false
         loading = false
         loadFailed = false
     }

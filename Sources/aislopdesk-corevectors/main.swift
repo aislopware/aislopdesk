@@ -913,6 +913,14 @@ root["metadataWireMessages"] = [
             "payloadHex": hex(Data("/Users/me/project/main.swift".utf8)),
         ],
     ),
+    // request: installAgentHooks (E13 WI-1) — a SIDE-EFFECTING agent verb (11) with an EMPTY payload
+    // (uninstallAgentHooks = 12 / agentHookStatus = 13 are byte-identical save the verb byte; one sample
+    // pins the new agent-hooks verb family on the wire, mirroring E10's single openPath sample for 9/10).
+    wmRecord(
+        "metadataRequest",
+        .metadataRequest(requestID: 0x0B0C_0D0E, verb: 11, payload: Data()),
+        ["requestId": UInt32(0x0B0C_0D0E), "verb": Int(11), "payloadHex": ""],
+    ),
     // response: ok, empty payload (e.g. an empty list / cleared field).
     wmRecord(
         "metadataResponse",
@@ -936,6 +944,13 @@ root["metadataWireMessages"] = [
         "metadataResponse",
         .metadataResponse(requestID: 99, status: 200, payload: metaUnicodePayload),
         ["requestId": UInt32(99), "status": Int(200), "payloadHex": hex(metaUnicodePayload)],
+    ),
+    // response: agentHookStatus (E13 WI-1) — status .ok + a 1-byte flag payload (1 = installed / 0 = not);
+    // pins the new 1-byte status-flag response shape (the only agent-hooks reply carrying a payload).
+    wmRecord(
+        "metadataResponse",
+        .metadataResponse(requestID: 0x0B0C_0D0E, status: 0, payload: Data([0x01])),
+        ["requestId": UInt32(0x0B0C_0D0E), "status": Int(0), "payloadHex": hex([0x01])],
     ),
 ]
 

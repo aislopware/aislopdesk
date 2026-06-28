@@ -59,7 +59,7 @@ enum RailRowsBuilder {
                 // E6 WI-2: the `#N` is the TAB shortcut number (1-based), the trailing label is the host's
                 // coarse foreground process, and the row carries ONE fused badge from the pure resolver.
                 let processLabel = store.paneForegroundProcess[paneID]
-                let badge = TabBadgeResolver.badge(
+                let resolvedBadge = TabBadgeResolver.badge(
                     agent: status,
                     completion: store.panePendingCompletion[paneID],
                     isBusy: store.paneIsBusy(paneID),
@@ -72,6 +72,11 @@ enum RailRowsBuilder {
                     // indeterminate) or `.error` (held-red `9;4;2`) via the EXISTING precedence — no new badge.
                     progress: store.progress(for: paneID),
                 )
+                // E13 WI-3: apply the otty "Agent Behaviour" badge toggles AFTER the pure resolver — a per-pane
+                // override (the tab context-menu) beats the global default. `error`/`sudo`/`caffeinate` survive
+                // the gate (never an agent-badge opt-out); `running`/`completed`/`finished`/`awaitingInput` drop
+                // when their toggle is OFF.
+                let badge = AgentBadgeGates.gated(resolvedBadge, by: store.agentBadgeGates(for: paneID))
                 out.append(RailRow(
                     id: paneID,
                     tabID: tab.id,

@@ -16,12 +16,15 @@
 // not slam N sockets). The whole leaf is keyed `.id(PaneID)` by the caller (PaneContainer) so the surface
 // / connection is never reused across panes (identity hazard). SYSTEM colours only.
 //
+// E13 WI-4 (ES-E13-4): the `AgentInputFooterView` (Claude bottom bar) now mounts agent-gated at the pane
+// bottom (just above the status bar) over a per-leaf `AgentInputFooterCoordinator`; its "File explorer" pill
+// reveals an embedded file panel (so the side-panel-beside-the-surface idea is folded into the footer).
+//
 // DEFERRED (clean seams, do NOT wire in L2):
 //   - TODO(L3): the `TerminalBlocksView` command-block decoration overlay.
-//   - TODO(L5): the `AgentInputFooter` (Claude bottom bar) at the pane bottom.
-//   - TODO(L5): the `FileExplorerPanel` side panel.
 
 #if canImport(SwiftUI)
+import AislopdeskAgentDetect // E13 WI-4: `ClaudeStatus` — the agent-gate for the Claude bottom-bar mount.
 import AislopdeskWorkspaceCore
 import Foundation
 import SwiftUI
@@ -86,12 +89,31 @@ struct TerminalLeafView: View {
     /// is simply swallowed there, never a crash.
     @Environment(\.overlayCoordinator) private var overlayCoordinator
 
+    /// E13 WI-4: the single live ``PreferencesStore`` (injected once at the scene root) the
+    /// ``AgentInputFooterCoordinator`` needs for the green-suggestion-chip enable/dismiss persistence (W4).
+    /// `nil` outside the app scene (tests/previews) ⇒ the chip shows by default and a click is a no-op
+    /// persistence-wise (the coordinator tolerates a `nil` store), never a crash.
+    @Environment(\.preferencesStore) private var preferencesStore
+
+    /// E13 WI-4: the per-leaf Claude bottom-bar coordinator (the single ``AgentInputFooterAction`` dispatch
+    /// site). Built + wired in `wireAgentFooter()` on appear / live-session swap and torn down on disappear;
+    /// the footer VIEW mounts over it only while this pane hosts a detected agent (`showAgentFooter`). Per-pane
+    /// (`.id(PaneID)`-keyed leaf), so no cross-pane bleed.
+    @State private var agentFooter: AgentInputFooterCoordinator?
+
     var body: some View {
         VStack(spacing: 0) {
-            // TODO(L5): mount `FileExplorerPanel` beside the surface when the per-pane explorer is open.
             terminalSurface
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             bottomComposer
+            // E13 WI-4 (ES-E13-4): the Claude bottom bar — mounted agent-gated (`claudeStatus != .none`)
+            // just ABOVE the status bar, so it reflows in below the surface exactly like the Composer. The
+            // coordinator is built in `wireAgentFooter()`; the leaf-side `showAgentFooter` gate is the single
+            // mount decision (an unmounted coordinator is a silent no-op — E2/OverlayCoordinator lesson).
+            if showAgentFooter, let agentFooter {
+                AgentInputFooterView(coordinator: agentFooter)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             // E10 WI-4 (ES-E10-3 / ES-E10-4): the flat ≤20pt status bar along the pane BOTTOM (the opposite
             // edge from the E17 top-trailing pills). Gated `!staticMirror && !hideStatusBar` and only for a
             // live terminal pane; a thin renderer over the pure ``StatusBarContent`` model.
@@ -107,7 +129,6 @@ struct TerminalLeafView: View {
                     hoverFullPath: live?.terminalModel?.hoveredLinkFullPath,
                 )
             }
-            // TODO(L5): mount `AgentInputFooter` at the pane bottom (agent-gated).
         }
         .background(NativePaneColor.terminalBackground)
         .task(id: live?.id) { await connectIfNeeded() }
@@ -119,11 +140,16 @@ struct TerminalLeafView: View {
         // hit-test can resolve a RELATIVE detected path to its absolute form for the status-bar preview. The
         // cwd arrives reactively from `PaneContainer` (OSC 7) and changes independently of the live-session id,
         // so it gets its own `onChange`; `initial: true` seeds it once on mount. No-op when no model yet.
-        .onChange(of: cwd, initial: true) { live?.terminalModel?.linkCwd = cwd }
+        .onChange(of: cwd, initial: true) {
+            live?.terminalModel?.linkCwd = cwd
+            // E13 WI-4: keep the footer's file-explorer bound to the live cwd so an open panel follows `cd`.
+            agentFooter?.updateCwd(cwd)
+        }
         // Clear the callbacks when the leaf is torn down so a dead `@State` holder can't be driven by a
         // surviving model (the model is owned by the live session, which can outlive this `.id(PaneID)` leaf).
         .onDisappear { clearPaneCallbacks() }
         .animation(Otty.Anim.reveal, value: live?.composer?.isVisible)
+        .animation(Otty.Anim.reveal, value: showAgentFooter)
     }
 
     /// The bottom Composer chrome — the Prompt-Queue chip strip + the ``ComposerBar``, reflowed in below the
@@ -148,6 +174,15 @@ struct TerminalLeafView: View {
     /// a pure renderer — this leaf-side gate is the single hide decision (so a hidden strip costs nothing).
     private var showStatusBar: Bool {
         !staticMirror && live?.terminalModel != nil && !SettingsKey.hideStatusBarEnabled
+    }
+
+    /// Whether the Claude bottom bar (E13 WI-4) mounts: a live terminal pane, NOT the static-mirror snapshot
+    /// path, and a detected agent in this pane (the host's type-27 verdict lifted ``LivePaneSession/claudeStatus``
+    /// off `.none`). Reading the OBSERVABLE `claudeStatus` here re-renders the leaf so the footer reveals the
+    /// instant a `claude` is detected (and tears down when it leaves). E13 is Claude-only, so the gate is the
+    /// generic `claudeStatus != .none` (no `AgentKind.codex` is ever surfaced — carryover constraint #1).
+    private var showAgentFooter: Bool {
+        !staticMirror && live?.terminalModel != nil && live?.claudeStatus != ClaudeStatus.none && agentFooter != nil
     }
 
     /// Whether the in-pane Composer chrome should mount: a live terminal pane, not the static mirror, the
@@ -307,6 +342,7 @@ struct TerminalLeafView: View {
         wireHintCallbacks()
         wireNavigatorCallbacks()
         wirePathActionCallbacks()
+        wireAgentFooter()
     }
 
     /// Clear all per-pane view callbacks on teardown so a surviving model can't drive a dead leaf's `@State`.
@@ -317,6 +353,66 @@ struct TerminalLeafView: View {
         clearHintCallbacks()
         clearNavigatorCallbacks()
         clearPathActionCallbacks()
+        clearAgentFooter()
+    }
+
+    // MARK: - Claude bottom bar (E13 WI-4 / ES-E13-4)
+
+    /// The agent display name surfaced on the footer's green-suggestion pill + used as its per-agent
+    /// notification-persistence key. E13 is **Claude-only** (carryover constraint #1 — `AgentKind.codex` is
+    /// never rendered), so the bar always names Claude Code.
+    private static let agentDisplayName = "Claude Code"
+
+    /// Build + wire the per-pane ``AgentInputFooterCoordinator`` for a terminal pane (rebuilt on every
+    /// live-session swap). It is created EAGERLY for any terminal — not gated on the agent status — so when
+    /// the host later detects a `claude` (``LivePaneSession/claudeStatus`` lifts off `.none`) the footer VIEW
+    /// (gated by `showAgentFooter`) reveals over an already-wired coordinator with NO extra plumbing.
+    ///
+    /// Hooks (the parent-supplied seams the coordinator can't complete on its own):
+    /// - `onOpenSettings`     → the Settings overlay (the Agents card lives there, E13 WI-2).
+    /// - `onStartRemoteControl` → the existing remote-window picker (E13 reuses the L6 seam).
+    /// - `onAddContext`       → toggles the file explorer (docs/30: the "+" pill "toggles the file explorer";
+    ///   never a dead stub).
+    /// - `onSelectFile`       → splice the chosen path into the pane's durable Composer (caret-aware insert).
+    ///
+    /// A no-op for a non-terminal / static-mirror leaf (the footer never mounts there).
+    private func wireAgentFooter() {
+        guard !staticMirror, live?.terminalModel != nil else {
+            agentFooter = nil
+            return
+        }
+        let footer = AgentInputFooterCoordinator(
+            agentName: Self.agentDisplayName,
+            inputBar: live?.inputBar,
+            preferences: preferencesStore,
+            cwd: cwd,
+            isRemote: footerIsRemote,
+        )
+        let overlay = overlayCoordinator
+        footer.onOpenSettings = { overlay?.openSettings() }
+        footer.onStartRemoteControl = { overlay?.openRemotePicker() }
+        // The "+" add-context pill has no menu yet (L4 stub) → toggle the file explorer, the one real
+        // attach affordance, so it is a live action rather than a silent no-op (docs/30 mapping).
+        footer.onAddContext = { [weak footer] in footer?.handle(.toggleFileExplorer) }
+        // A file pick splices its absolute path into the durable Composer at the caret (the same `insert`
+        // seam ⌘V / the context-menu paste use), revealing the Composer so the user sees it land.
+        footer.onSelectFile = { [weak composer = live?.composer] path in composer?.insert(path) }
+        agentFooter = footer
+    }
+
+    /// Drop the footer coordinator on teardown so a closed leaf's `@State` can't be driven (and the captured
+    /// overlay / composer references are released with it).
+    private func clearAgentFooter() {
+        agentFooter = nil
+    }
+
+    /// Whether the footer's file explorer should treat the pane's cwd as living on a DIFFERENT machine (so it
+    /// shows the honest "not available for remote panes" state rather than listing the client's own disk). The
+    /// PTY runs on the host, so a connected non-loopback host is remote; an empty / loopback host (the local
+    /// dev + same-machine GUI-verify case) lists the cwd directly. Mirrors ``FileExplorerLister``'s remote gate.
+    private var footerIsRemote: Bool {
+        let trimmed = host.trimmingCharacters(in: .whitespaces)
+        return !(trimmed.isEmpty || trimmed == "localhost" || trimmed == "127.0.0.1" || trimmed == "::1")
     }
 
     /// Wire the pane's host OPEN / REVEAL path callbacks (E10 WI-7 / ES-E10-2 / ES-E10-6) to the pane's live
@@ -435,6 +531,15 @@ struct TerminalLeafView: View {
             guard let markdown = ComposerPasteboard.richMarkdown() else { return }
             composer?.pasteRich(markdown)
         }
+        // E13 / WI-5 (ES-E13-5): the right-click "Send to Chat" item focuses THIS pane (so the coordinator
+        // captures the right pane's selection / last command) then opens the client Send-to-Chat dialog. `nil`
+        // when no coordinator is in scope (tests / previews) ⇒ the menu row greys out honestly.
+        if let overlay = overlayCoordinator, let paneID = live?.id {
+            model.onRequestSendToChat = { [weak store] in
+                store?.focusPaneTree(paneID)
+                overlay.openSendToChat()
+            }
+        }
     }
 
     /// Nil the Composer callbacks so the durable terminal model stops referencing this torn-down leaf's
@@ -444,6 +549,7 @@ struct TerminalLeafView: View {
         model.onRequestComposer = nil
         model.onRequestPromptQueue = nil
         model.onPasteToComposer = nil
+        model.onRequestSendToChat = nil
     }
 
     /// Wire the pane's SECURE-INPUT actuator (E17 ES-E17-4 / WI-7): sync the controller to the model's current

@@ -77,6 +77,39 @@ public extension WorkspaceStore {
         if let value { paneForegroundProcess[id] = value } else { paneForegroundProcess.removeValue(forKey: id) }
     }
 
+    // MARK: E13 WI-3 — agent-badge gating (per-pane override + Clear-Badge)
+
+    /// The effective ``AgentBadgeGates`` for pane `id`: the per-pane OVERRIDE if one is set (the tab
+    /// context-menu badge toggles), else the GLOBAL default from ``SettingsKey/agentBadgeGates``. The ONE
+    /// seam ``RailRowsBuilder`` reads before running ``AgentBadgeGates/gated(_:by:)`` on the resolver output.
+    func agentBadgeGates(for id: PaneID) -> AgentBadgeGates {
+        paneAgentBadgeOverrides[id] ?? SettingsKey.agentBadgeGates
+    }
+
+    /// Sets (or clears, on `nil`) pane `id`'s per-pane badge override. Idempotent (a no-op when unchanged so
+    /// it never churns the rail). Passing `nil` drops the override so the pane follows the global default again.
+    func setAgentBadgeOverride(_ gates: AgentBadgeGates?, for id: PaneID) {
+        guard paneAgentBadgeOverrides[id] != gates else { return }
+        if let gates { paneAgentBadgeOverrides[id] = gates } else { paneAgentBadgeOverrides.removeValue(forKey: id) }
+    }
+
+    /// Flips ONE per-pane badge gate (the tab context-menu toggle): seeds the override from the pane's
+    /// CURRENT effective gates (override-else-global) so the first flip preserves the other two bits, then
+    /// stores the toggled copy.
+    func toggleAgentBadgeGate(_ gate: AgentBadgeGate, for id: PaneID) {
+        setAgentBadgeOverride(agentBadgeGates(for: id).toggling(gate), for: id)
+    }
+
+    /// otty "Clear Badge" (the tab right-click action): ACKNOWLEDGE pane `id`'s completion / attention so its
+    /// badge drops. Clears any pending ✓/✗ completion badge AND, when the agent is at ``ClaudeStatus/done``
+    /// (the finished-turn dot), settles it to ``ClaudeStatus/idle`` (acknowledged — contributes no badge). A
+    /// LIVE state (running / awaiting-input / a held progress error) is deliberately left alone — Clear-Badge
+    /// acknowledges unread output, it never fakes-away a still-active signal (and NEVER an approval gate).
+    func clearAgentBadge(_ id: PaneID) {
+        setCompletionBadge(nil, for: id)
+        if agentStatus(for: id) == .done { setAgentStatus(.idle, for: id) }
+    }
+
     // MARK: Rollups (the sidebar/tab/chrome dot derivations)
 
     /// The most-urgent agent status over every leaf of session `sessionID` (Herdr rollup:

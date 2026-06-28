@@ -1918,6 +1918,8 @@ final class GhosttyLayerBackedView: NSView {
             hasCommandOutput: model?.blocks.latest?.complete ?? false,
             // E8 / ES-E8-4: "Paste and continue in Composer" lights only when the Composer hook is wired.
             hasComposer: model?.onPasteToComposer != nil,
+            // E13 / WI-5 (ES-E13-5): "Send to Chat" lights only when the dialog hook is wired (the leaf set it).
+            canSendToChat: model?.onRequestSendToChat != nil,
         )
         let menu = NSMenu()
 
@@ -2017,6 +2019,10 @@ final class GhosttyLayerBackedView: NSView {
                     NSPasteboard.general.setString(text, forType: .string)
                 }
             }
+        case .sendToChat:
+            // E13 WI-5: hand off to the client Send-to-Chat dialog (the leaf focuses THIS pane + the overlay
+            // coordinator captures its selection / last command and routes the composed message to an agent).
+            model?.onRequestSendToChat?()
         case .splitRight: model?.onContextMenuSplit?(true)
         case .splitDown: model?.onContextMenuSplit?(false)
         case .find: model?.onRequestFind?()

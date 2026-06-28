@@ -224,6 +224,24 @@ public enum AgentInstaller {
         return try writeSettings(stripped, to: settingsPath, fileManager: fileManager)
     }
 
+    /// E13 WI-1 — PURE read of the install marker: true iff `settingsPath` carries at least one of OUR
+    /// hook entries (matched by ``hookMarker`` via ``entryIsOurs(_:)``). Reads the settings tolerantly
+    /// (a missing / unreadable / corrupt / hook-less file → empty root → `false`, never a trap), scans
+    /// every event's entry array, and stops on the first marker hit. The ONLY genuine logic add to this
+    /// file for the agent-hooks wire (the host's `agentHookStatus` verb returns this as a 1-byte flag).
+    public static func isInstalled(
+        settingsPath: String,
+        fileManager: FileManager = .default,
+    ) -> Bool {
+        let root = readSettings(settingsPath, fileManager: fileManager)
+        guard case let .object(obj) = root, case let .object(hooks)? = obj["hooks"] else { return false }
+        for (_, value) in hooks {
+            guard case let .array(entries) = value else { continue }
+            if entries.contains(where: entryIsOurs) { return true }
+        }
+        return false
+    }
+
     /// Reads + decodes `settings.json`, returning an empty object root on a missing / unreadable
     /// / non-JSON file (validate-then-repair — never traps on a corrupt settings file).
     static func readSettings(_ path: String, fileManager: FileManager) -> JSONValue {

@@ -69,16 +69,26 @@ public struct AislopdeskSettingsScene: Scene {
     /// (an environment value set on the WindowGroup does not cross into this scene). Optional so a preview
     /// or a future host can omit it (the Workspace section then renders disabled).
     private let workspaceStore: WorkspaceStore?
+    /// E13 WI-2: the app-owned Agents install-hooks model, injected so the Agents card's Install/Uninstall/
+    /// Status round-trips reach the host. Optional so a preview / future host can omit it (the card then
+    /// renders the disabled "Connect a session" state).
+    private let agentHooks: AgentHooksController?
 
-    public init(store: PreferencesStore, workspaceStore: WorkspaceStore? = nil) {
+    public init(
+        store: PreferencesStore,
+        workspaceStore: WorkspaceStore? = nil,
+        agentHooks: AgentHooksController? = nil,
+    ) {
         self.store = store
         self.workspaceStore = workspaceStore
+        self.agentHooks = agentHooks
     }
 
     public var body: some Scene {
         Settings {
             SettingsView(store: store)
                 .workspaceStore(workspaceStore)
+                .agentHooksController(agentHooks)
                 .tint(Otty.State.accent)
                 .preferredColorScheme(Otty.colorScheme)
         }
@@ -1486,21 +1496,46 @@ private enum ThemeSelection: Hashable {
 
 // MARK: - Agents section
 
-/// Agents: the host-side agent-detection flags (relocated from the old Video tab — read by the host daemon,
-/// so they apply on reconnect) plus the layout-auto-switch and clipboard-history fire-time toggles (LIVE).
+/// Agents: the CLAUDE CODE install-hooks card (E13 WI-2 — install/uninstall + a status row, driven through
+/// the host metadata channel), then the host-side agent-detection flags (relocated from the old Video tab —
+/// read by the host daemon, so they apply on reconnect) plus the layout-auto-switch and clipboard-history
+/// fire-time toggles (LIVE). **Claude Code only** (E13 binding directive 1): there is NO codex/opencode card
+/// — `MetadataCodec.AgentKind.codex` is documented-dead, never rendered.
 private struct AgentsSettingsTab: View {
     @Bindable var store: PreferencesStore
+
+    /// E13 WI-2: the install-hooks model, injected by the app scene (its seams target the active connection's
+    /// first-pane ``MetadataClient``). `nil` outside the app scene (previews / the iOS sheet before its wiring
+    /// lands) → the card renders in the disabled "Connect a session" state rather than crashing.
+    @Environment(\.agentHooksController) private var agentHooks
 
     @Default(.autoSwitchLayouts) private var autoSwitchLayouts
     @Default(.recordClipboardHistory) private var recordClipboardHistory
 
+    // E13 WI-3: the otty "Agent Behaviour" toggles. badge×3 + notify×2 are fire-time `Defaults.Keys` (apply
+    // live); prevent-sleep / resume-on-recovery ride the `AgentPreferences` sidecar (`$store.agent`, reconnect).
+    @Default(.agentBadgeWhileProcessing) private var agentBadgeWhileProcessing
+    @Default(.agentBadgeWhenComplete) private var agentBadgeWhenComplete
+    @Default(.agentBadgeWhenAwaitingInput) private var agentBadgeWhenAwaitingInput
+    @Default(.agentNotifyTaskComplete) private var agentNotifyTaskComplete
+    @Default(.agentNotifyAwaitInput) private var agentNotifyAwaitInput
+
+    /// The Agent-Behaviour section is greyed out until at least one integration is installed (otty parity) —
+    /// read off the install-card controller's state. `nil`/disconnected ⇒ not installed ⇒ greyed.
+    private var behaviorEnabled: Bool { AgentSettingsCard.behaviourEnabled(agentHooks) }
+
     var body: some View {
         Form {
+            claudeCodeSection
+
             Section("Agent detection (host)") {
                 optionalBoolToggle("Foreground-process watch", $store.agent.agentDetect)
                 optionalBoolToggle("Claude Code hooks", $store.agent.agentHooks)
                 timingFooter(.reconnect)
             }
+
+            agentBehaviorSection
+            agentBehaviorHostSection
 
             Section("Behaviour") {
                 Toggle("Auto-switch layouts on trigger app", isOn: $autoSwitchLayouts)
@@ -1509,6 +1544,131 @@ private struct AgentsSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        // Re-probe the host install state on each open (per spec — not cached forever); `.task` re-fires when
+        // the Agents tab re-appears and auto-cancels on disappear.
+        .task { await agentHooks?.refresh() }
+    }
+
+    // MARK: Agent Behaviour (E13 WI-3 — badge×3 + notify×2, greyed until an integration is installed)
+
+    /// The otty "Agent Behaviour" badge/notify toggles (apply LIVE). Greyed out until at least one
+    /// integration is installed (``behaviorEnabled``); Claude-only. The badge toggles drive the GLOBAL
+    /// ``AgentBadgeGates`` default the sidebar applies (a per-pane override lives on the tab context-menu).
+    private var agentBehaviorSection: some View {
+        Section("Agent Behaviour") {
+            Toggle("Badge While Processing", isOn: $agentBadgeWhileProcessing)
+            Toggle("Badge When Task Completes", isOn: $agentBadgeWhenComplete)
+            Toggle("Badge When Awaiting Input", isOn: $agentBadgeWhenAwaitingInput)
+            Toggle("Notify When Task Completes", isOn: $agentNotifyTaskComplete)
+            Toggle("Notify When Awaiting Input", isOn: $agentNotifyAwaitInput)
+            if !behaviorEnabled {
+                Text("Install an integration above to configure agent behaviour.")
+                    .font(.system(size: Otty.Typeface.footnote))
+                    .foregroundStyle(Otty.Text.tertiary)
+            }
+            timingFooter(.live)
+        }
+        .disabled(!behaviorEnabled)
+    }
+
+    /// The host-side Agent-Behaviour flags (apply on RECONNECT) — Prevent Sleep + Resume on Recovery, riding
+    /// the ``AgentPreferences`` sidecar (`$store.agent`). Greyed alongside the live section; Claude-only.
+    private var agentBehaviorHostSection: some View {
+        Section("Agent Behaviour (host)") {
+            optionalBoolToggle("Prevent Sleep While Processing", $store.agent.preventSleep)
+            optionalBoolToggle("Resume on Recovery", $store.agent.resumeOnRecovery)
+            timingFooter(.reconnect)
+        }
+        .disabled(!behaviorEnabled)
+    }
+
+    // MARK: Claude Code install-hooks card (`install-agent-integeration.png`)
+
+    /// The CLAUDE CODE card: a bold "Install Hooks" title + gray description with trailing pill buttons
+    /// (Install when not installed, "Installed" disabled + Uninstall when installed) and a Status row
+    /// ("✓ Installed" green / "Not Installed" gray). Disabled with a "Connect a session" note while no pane
+    /// backs the card. Claude-only.
+    @ViewBuilder
+    private var claudeCodeSection: some View {
+        let state = AgentSettingsCard.installState(agentHooks)
+        Section("Claude Code") {
+            LabeledContent {
+                installButtons(state)
+            } label: {
+                rowLabel(
+                    "Install Hooks",
+                    "Add aislopdesk hooks to ~/.claude/settings.json for real-time state updates",
+                )
+            }
+
+            LabeledContent("Status") { statusBadge(state) }
+
+            if state == .disconnected || state == .unknown {
+                Text("Connect a session to manage hooks")
+                    .font(.system(size: Otty.Typeface.footnote))
+                    .foregroundStyle(Otty.Text.tertiary)
+            }
+
+            // Install/uninstall write the host file LIVE, but Claude only re-reads its settings.json on the
+            // next launch — so this is an agent-restart caveat, not a host-reconnect-gated sidecar flag (hence
+            // a plain caption, not the `.reconnect` "Applies on reconnect" chip, which would mislead).
+            Text("Hooks take effect after the agent restarts.")
+                .font(.system(size: Otty.Typeface.small))
+                .foregroundStyle(Otty.Text.tertiary)
+        }
+    }
+
+    /// The trailing pill buttons for the Install Hooks row, keyed on the install state. While a write is in
+    /// flight a small spinner replaces the buttons; while disconnected/unknown the Install button shows
+    /// disabled (honest — never a dead-looking enabled button with no backing pane).
+    private func installButtons(_ state: AgentHooksController.InstallState) -> some View {
+        HStack(spacing: Otty.Metric.space2) {
+            switch state {
+            case .installed:
+                Button("Installed") {}.disabled(true)
+                Button("Uninstall") { Task { await agentHooks?.uninstall() } }
+            case .notInstalled:
+                Button("Install") { Task { await agentHooks?.install() } }
+            case .working:
+                ProgressView().controlSize(.small)
+            case .disconnected,
+                 .unknown:
+                Button("Install") {}.disabled(true)
+            }
+        }
+        .buttonStyle(.bordered)
+    }
+
+    /// The Status-row trailing badge: a green "✓ Installed" / gray "Not Installed" / neutral "Working…" /
+    /// "—" by state.
+    @ViewBuilder
+    private func statusBadge(_ state: AgentHooksController.InstallState) -> some View {
+        switch state {
+        case .installed:
+            Label("Installed", systemImage: "checkmark")
+                .foregroundStyle(Otty.Status.ok)
+        case .notInstalled:
+            Text("Not Installed").foregroundStyle(Otty.Text.secondary)
+        case .working:
+            Text("Working…").foregroundStyle(Otty.Text.secondary)
+        case .disconnected,
+             .unknown:
+            Text("—").foregroundStyle(Otty.Text.tertiary)
+        }
+    }
+
+    /// otty's row label: a bold title with an optional gray subtext beneath (mirrors the Appearance tab's
+    /// `rowLabel`, kept local so the Agents card composes without widening that struct's visibility).
+    private func rowLabel(_ title: String, _ subtitle: String?) -> some View {
+        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+            Text(title)
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.system(size: Otty.Typeface.footnote))
+                    .foregroundStyle(Otty.Text.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     private func optionalBoolToggle(_ title: String, _ binding: Binding<Bool?>) -> some View {
@@ -1516,6 +1676,42 @@ private struct AgentsSettingsTab: View {
             get: { binding.wrappedValue ?? false },
             set: { binding.wrappedValue = $0 ? true : nil },
         )) { Text(title) }
+    }
+}
+
+// MARK: - Agents card state derivation (E13 WI-2 — the ONE nil-controller fallback, shared + testable)
+
+/// The Agents card's derived state from the (optional) injected ``AgentHooksController`` — the ONE place the
+/// nil-controller fallbacks live, so the macOS Settings scene and the iOS ``SettingsSheet`` derive the card
+/// identically. A `nil` controller (no injection — e.g. the iOS-sheet wiring that this regression fixes) MUST
+/// fall back to ``AgentHooksController/InstallState/disconnected`` + behaviour-disabled, NEVER a false live
+/// card. Pure + cross-platform so it is unit-pinned headlessly (`AgentSettingsCardTests`).
+enum AgentSettingsCard {
+    /// The install-card state to show: the controller's state, or `.disconnected` when no controller backs it.
+    static func installState(_ controller: AgentHooksController?) -> AgentHooksController.InstallState {
+        controller?.state ?? .disconnected
+    }
+
+    /// Whether the Agent-Behaviour toggles are configurable (an integration is installed). A nil controller ⇒
+    /// `false` ⇒ the whole behaviour section is greyed (the exact iOS bug when the controller is not injected).
+    static func behaviourEnabled(_ controller: AgentHooksController?) -> Bool {
+        controller?.isInstalled ?? false
+    }
+}
+
+// MARK: - Agents settings-card environment slot (E13 WI-2)
+
+extension EnvironmentValues {
+    /// The single app-owned ``AgentHooksController`` (E13 WI-2), injected at the Settings scene root so the
+    /// Agents card reaches it. `nil` outside the app scene (previews / the iOS sheet before its wiring lands)
+    /// → the card renders disabled rather than crashing.
+    @Entry var agentHooksController: AgentHooksController?
+}
+
+extension View {
+    /// Inject the app-owned ``AgentHooksController`` into the environment (called at the Settings scene root).
+    func agentHooksController(_ controller: AgentHooksController?) -> some View {
+        environment(\.agentHooksController, controller)
     }
 }
 

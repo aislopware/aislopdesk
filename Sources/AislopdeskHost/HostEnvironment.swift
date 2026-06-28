@@ -237,6 +237,44 @@ public enum HostEnvironment {
         environment[agentHooksEnvKey] == "1"
     }
 
+    /// E13 WI-3 (ES-E13-3) — whether the host holds a system-sleep assertion while ANY agent is processing
+    /// (otty "Prevent Sleep While Processing"). Default idiom = DEFAULT-OFF via `env[key] == "1"` (like
+    /// ``agentHooksEnvKey``): blocking system sleep is not something to enable silently. The CLIENT toggle is
+    /// the ``AgentPreferences/preventSleep`` field, shipped via the `video-prefs.json` sidecar (reconnect-
+    /// tagged); the daemon reads this gate at launch and, when ON, drives ``PreventSleepAssertion`` off the
+    /// `claudeStatus .working` aggregate it already computes.
+    public static let agentPreventSleepEnvKey = "AISLOPDESK_AGENT_PREVENT_SLEEP"
+
+    /// Resolves whether prevent-sleep is enabled. Default-OFF: only the exact string `"1"` enables. Same
+    /// ``EnvConfig`` overlay resolution as the other agent gates (an empty overlay is byte-identical to a
+    /// `ProcessInfo` read), so a GUI toggle reaches the gate; an explicit `environment:` (tests) bypasses it.
+    public static func agentPreventSleepEnabled(
+        environment: [String: String] = configEnv(agentPreventSleepEnvKey),
+    )
+        -> Bool
+    {
+        environment[agentPreventSleepEnvKey] == "1"
+    }
+
+    /// E13 WI-3 — whether the host re-arms a detached agent session on connection recovery (otty "Resume on
+    /// Recovery"). Default idiom = DEFAULT-ON via `env[key] != "0"` (like ``agentDetectEnvKey``): re-arming a
+    /// recovered session is the helpful default, opt-OUT only. The CLIENT toggle is
+    /// ``AgentPreferences/resumeOnRecovery``, sidecar-borne (reconnect-tagged). ACTUATED by ``HostServer``:
+    /// it AND-s this flag into ``HostServer/detachEnabled`` (otty maps "Resume on Recovery" onto the
+    /// ``DetachedSessionStore`` reattach machinery), so OFF makes a recovered terminal spawn a fresh shell
+    /// instead of reattaching the still-running detached agent session.
+    public static let agentResumeOnRecoveryEnvKey = "AISLOPDESK_AGENT_RESUME_ON_RECOVERY"
+
+    /// Resolves whether resume-on-recovery is enabled. Default-ON: only the exact string `"0"` disables. Same
+    /// ``EnvConfig`` overlay resolution as the other agent gates.
+    public static func agentResumeOnRecoveryEnabled(
+        environment: [String: String] = configEnv(agentResumeOnRecoveryEnvKey),
+    )
+        -> Bool
+    {
+        environment[agentResumeOnRecoveryEnvKey] != "0"
+    }
+
     /// The single `AISLOPDESK_*` key resolved through ``EnvConfig`` (ProcessInfo env →
     /// settings overlay) and wrapped back into the `[String: String]` shape these gates index — so the gate's exact
     /// truth table stays at the call site while the key's *source* honours a GUI override. An empty

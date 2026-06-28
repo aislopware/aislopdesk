@@ -26,6 +26,7 @@ public enum TerminalContextMenu {
         case selectAll
         case clear
         case copyOutput // WB2: copy the latest command BLOCK's output (request type 15 → VT-strip → clipboard)
+        case sendToChat // E13 WI-5: send the selection / last command to a chosen agent chat (⌘⌃↩ parity)
         case splitRight
         case splitDown
         case find
@@ -44,6 +45,7 @@ public enum TerminalContextMenu {
             case .selectAll: "Select All"
             case .clear: "Clear"
             case .copyOutput: "Copy Command Output"
+            case .sendToChat: "Send to Chat"
             case .splitRight: "Split Right"
             case .splitDown: "Split Down"
             case .find: "Find…"
@@ -64,6 +66,7 @@ public enum TerminalContextMenu {
             case .selectAll: "selection.pin.in.out"
             case .clear: "eraser"
             case .copyOutput: "text.alignleft"
+            case .sendToChat: "arrow.up.message"
             case .splitRight: "rectangle.split.2x1"
             case .splitDown: "rectangle.split.1x2"
             case .find: "magnifyingglass"
@@ -104,18 +107,25 @@ public enum TerminalContextMenu {
         /// in Composer"). False until the Composer (E12) is wired — the item then greys out honestly.
         public var hasComposer: Bool
 
+        /// E13 / WI-5 (ES-E13-5): the client Send-to-Chat hook is wired (the leaf set the pane's
+        /// `onRequestSendToChat`). False until the dialog wiring is mounted (headless / preview) — "Send to
+        /// Chat" then greys out honestly, mirroring `hasComposer`.
+        public var canSendToChat: Bool
+
         public init(
             hasSelection: Bool,
             clipboardHasText: Bool,
             paneConnected: Bool = true,
             hasCommandOutput: Bool = false,
             hasComposer: Bool = false,
+            canSendToChat: Bool = false,
         ) {
             self.hasSelection = hasSelection
             self.clipboardHasText = clipboardHasText
             self.paneConnected = paneConnected
             self.hasCommandOutput = hasCommandOutput
             self.hasComposer = hasComposer
+            self.canSendToChat = canSendToChat
         }
     }
 
@@ -123,7 +133,8 @@ public enum TerminalContextMenu {
     /// `Item.separatorBefore`. The "Paste as…" variants are deliberately EXCLUDED — they hang off the
     /// ``pasteAsItems`` submenu (the view inserts it directly below `paste`), so `items != Item.allCases`.
     public static let items: [Item] = [
-        .copy, .paste, .pasteAsKeystrokes, .selectAll, .clear, .copyOutput, .splitRight, .splitDown, .find,
+        .copy, .paste, .pasteAsKeystrokes, .selectAll, .clear, .copyOutput, .sendToChat,
+        .splitRight, .splitDown, .find,
     ]
 
     /// E8 / ES-E8-4: the "Paste as…" submenu items, in otty's order (`spec/terminal-features__copy-and-paste`):
@@ -219,6 +230,10 @@ public enum TerminalContextMenu {
             context.clipboardHasText && context.hasComposer
         case .copyOutput:
             context.hasCommandOutput
+        case .sendToChat:
+            // E13 WI-5: live only when the dialog is wired AND there is something to quote (a selection or a
+            // last command). Mirrors `pasteToComposer` gating on `hasComposer` — never a dead row.
+            context.canSendToChat && (context.hasSelection || context.hasCommandOutput)
         case .selectAll,
              .clear,
              .splitRight,

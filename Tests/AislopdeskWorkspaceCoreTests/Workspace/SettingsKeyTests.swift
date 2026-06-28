@@ -20,6 +20,10 @@ final class SettingsKeyTests: XCTestCase {
             SettingsKey.soundOnErrorExit,
             SettingsKey.agentNotifyTaskComplete,
             SettingsKey.agentNotifyAwaitInput,
+            // E13/WI-3 agent badge gates.
+            SettingsKey.agentBadgeWhileProcessing,
+            SettingsKey.agentBadgeWhenComplete,
+            SettingsKey.agentBadgeWhenAwaitingInput,
             SettingsKey.systemDialogPanes,
             SettingsKey.defaultPaneKindKey,
             SettingsKey.snapPanes,
@@ -168,6 +172,11 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertFalse(SettingsKey.soundOnErrorExitEnabled, "Sound on Error Exit defaults OFF")
         XCTAssertTrue(SettingsKey.agentNotifyTaskCompleteEnabled, "Agent task-complete defaults ON")
         XCTAssertTrue(SettingsKey.agentNotifyAwaitInputEnabled, "Agent await-input defaults ON")
+        // E13/WI-3 agent badge gates default ON (every agent badge shows), resolving to an all-on bundle.
+        XCTAssertTrue(SettingsKey.agentBadgeWhileProcessingEnabled, "Badge while processing defaults ON")
+        XCTAssertTrue(SettingsKey.agentBadgeWhenCompleteEnabled, "Badge when complete defaults ON")
+        XCTAssertTrue(SettingsKey.agentBadgeWhenAwaitingInputEnabled, "Badge when awaiting input defaults ON")
+        XCTAssertEqual(SettingsKey.agentBadgeGates, .allOn, "the resolved global gates default all-on")
         // The resolved bundle the notifier reads equals the spec baseline (the two default sources agree).
         XCTAssertEqual(SettingsKey.notificationSettings, NotificationSettings())
         // Round-trip the enum from its persisted otty raw value + repair a stale value.
@@ -193,6 +202,9 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertEqual(SettingsKey.soundOnErrorExit, "notifications.soundOnErrorExit")
         XCTAssertEqual(SettingsKey.agentNotifyTaskComplete, "notifications.agentTaskComplete")
         XCTAssertEqual(SettingsKey.agentNotifyAwaitInput, "notifications.agentAwaitInput")
+        XCTAssertEqual(SettingsKey.agentBadgeWhileProcessing, "agents.badgeWhileProcessing")
+        XCTAssertEqual(SettingsKey.agentBadgeWhenComplete, "agents.badgeWhenComplete")
+        XCTAssertEqual(SettingsKey.agentBadgeWhenAwaitingInput, "agents.badgeWhenAwaitingInput")
         XCTAssertEqual(NotifyWhileForeground.off.rawValue, "off")
         XCTAssertEqual(NotifyWhileForeground.always.rawValue, "always")
         XCTAssertEqual(NotifyWhileForeground.tabUnfocused.rawValue, "tab-unfocused")

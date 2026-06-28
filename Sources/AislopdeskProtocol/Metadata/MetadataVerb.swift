@@ -19,6 +19,15 @@ import Foundation
 /// wire, so they are not an exfiltration vector and accept an absolute path WITHOUT cwd-subtree
 /// confinement (unlike the read verbs). The host routes them to a thin macOS shim BEFORE the read-only
 /// builder (see `HostPathActionPerformer`).
+///
+/// **Agent-hooks verbs (E13 WI-1).** Verbs `11` (``installAgentHooks``) / `12` (``uninstallAgentHooks``)
+/// are SIDE-EFFECTING like 9/10 — they write/strip the aislopdesk Claude Code hook entries in the HOST's
+/// `~/.claude/settings.json` (+ hook script) via `AgentInstaller`, returning ONLY a status byte + empty
+/// payload (no host bytes cross the wire). Verb `13` (``agentHookStatus``) is a PURE READ of the install
+/// marker that — unlike the read verbs above — returns NO host file contents, only a 1-byte flag
+/// (`1` installed / `0` not). The host routes all three to a thin macOS shim BEFORE the read-only builder
+/// (see `HostAgentActionPerformer`); they carry an EMPTY request payload (pane-agnostic — install/uninstall
+/// act on the host regardless of which pane's channel carries the request).
 public enum MetadataVerb: UInt8, Sendable, Equatable, CaseIterable {
     /// List the pane's foreground processes. Request payload: empty (the pane). Response: `ProcessList`.
     case processes = 1
@@ -53,6 +62,23 @@ public enum MetadataVerb: UInt8, Sendable, Equatable, CaseIterable {
     /// Response: empty payload — status `.ok` when the path exists and the reveal was issued, `.notFound`
     /// if the path is gone, `.error` on an empty/relative path.
     case revealPath = 10
+    /// **Side-effecting (E13 WI-1).** Install the aislopdesk Claude Code hooks on the HOST: writes the
+    /// hook script + merges our hook entries into `~/.claude/settings.json` (``AgentInstaller/install``).
+    /// Request payload: empty (host-global — install acts on the host regardless of the carrying pane).
+    /// Response: empty payload — status `.ok` on a successful write, `.error` if the install threw. Like
+    /// 9/10 no host bytes cross the wire.
+    case installAgentHooks = 11
+    /// **Side-effecting (E13 WI-1).** Uninstall the aislopdesk Claude Code hooks on the HOST: strips
+    /// exactly our hook entries from `~/.claude/settings.json` (``AgentInstaller/uninstall``), leaving the
+    /// user's own hooks intact. Request payload: empty. Response: empty payload — status `.ok` on success,
+    /// `.error` if the uninstall threw.
+    case uninstallAgentHooks = 12
+    /// **Pure read (E13 WI-1).** Report whether the aislopdesk Claude Code hooks are installed on the
+    /// HOST. Request payload: empty. Response: status `.ok` + a **1-byte** payload (`1` installed / `0`
+    /// not). It reads only the install marker (``AgentInstaller/isInstalled(settingsPath:fileManager:)``)
+    /// — NO host file CONTENTS cross the wire (unlike the read verbs 5...8), only the single flag byte —
+    /// so it needs no cwd confinement.
+    case agentHookStatus = 13
 }
 
 /// The outcome of a ``WireMessage/metadataResponse(requestID:status:payload:)`` (E4). The host ALWAYS

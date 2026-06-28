@@ -79,6 +79,11 @@ public struct WorkspaceRootView: View {
     /// The single live preferences store, injected once at the WindowGroup root (`\.preferencesStore`) and
     /// handed to the iOS ``SettingsSheet``. `nil` (no scene injection / a preview) → the gear presents nothing.
     @Environment(\.preferencesStore) private var preferencesStore
+    /// E13 (ES-E13-1/ES-E13-2 iOS halves): the app-owned Agents install-hooks controller, injected once at the
+    /// WindowGroup root (`\.agentHooksController`) and handed to the iOS ``SettingsSheet`` so the Agents card +
+    /// the Agent-Behaviour toggles are LIVE on iOS (the macOS `Settings` scene injects it on its own side).
+    /// `nil` (no scene injection / a preview) → the card renders the disabled "Connect a session" state.
+    @Environment(\.agentHooksController) private var agentHooksController
     #endif
     /// Installs the Details-panel toggle on the app-level keybinding dispatcher. The dispatcher is built at
     /// app `init` (before this view's `chrome` exists), so on appear the root view hands it
@@ -235,7 +240,9 @@ public struct WorkspaceRootView: View {
         // the `\.workspaceStore` slot so Advanced → Workspace export/import works on iOS too.
         .sheet(isPresented: $showSettings) {
             if let preferencesStore {
-                SettingsSheet(store: preferencesStore)
+                // E13: thread the app-owned controller into the sheet so the Agents card / behaviour toggles
+                // are live on iOS (a sheet does not inherit the presenter's custom environment values).
+                SettingsSheet(store: preferencesStore, agentHooks: agentHooksController)
                     .workspaceStore(store)
             }
         }

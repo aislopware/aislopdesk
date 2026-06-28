@@ -34,6 +34,20 @@ extension LivePaneSession: ComposerProviding {
     var composerAgentActive: Bool { claudeStatus != .none }
 }
 
+// MARK: - LiveAgentSessionProviding (the store↔live-session seam the Resume jump map resolves through)
+
+/// The capability seam the E13 History-viewer **Resume** (ES-E13-6) builds its "is this session still
+/// running" map through — the mirror of ``ComposerProviding`` for the agent session id: an `as?`-castable
+/// handle exposing the Claude session id the pane is CURRENTLY running, or `nil` when it hosts no live agent.
+/// The production conformer is ``LivePaneSession`` (its inspector-reported session id, gated on a live
+/// `claudeStatus`). Resolving through this seam — rather than an `as? LivePaneSession` cast — keeps the map
+/// building exercisable by a recording test double that carries a settable session id.
+@MainActor
+protocol LiveAgentSessionProviding: AnyObject {
+    /// The Claude session id this pane is CURRENTLY running, or `nil` when no live agent hosts it. E13 WI-6.
+    var liveAgentSessionID: String? { get }
+}
+
 // MARK: - ResolvedComposer (the window-level pin / float mount target the client UI promotes)
 
 /// A composer the client UI must mount OUTSIDE its origin pane's subtree (E12 WI-6): the pinned
@@ -87,6 +101,159 @@ public extension WorkspaceStore {
     func requestPromptQueueInActivePane() {
         activeComposerModel?.open()
         activeTerminalModel?.onRequestPromptQueue?()
+    }
+
+    // MARK: - E13 WI-5: Send to Chat (capture the active pane's quote)
+
+    /// Captures the active pane's Send-to-Chat quote (ES-E13-5, `⌘⌃↩`): the libghostty SELECTION when one
+    /// exists (the primary otty path — select text, then ⌘⌃↩). Returns `nil` — so the caller does NOT open the
+    /// dialog — when the active pane is not a terminal or has no selection. PURE-ish read (resolves through
+    /// ``activeTerminalModel``); never mutates the tree.
+    ///
+    /// FIDELITY NOTE: the send-to-chat spec's no-selection fallback is "the last command's OUTPUT (the OSC-133
+    /// `D` block's output body from shell integration)". That body is NOT available synchronously here — it
+    /// needs an async wire round-trip (wire type 15 → 29, ``TerminalViewModel/copyBlockOutput(index:onResult:)``,
+    /// live-host-only). The block model carries only the command LINE (`blocks.latest?.commandText`), and
+    /// quoting THAT would mislead — it sends the command you typed, not its output. So the no-selection fallback
+    /// is DISABLED (quote nothing, the honest no-op) rather than quoting the wrong text; the selection path —
+    /// the common case — stays fully faithful. (Quoting the real OSC-133 output body is a Phase-3 target.)
+    func captureSendToChatContext() -> SendToChatContext? {
+        guard let activeID = activePaneID, let spec = tree.spec(for: activeID) else { return nil }
+        let title = PanePresentation.displayTitle(handle(for: activeID), spec: spec)
+        let selection = activeTerminalModel?.currentSelectionText()
+        // `lastOutput: nil` — see the FIDELITY NOTE: the synchronous command LINE is the wrong text, and the
+        // real output body is async/headless-unprovable, so there is no faithful no-selection fallback here.
+        return SendToChatModel.capture(title: title, selection: selection, lastOutput: nil)
+    }
+
+    // MARK: - E13 WI-5: Send to Chat (route a composed message to a CHOSEN agent pane)
+
+    /// The live Claude-only agent panes the E13 "Send to Chat" dialog (`⌘⌃↩`, ES-E13-5) can route to: every
+    /// pane whose ``ComposerProviding/composerAgentActive`` is set (`claudeStatus != .none`), in canonical
+    /// traversal order, named by its display title. **Claude-only** (BINDING directive 1) — the agent badge
+    /// is fixed to "Claude Code" in ``SendToChatSession``; `AgentKind.codex` is never surfaced. The view
+    /// builds the picker from this list and resolves the last-used default via
+    /// ``SendToChatModel/defaultSession(in:lastUsed:)``. A pure read — never mutates the tree / registry.
+    func agentChatSessions() -> [SendToChatSession] {
+        tree.allPaneIDs().compactMap { id in
+            guard let provider = handle(for: id) as? ComposerProviding,
+                  provider.composerAgentActive, provider.composerModel != nil,
+                  let spec = tree.spec(for: id) else { return nil }
+            return SendToChatSession(id: id, name: PanePresentation.displayTitle(handle(for: id), spec: spec))
+        }
+    }
+
+    /// E13 WI-5 (ES-E13-5): routes the composed `message` to the agent pane `target`'s durable
+    /// ``ComposerModel`` — the SINGLE per-pane ordered-OUT sink (VERBATIM literal UTF-8 via
+    /// ``SendToChatModel/payload(for:)``: a multi-line message rides as one inert DEC bracketed-paste block +
+    /// CR, NEVER ``SendKeysParser``) — and AUTO-SWITCHES focus to that pane (the spec's final-frame tab
+    /// switch). Resolves the target through the ``ComposerProviding`` seam (so it is exercisable by a
+    /// recording double), making a non-terminal / unknown / no-composer target a graceful no-op. Focuses in
+    /// WHICHEVER live model is active (the tree shell vs the retained canvas). Returns `true` when a live
+    /// agent composer accepted the message (so the caller can dismiss the dialog), `false` on a no-op.
+    @discardableResult
+    func sendChatMessage(_ message: String, to target: PaneID) -> Bool {
+        guard let provider = handle(for: target) as? ComposerProviding,
+              let composer = provider.composerModel, let send = composer.send else { return false }
+        send(SendToChatModel.payload(for: message))
+        switch liveModel {
+        case .tree: focusPaneTree(target)
+        case .canvas: focus(target)
+        }
+        return true
+    }
+
+    /// E13 WI-5 (ES-E13-5) — the "New session" picker option (no live agent target chosen): spawn a fresh
+    /// terminal tab (the new chat's pane, focused), LAUNCH Claude in it, then hand it the composed `message`.
+    /// Returns the new pane's id (focused), or `nil` if the spawn did not materialize a pane.
+    @discardableResult
+    func sendChatToNewSession(_ message: String) -> PaneID? {
+        sendChatToNewSession(message, launchGrace: .milliseconds(1400))
+    }
+
+    /// The `launchGrace`-parameterized core of ``sendChatToNewSession(_:)`` — a test injects a `0` ms grace to
+    /// observe the launch + delivery without a 1.4 s wall-clock wait. Production callers use the public overload.
+    ///
+    /// A fresh terminal tab is a bare login SHELL — there is no live Claude here (that is exactly why the
+    /// picker offered "New session"). Injecting the composed prompt straight in (the prior bug) makes the
+    /// SHELL try to RUN the quoted-markdown block (command-not-found / stray redirects), not start a chat. So
+    /// LAUNCH Claude first — `claude\n` as VERBATIM literal UTF-8, NEVER ``SendKeysParser`` (the standing
+    /// inject-safety invariant the fork/resume path also obeys) — then deliver the prompt via
+    /// ``SendToChatModel/payload(for:)`` once Claude's TUI input is up (a multi-line message rides as one inert
+    /// DEC bracketed-paste block + CR). Both injects are sequenced in ONE task so the launch lands STRICTLY
+    /// after the new tab's own deferred cwd `cd` (which fires at `launchGrace`) — otherwise `claude` could
+    /// start before the `cd` and the directory change would type into Claude's prompt instead of the shell.
+    @discardableResult
+    func sendChatToNewSession(_ message: String, launchGrace: Duration) -> PaneID? {
+        newTab(kind: .terminal, launchGrace: launchGrace)
+        guard let spawned = tree.activeSession?.activeTab?.activePane else { return nil }
+        let launch = Array("claude\n".utf8) // VERBATIM — start Claude in the fresh shell (no SendKeysParser)
+        let payload = Array(SendToChatModel.payload(for: message))
+        Task { @MainActor [weak self] in
+            // Phase 1: the shell prompt is up + the new-tab cwd `cd` has been enqueued (same grace).
+            try? await Task.sleep(for: launchGrace)
+            // Phase 2: a second grace guarantees that `cd` landed before we launch Claude (avoids `cd`
+            // typing into Claude's input), then start Claude.
+            try? await Task.sleep(for: launchGrace)
+            self?.handle(for: spawned)?.sendBytes(launch)
+            // Phase 3: Claude's TUI input is up — only now can it accept the composed prompt.
+            try? await Task.sleep(for: launchGrace)
+            self?.handle(for: spawned)?.sendBytes(payload)
+        }
+        return spawned
+    }
+
+    // MARK: - E13 WI-6: Resume (the History viewer's jump-vs-spawn map + the spawn-into-a-fresh-tab path)
+
+    /// E13 WI-6 (ES-E13-6): the live Claude agent panes keyed by the session id each is CURRENTLY running —
+    /// the map the History viewer's Resume routes through (``AgentResumeRouter/target(sessionID:liveSessionIDs:)``):
+    /// a Resume JUMPS to the pane already running that exact session instead of spawning a duplicate. Only panes
+    /// hosting a LIVE agent (a non-`.none` `claudeStatus`) with a known session id are included; the id is the
+    /// bare Claude session id the inspector channel reported, which ``AgentResumeRouter`` matches CANONICALLY
+    /// against the host's `AgentSessionInfo.id` (an absolute `<id>.jsonl` path). Claude-only (BINDING directive
+    /// 1). Resolves through the ``LiveAgentSessionProviding`` seam (exercisable by a recording double); a pure
+    /// read — never mutates the tree / registry.
+    func liveAgentSessionIDs() -> [String: PaneID] {
+        var map: [String: PaneID] = [:]
+        for id in tree.allPaneIDs() {
+            guard let provider = handle(for: id) as? LiveAgentSessionProviding,
+                  let sessionID = provider.liveAgentSessionID else { continue }
+            map[sessionID] = id
+        }
+        return map
+    }
+
+    /// E13 WI-6 (ES-E13-6) — the History viewer's Resume "spawn" branch: open a fresh terminal tab (the
+    /// resumed session's pane, focused) and run the VERBATIM resume command
+    /// (``AgentResumeRouter/ResumeTarget/spawn(command:)`` — `claude --resume <id>\n`) in it once the remote
+    /// shell prompt is up. Returns the new pane's id (focused), or `nil` if the spawn made no pane.
+    @discardableResult
+    func resumeAgentInNewTab(command: String) -> PaneID? {
+        resumeAgentInNewTab(command: command, launchGrace: .milliseconds(1400))
+    }
+
+    /// The `launchGrace`-parameterized core of ``resumeAgentInNewTab(command:)`` — a test injects a `0` ms
+    /// grace to observe the inject without a 1.4 s wall-clock wait. Production callers use the public overload.
+    ///
+    /// The resume command must NOT land in the FOCUSED pane (the History viewer is opened from the inspector of
+    /// a pane that is frequently a LIVE Claude agent — injecting there would deliver `claude --resume <id>` as a
+    /// chat prompt INTO the running agent, the exact bug this fixes). So a fresh terminal tab is spawned and the
+    /// command is delivered there as literal UTF-8 bytes, NEVER ``SendKeysParser`` (the standing inject-safety
+    /// invariant the fork / Send-to-Chat paths also obey) — so a stray quote / newline in a session id can never
+    /// become a control sequence. The two graces sequence the resume command STRICTLY after the new tab's own
+    /// deferred cwd `cd` (which fires at `launchGrace`), so the `cd` can never type into the `claude --resume`
+    /// line (the same ordering ``sendChatToNewSession(_:launchGrace:)`` uses).
+    @discardableResult
+    func resumeAgentInNewTab(command: String, launchGrace: Duration) -> PaneID? {
+        newTab(kind: .terminal, launchGrace: launchGrace)
+        guard let spawned = tree.activeSession?.activeTab?.activePane else { return nil }
+        let bytes = Array(command.utf8) // VERBATIM — `claude --resume <id>` into the fresh shell (no SendKeysParser)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: launchGrace)
+            try? await Task.sleep(for: launchGrace)
+            self?.handle(for: spawned)?.sendBytes(bytes)
+        }
+        return spawned
     }
 
     // MARK: - Pin / float resolution (E12 WI-6 — the window-level / float mount the client UI promotes)

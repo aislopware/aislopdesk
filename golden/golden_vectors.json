@@ -1929,6 +1929,13 @@
       "verb": 9
     },
     {
+      "hex": "0000000a100b0c0d0e0b00000000",
+      "kind": "metadataRequest",
+      "payloadHex": "",
+      "requestId": 185339150,
+      "verb": 11
+    },
+    {
       "hex": "0000000a1e000000000000000000",
       "kind": "metadataResponse",
       "payloadHex": "",
@@ -1955,6 +1962,13 @@
       "payloadHex": "68c3a96c6c6f20c2b720e69687e5ad9720f09f9a80",
       "requestId": 99,
       "status": 200
+    },
+    {
+      "hex": "0000000b1e0b0c0d0e000000000101",
+      "kind": "metadataResponse",
+      "payloadHex": "01",
+      "requestId": 185339150,
+      "status": 0
     }
   ],
   "muxBare": [

@@ -49,7 +49,7 @@ final class MetadataWireMessageTests: XCTestCase {
             Data(repeating: 0x41, count: 4096),
         ]
         // Every defined verb byte plus unknown future bytes — the wire carries the RAW byte.
-        let verbs: [UInt8] = [1, 2, 3, 4, 5, 6, 7, 8, 0, 9, 200, 255]
+        let verbs: [UInt8] = [1, 2, 3, 4, 5, 6, 7, 8, 0, 9, 10, 11, 12, 13, 200, 255]
         for verb in verbs {
             for payload in payloads {
                 for requestID: UInt32 in [0, 1, 0x0102_0304, UInt32.max] {
@@ -256,9 +256,13 @@ final class MetadataWireMessageTests: XCTestCase {
         // E10 WI-7: the two side-effecting path verbs.
         XCTAssertEqual(MetadataVerb.openPath.rawValue, 9)
         XCTAssertEqual(MetadataVerb.revealPath.rawValue, 10)
+        // E13 WI-1: the three agent-hooks verbs (11/12 side-effecting, 13 a pure 1-byte-flag read).
+        XCTAssertEqual(MetadataVerb.installAgentHooks.rawValue, 11)
+        XCTAssertEqual(MetadataVerb.uninstallAgentHooks.rawValue, 12)
+        XCTAssertEqual(MetadataVerb.agentHookStatus.rawValue, 13)
         // Unknown verb bytes map to nil (caller answers unsupportedVerb) — never a trap.
         XCTAssertNil(MetadataVerb(rawValue: 0))
-        XCTAssertNil(MetadataVerb(rawValue: 11))
+        XCTAssertNil(MetadataVerb(rawValue: 14))
         XCTAssertNil(MetadataVerb(rawValue: 200))
     }
 

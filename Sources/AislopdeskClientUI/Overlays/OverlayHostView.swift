@@ -64,6 +64,31 @@ struct OverlayHostView: View {
                 Scrim { coordinator.closeOpenQuickly() }
                 OpenQuicklyView(store: store, coordinator: coordinator, folders: coordinator.folders)
             }
+            // E13 / WI-8 (P4): the Peek & Reply card (⌘⌥J) — a centered, SCRIMMED card over the oldest pane
+            // needing attention that lets the user ANSWER a blocked agent INLINE (observe + reply, never an
+            // approval gate). Tapping the scrim closes it (like the other panels); it resolves its own target
+            // off the store via the coordinator.
+            if coordinator.peekReplyVisible {
+                Scrim { coordinator.closePeekReply() }
+                PeekReplyOverlay(store: store, coordinator: coordinator)
+            }
+            // E13 / WI-5 (ES-E13-5): the Send-to-Chat dialog (⌘⌃↩) — a centered, SCRIMMED card over the
+            // workspace that quotes the active pane's selection / last command and routes the composed message
+            // to a chosen Claude-only agent pane. The coordinator owns the captured `SendToChatContext` + the
+            // live session list; this view is pure plumbing (compose → `onSend`/`onCopy`). Tapping the scrim
+            // cancels (like the other panels).
+            if coordinator.sendToChatVisible, let context = coordinator.sendToChatContext {
+                Scrim { coordinator.closeSendToChat() }
+                SendToChatDialog(
+                    context: context,
+                    sessions: coordinator.sendToChatSessions,
+                    initialSelection: coordinator.sendToChatInitialSelection,
+                    onSend: { target, message in coordinator.sendChat(to: target, message: message) },
+                    onCopy: { message in coordinator.copyChatMessage(message) },
+                    onCancel: { coordinator.closeSendToChat() },
+                    onSelectionChange: { target in coordinator.recordSendToChatSelection(target) },
+                )
+            }
             // E3 WI-4: the busy-shell / policy close confirmation for a PANE or TAB (the ⌘W / ⌘⇧W /
             // close-button path parks `store.pendingClose` / `store.pendingTabCloseID`). The window-scope
             // confirmation is the macOS `NSAlert` (`WindowCloseConfirmationDelegate`); this in-app panel

@@ -3136,6 +3136,14 @@ public final class WorkspaceStore {
     /// `@Observable` synthesises on it.
     public internal(set) var paneProgress: [PaneID: PaneProgress] = [:]
 
+    /// E13 WI-3 (ES-E13-2): the per-pane ``AgentBadgeGates`` OVERRIDE map — the otty tab-context-menu badge
+    /// toggles. An absent key ⇒ the pane follows the GLOBAL default (``SettingsKey/agentBadgeGates``);
+    /// ``agentBadgeGates(for:)`` resolves override-else-global, and ``RailRowsBuilder`` runs
+    /// ``AgentBadgeGates/gated(_:by:)`` on the resolver output with it. Pure VIEW state, NOT persisted (a
+    /// per-pane override is a runtime affordance, like ``paneReadOnly``). PRUNED to the live leaf set on every
+    /// reconcile alongside ``paneAgentStatus`` so a closed pane's override drops out (no unbounded growth).
+    public internal(set) var paneAgentBadgeOverrides: [PaneID: AgentBadgeGates] = [:]
+
     // MARK: - Read-only mode (E17 ES-E17-1 — the per-pane input gate's single source of truth)
 
     /// The set of panes currently in READ-ONLY mode (E17). The SINGLE observable source of truth the
@@ -3560,6 +3568,11 @@ public final class WorkspaceStore {
         // Mirrors the `selectedPanes` Set-prune idiom above (intersect, not reallocate, only when needed).
         if !paneReadOnly.isEmpty, !paneReadOnly.isSubset(of: leafSet) {
             paneReadOnly.formIntersection(leafSet)
+        }
+        // Prune the per-pane agent-badge override map in lockstep (E13 WI-3): a closed pane must not keep a
+        // stale badge override, and the dict must not grow unbounded across a long session of open/close.
+        if !paneAgentBadgeOverrides.isEmpty {
+            paneAgentBadgeOverrides = paneAgentBadgeOverrides.filter { leafSet.contains($0.key) }
         }
 
         // 2. Orphans: remove from the registry synchronously (the registry is the source of truth for

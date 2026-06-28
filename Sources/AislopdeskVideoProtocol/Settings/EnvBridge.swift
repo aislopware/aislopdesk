@@ -44,12 +44,17 @@ public enum EnvBridge {
 
     // MARK: AgentPreferences → env
 
-    /// Map an ``AgentPreferences`` to its `AISLOPDESK_*` overlay. Both flags are default-OFF (`== "1"`)
-    /// host gates, so an explicit ON writes `"1"`, an explicit OFF writes `"0"`; unset emits nothing.
+    /// Map an ``AgentPreferences`` to its `AISLOPDESK_*` overlay. An explicit ON writes `"1"`, an explicit
+    /// OFF writes `"0"`; an unset (`nil`) field emits nothing. The host READ idiom differs per gate
+    /// (`agentDetect`/`resumeOnRecovery` are default-ON `!= "0"`; `agentHooks`/`preventSleep` are default-OFF
+    /// `== "1"`), but the WRITE is symmetric — a present field always pins the exact `"1"`/`"0"` the read site
+    /// resolves, so the polarity is preserved on both ends.
     public static func toEnv(_ prefs: AgentPreferences) -> [String: String] {
         var env: [String: String] = [:]
         if let v = prefs.agentDetect { env["AISLOPDESK_AGENT_DETECT"] = v ? "1" : "0" }
         if let v = prefs.agentHooks { env["AISLOPDESK_AGENT_HOOKS"] = v ? "1" : "0" }
+        if let v = prefs.preventSleep { env["AISLOPDESK_AGENT_PREVENT_SLEEP"] = v ? "1" : "0" }
+        if let v = prefs.resumeOnRecovery { env["AISLOPDESK_AGENT_RESUME_ON_RECOVERY"] = v ? "1" : "0" }
         return env
     }
 

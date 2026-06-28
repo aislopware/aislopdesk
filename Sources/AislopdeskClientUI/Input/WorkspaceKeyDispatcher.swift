@@ -39,6 +39,11 @@ final class WorkspaceKeyDispatcher {
     private let toggleCheatSheet: (() -> Void)?
     private let toggleFind: (() -> Void)?
     private let togglePeekReply: (() -> Void)?
+    /// E13 / WI-5 (ES-E13-5): the Send-to-Chat dialog toggle (otty ⌘⌃↩). View-overlay state (the
+    /// ``OverlayCoordinator`` owns the dialog visibility + the captured ``SendToChatContext``), so it is passed
+    /// in as a closure like `togglePeekReply`; `nil` (the headless / test default) keeps `.sendToChat` a
+    /// graceful no-op via `route` — never a dead chord (ES-E1-5 keeps the chord LIVE).
+    private let toggleSendToChat: (() -> Void)?
     /// E5 / WI-4: the cross-tab Global Search overlay toggle (otty ⇧⌘F). View-overlay state (the
     /// ``OverlayCoordinator``), so it is passed in as a closure like `togglePalette`; `nil` (the headless /
     /// test default) keeps `.globalSearch` a graceful no-op via `route` — never a dead chord.
@@ -106,6 +111,7 @@ final class WorkspaceKeyDispatcher {
         toggleCheatSheet: (() -> Void)? = nil,
         toggleFind: (() -> Void)? = nil,
         togglePeekReply: (() -> Void)? = nil,
+        toggleSendToChat: (() -> Void)? = nil,
         toggleDetailsPanel: (() -> Void)? = nil,
         toggleSidebar: (() -> Void)? = nil,
         toggleGlobalSearch: (() -> Void)? = nil,
@@ -120,6 +126,7 @@ final class WorkspaceKeyDispatcher {
         self.toggleCheatSheet = toggleCheatSheet
         self.toggleFind = toggleFind
         self.togglePeekReply = togglePeekReply
+        self.toggleSendToChat = toggleSendToChat
         self.toggleDetailsPanel = toggleDetailsPanel
         self.toggleSidebar = toggleSidebar
         self.toggleGlobalSearch = toggleGlobalSearch
@@ -295,6 +302,7 @@ final class WorkspaceKeyDispatcher {
             toggleCheatSheet: toggleCheatSheet,
             toggleFind: toggleFind,
             togglePeekReply: togglePeekReply,
+            toggleSendToChat: toggleSendToChat,
             toggleDetailsPanel: toggleDetailsPanel,
             toggleSidebar: toggleSidebar,
             toggleGlobalSearch: toggleGlobalSearch,

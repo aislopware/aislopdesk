@@ -1356,6 +1356,15 @@ final class MuxChannelSession: @unchecked Sendable {
                 enqueueControl([response])
                 return
             }
+            // E13 WI-1: the agent-hooks verbs (installAgentHooks = 11 / uninstallAgentHooks = 12 write or
+            // strip our entries in ~/.claude/settings.json via `AgentInstaller`; agentHookStatus = 13 is a
+            // pure read of the install marker returning a 1-byte flag). Handled HERE — BEFORE, and never
+            // reaching, the read-only `MetadataResponseBuilder`. `response` returns nil for every OTHER
+            // verb, so the read verbs fall through to the pure builder unchanged.
+            if let response = HostAgentActionPerformer.response(requestID: requestID, verb: verb, payload: payload) {
+                enqueueControl([response])
+                return
+            }
             let probe = HostMetadataProbe(masterFD: masterFD, shellPID: shellPID)
             let response = MetadataResponseBuilder(query: probe)
                 .response(requestID: requestID, verb: verb, payload: payload)

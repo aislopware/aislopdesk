@@ -107,8 +107,31 @@ struct InspectorColumn: View {
         .background(Otty.Surface.sidebar)
         .task(id: refreshKey) { await bindAndRefresh() }
         .sheet(isPresented: $showSessionHistory) {
-            AgentSessionHistoryView(model: activeModel, onClose: { showSessionHistory = false })
+            AgentSessionHistoryView(
+                model: activeModel,
+                onClose: { showSessionHistory = false },
+                liveSessionIDs: store.liveAgentSessionIDs(),
+                onResume: { performResume($0) },
+            )
         }
+    }
+
+    /// Performs a History-viewer Resume (E13/WI-6, ES-E13-6) off the pure ``AgentResumeRouter`` decision: JUMP
+    /// to the pane already running the session (still-live), or SPAWN a fresh terminal tab running the VERBATIM
+    /// `claude --resume <id>`. The spawn deliberately does NOT inject into the FOCUSED pane — the viewer is
+    /// opened from the inspector of a pane that is frequently a live Claude agent, so injecting there would
+    /// deliver the resume command as a chat prompt INTO the running agent rather than starting a session.
+    /// ``WorkspaceStore/resumeAgentInNewTab(command:)`` spawns the new tab + injects (VERBATIM, never
+    /// ``SendKeysParser``). The jump map is wired from ``WorkspaceStore/liveAgentSessionIDs()``. Closes the
+    /// viewer either way.
+    private func performResume(_ target: AgentResumeRouter.ResumeTarget) {
+        switch target {
+        case let .jumpTo(pane):
+            store.focusPaneTree(pane)
+        case let .spawn(command):
+            store.resumeAgentInNewTab(command: command)
+        }
+        showSessionHistory = false
     }
 
     /// Binds the focused pane's metadata model to its façade and fetches its Info/Git/Files data, then
