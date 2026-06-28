@@ -56,6 +56,10 @@ struct WorkspaceCommands: Commands {
     /// threads `chrome.togglePin()` here so the row is live. `nil` keeps it a graceful no-op via `route`,
     /// never a dead menu item.
     var togglePinWindow: (() -> Void)?
+    /// E19 / WI-4: whether the window is currently PINNED — drives the View ▸ Pin Window row's ✓ (otty's Pin
+    /// Window is a CHECKABLE toggle, ES-E2-3). Read from the live `chrome.pinned` at the scene's `.commands`
+    /// site so the row re-renders its checkmark when the pin flips from the menu / palette / a bound chord.
+    var pinWindowOn = false
 
     var body: some Commands {
         // One top-level menu per display category, in the registry's display order. A `CommandMenu` inserts
@@ -99,9 +103,26 @@ struct WorkspaceCommands: Commands {
                     actionButton(tab)
                 }
             }
+        } else if binding.id == "view.pinWindow" {
+            // E19 / WI-4: otty's Pin Window is a CHECKABLE toggle — render it as a `Toggle` so the View menu
+            // shows a ✓ while the window is pinned (a `Button` cannot show menu state). `isOn` reads the live
+            // `pinWindowOn`; flipping it routes through the SAME chord-less `togglePinWindow` closure the
+            // palette + a user-bound chord drive (no `.keyboardShortcut` — the menu-shortcutless rule holds).
+            pinWindowToggle(binding)
         } else {
             actionButton(binding)
         }
+    }
+
+    /// The View ▸ Pin Window row as a checkable `Toggle` (ES-E2-3): the ✓ tracks the live `pinWindowOn`
+    /// (`chrome.pinned`), and toggling it routes through `togglePinWindow`. Carries NO `.keyboardShortcut`
+    /// (Pin Window is chord-less; the menu-shortcutless rule forbids one here regardless).
+    private func pinWindowToggle(_ binding: WorkspaceBinding) -> some View {
+        Toggle(menuTitle(for: binding), isOn: Binding(
+            get: { pinWindowOn },
+            set: { _ in togglePinWindow?() },
+        ))
+        .disabled(binding.action.requiresActivePane && activePaneID == nil)
     }
 
     /// A shortcut-LESS button that dispatches `binding.action` through the shared registry routing. The

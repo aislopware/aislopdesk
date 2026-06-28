@@ -128,14 +128,18 @@ struct OverlayHostView: View {
     /// The toggled-state predicate the root hands to ``PaletteView`` — built from the live chrome so the
     /// palette's ✓ gutter reflects the real sidebar/inspector visibility (a visible panel ⇒ ✓ on its toggle
     /// row). Pure + `static` so it is unit-pinnable without instantiating the view (E2 / WI-6). `@MainActor`
-    /// because it reads the `@MainActor` ``WorkspaceChromeState``. Future Details/inspector rows resolve here
-    /// too (the catalog has only the Tabs-panel row today).
+    /// because it reads the `@MainActor` ``WorkspaceChromeState``. Resolves the three checkable View toggles —
+    /// Toggle Tabs Panel, Toggle Details Panel, and Pin Window.
     @MainActor
     static func toggledState(for chrome: WorkspaceChromeState) -> @MainActor (PaletteItem) -> Bool {
         { item in
             switch item.id {
             case "action.toggleSidebar": !chrome.sidebarCollapsed
             case "action.toggleInspector": !chrome.inspectorCollapsed
+            // E19 WI-4: Pin Window is a CHECKABLE toggle — light the ✓ gutter while the window is pinned, so the
+            // palette (and the View menu) tell the user the current pinned state. Mirrors the sidebar/inspector
+            // treatment, reading the SAME live `chrome.pinned` the menu Button + the `NSWindow.level` glue flip.
+            case "action.pinWindow": chrome.pinned
             default: false
             }
         }

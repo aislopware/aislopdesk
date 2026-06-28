@@ -112,6 +112,12 @@ public enum PaletteAction: Sendable {
     /// commands in the palette; aislopdesk lists them under VIEW so they run with zero config on BOTH
     /// platforms (ES-E9-5 — the palette is cross-platform).
     case selectDetailsTab(DetailsPanelTab)
+    /// E19 WI-4: toggle "Pin Window" (otty View ▸ Pin Window — keep the window floating above all other apps).
+    /// Routed by the overlay coordinator to the injected ``OverlayCoordinator/togglePinWindow`` closure (bound
+    /// to the SAME live ``WorkspaceChromeState`` `pinned` flag the menu Button + the `NSWindow.level` glue
+    /// read), so the palette row's ✓ gutter (resolved in ``OverlayHostView/toggledState(for:)``) tracks the
+    /// real pinned state. A checkable toggle (ES-E2-3); a documented no-op on iOS (no window level).
+    case togglePinWindow
     /// A non-interactable separator/zero row.
     case noOp
 }

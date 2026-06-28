@@ -208,6 +208,15 @@ public struct ActionsPaletteSource: PaletteDataSource {
             id: "action.connect", icon: "network", title: "Connect to Host…",
             subtitle: nil, shortcut: nil, filter: .actions, category: .window, action: .openConnect,
         ),
+        // E19 WI-4: Pin Window (otty View ▸ Pin Window — float the window above all other apps). A CHECKABLE
+        // toggle (ES-E2-3): `OverlayHostView.toggledState(for:)` lights the ✓ gutter when `chrome.pinned`.
+        // CHORD-LESS (otty ships none) ⇒ `shortcut: nil` ⇒ no hint chip; routed by the coordinator to the
+        // injected `togglePinWindow` closure (the SAME live `chrome.pinned` the View menu + the `NSWindow.level`
+        // glue read). macOS-meaningful (iOS has no window level — a documented no-op).
+        PaletteItem(
+            id: "action.pinWindow", icon: "pin", title: "Pin Window",
+            subtitle: nil, shortcut: nil, filter: .actions, category: .window, action: .togglePinWindow,
+        ),
         PaletteItem(
             id: "action.openSettings", icon: "slider.horizontal.3", title: "Open Settings",
             subtitle: nil, shortcut: nil, filter: .actions, category: .settings, action: .openSettings,

@@ -29,6 +29,12 @@ final class AislopdeskSplitViewController: NSSplitViewController {
     private var sidebarItem: NSSplitViewItem?
     private var inspectorItem: NSSplitViewItem?
 
+    /// E19 WI-4 (A29) — the sidebar (TABS panel) / inspector (Details panel) default thicknesses, shared with
+    /// the window-size glue (`AislopdeskClientApp.applyInitialWindowSize`) so the `grid` mode's `chromeOverhead`
+    /// uses the SAME widths the split items adopt (no magic-number drift between the layout and the math).
+    static let defaultSidebarWidth: CGFloat = 220
+    static let defaultInspectorWidth: CGFloat = 240
+
     init(
         store: WorkspaceStore,
         connection: AppConnection,
@@ -75,7 +81,7 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         //    Holding priority above the content's default so window-resize grows the content, not the sidebar.
         let navigator = NSHostingController(rootView: NavigatorColumn(store: store))
         let sidebarItem = NSSplitViewItem(viewController: navigator)
-        sidebarItem.minimumThickness = 220
+        sidebarItem.minimumThickness = Self.defaultSidebarWidth
         sidebarItem.maximumThickness = 360
         sidebarItem.canCollapse = true
         sidebarItem.holdingPriority = NSLayoutConstraint.Priority(260)
@@ -107,7 +113,7 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         inspector.safeAreaRegions = []
 
         let inspectorItem = NSSplitViewItem(inspectorWithViewController: inspector)
-        inspectorItem.minimumThickness = 240
+        inspectorItem.minimumThickness = Self.defaultInspectorWidth
         inspectorItem.isCollapsed = true
 
         addSplitViewItem(sidebarItem)

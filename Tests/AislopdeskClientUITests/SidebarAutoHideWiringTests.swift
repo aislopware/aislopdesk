@@ -49,6 +49,20 @@ final class SidebarAutoHideWiringTests: XCTestCase {
         XCTAssertTrue(chrome.sidebarCollapsed, ".auto at 0 tabs collapses (nothing to switch between)")
     }
 
+    /// THE launch-path pin (M2): a fresh window rests with `sidebarCollapsed == false` (revealed), so a launch
+    /// with a persisted `.auto` mode + a single-tab session must collapse the TABS panel AT LAUNCH — not wait
+    /// for a tab add/remove. This pins what the `.onChange(of: activeTabCount, initial: true)` observer drives on
+    /// first render: starting from the DEFAULT chrome state, applying the policy at one tab collapses it.
+    /// REVERT-TO-CONFIRM-FAIL: without `initial: true` the observer never fires on first appearance, so the
+    /// launch state stays revealed — this test models the desired-collapsed the initial path must compute.
+    func testAutoModeAtLaunchCollapsesSingleTabFromDefaultState() {
+        let chrome = WorkspaceChromeState() // a fresh window: sidebarCollapsed defaults to false (revealed)
+        XCTAssertFalse(chrome.sidebarCollapsed, "precondition: a fresh window rests revealed")
+
+        WorkspaceRootView.applyAutoHide(mode: .auto, tabCount: 1, chrome: chrome)
+        XCTAssertTrue(chrome.sidebarCollapsed, ".auto + a single-tab session collapses the TABS panel at launch")
+    }
+
     // MARK: - applyAutoHide: `.default` / `.always` NEVER fight a manual collapse (no opinion)
 
     /// THE "never fight a manual ⌘⇧L" pin: in `.default` the policy has NO opinion, so a manual collapse the

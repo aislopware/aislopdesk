@@ -53,6 +53,36 @@ public enum WindowSizeMath {
         max(minPx, min(raw, maxPx))
     }
 
+    // MARK: Font-derived fallback cell (before the live terminal surface lays out)
+
+    /// The per-cell advance ratios used to DERIVE a fallback ``TerminalCellMetrics`` from the configured
+    /// terminal font point size when no laid-out surface is available yet (so the grid math is right for the
+    /// user's actual font, not a hard-coded 8×16). Tuned so the default 13pt font resolves to ≈ 8×16pt — the
+    /// old hard-coded fallback — while a larger/smaller font scales proportionally (a typical monospace cell
+    /// is ≈ 0.6× the point size wide and ≈ 1.2× tall).
+    public static let fallbackCellWidthRatio: CGFloat = 8.0 / 13.0
+    public static let fallbackCellHeightRatio: CGFloat = 16.0 / 13.0
+    /// The inclusive font-size band the fallback derivation clamps into — mirrors `PreferencesStore`'s
+    /// `8...32` font-size range so a hostile / zero / NaN persisted size can never produce a 0 or absurd cell.
+    public static let minFontPointSize: CGFloat = 8
+    public static let maxFontPointSize: CGFloat = 32
+
+    /// Derive a fallback ``TerminalCellMetrics`` from `fontPointSize` — used by the macOS window-size glue
+    /// ONLY before the active terminal surface has reported its real cell advance, so a non-default font no
+    /// longer falls back to a wrong 8×16. The font size is clamped into ``minFontPointSize`` …
+    /// ``maxFontPointSize`` (ordered TERNARY clamp, NaN-faithful) before the ratios apply; the cell extents
+    /// are a separate `*` per axis (NEVER `fma` — CLAUDE.md §2). `cols`/`rows` are placeholders (unused by the
+    /// grid extent, which reads only `cellWidth`/`cellHeight`).
+    public static func fallbackCell(fontPointSize: CGFloat) -> TerminalCellMetrics {
+        // Ordered ternary clamp into the band (`a < b ? a : b` form — NaN-faithful, matching the file's
+        // float discipline): floor first, then cap.
+        let floored = fontPointSize < minFontPointSize ? minFontPointSize : fontPointSize
+        let size = maxFontPointSize < floored ? maxFontPointSize : floored
+        let width = size * fallbackCellWidthRatio
+        let height = size * fallbackCellHeightRatio
+        return TerminalCellMetrics(cellWidth: width, cellHeight: height, cols: 80, rows: 24)
+    }
+
     // MARK: Grid → content points
 
     /// The CONTENT size (points) for a `cols × rows` grid given the live per-cell advance in `cell`. The
@@ -94,15 +124,27 @@ public enum WindowSizeMath {
 
     // MARK: Resolution (the single glue entry point)
 
+    // The pure math takes the persisted size settings + cell + screen + the two chrome terms as independent
+    // explicit inputs (mirroring `AdaptiveFrameQP`'s same pure-math exemption) — bundling them into a struct
+    // would obscure the per-input clamp contract `resolvedContentSize` documents.
+    // swiftlint:disable function_parameter_count
+
     /// Resolve the CONTENT size a newly opened window should adopt, or `nil` when the autosaved frame should
     /// stand (the `.remember` path). The ONE function the macOS `NSWindow` glue (WI-4) calls:
     ///
     /// - ``WindowSizeMode/remember`` → `nil` — let `setFrameAutosaveName` restore the last frame; apply no
     ///   explicit size.
     /// - ``WindowSizeMode/grid`` → ``clampToScreen(_:visible:chromeInsets:)`` of
-    ///   ``gridContentSize(cols:rows:cell:)``.
+    ///   ``gridContentSize(cols:rows:cell:)`` PLUS `chromeOverhead`.
     /// - ``WindowSizeMode/frame`` → ``clampToScreen(_:visible:chromeInsets:)`` of the clamped pixel size
     ///   (``clampPx(_:)`` on each axis).
+    ///
+    /// `chromeOverhead` is the WINDOW content's NON-terminal extent — the revealed sidebar (TABS panel) + the
+    /// shown inspector (Details panel) widths + any terminal pane content inset. It is added in `grid` mode so
+    /// the resolved WINDOW content yields a TERMINAL of exactly `cols × rows` (otty's `window-cols`/`window-rows`
+    /// size the TERMINAL, not the whole window). `frame` mode ignores it — `window-width-px`/`window-height-px`
+    /// are the explicit WHOLE-window pixel size. (`chromeInsets` stays the OUT-of-content overhead: title bar /
+    /// borders.) A separate `+` per axis (NEVER `fma` — CLAUDE.md §2).
     ///
     /// Every numeric input is clamped before it reaches the geometry, so a persisted 0 / negative / gigantic
     /// value can never yield a 0×0 or off-screen-gigantic window.
@@ -115,16 +157,24 @@ public enum WindowSizeMath {
         cell: TerminalCellMetrics,
         visible: CGRect,
         chromeInsets: CGSize,
+        chromeOverhead: CGSize,
     ) -> CGSize? {
         switch mode {
         case .remember:
             return nil
         case .grid:
             let grid = gridContentSize(cols: cols, rows: rows, cell: cell)
-            return clampToScreen(grid, visible: visible, chromeInsets: chromeInsets)
+            // The grid sizes the TERMINAL; the window content also holds the sidebar / inspector / pane inset
+            // (chromeOverhead) — add it (separate `+` per axis, no fma) so the TERMINAL ends up cols×rows.
+            let content = CGSize(
+                width: grid.width + chromeOverhead.width,
+                height: grid.height + chromeOverhead.height,
+            )
+            return clampToScreen(content, visible: visible, chromeInsets: chromeInsets)
         case .frame:
             let desired = CGSize(width: CGFloat(clampPx(widthPx)), height: CGFloat(clampPx(heightPx)))
             return clampToScreen(desired, visible: visible, chromeInsets: chromeInsets)
         }
     }
+    // swiftlint:enable function_parameter_count
 }

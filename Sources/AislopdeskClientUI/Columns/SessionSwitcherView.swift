@@ -9,9 +9,12 @@
 // add affordance, which names via ``WorkspaceStore/defaultSessionName``). It invents NO new ops and does NOT
 // touch the active-session tab list below it (``NavigatorColumn`` still renders the active session's tabs).
 //
-// The "SESSIONS" header shows only when there is more than one session; with a single session the switcher
-// collapses to just the add affordance + that lone row (no header chrome). macOS renders flat otty rows;
-// iOS renders a leading `Section` so it composes into the navigator's system `List` (iPad navigation intact).
+// The ENTIRE switcher shows only when there is more than one session (`rows.count > 1`) — with a single
+// session it renders NOTHING (no "SESSIONS" header, no lone row, no add affordance, no divider) so the
+// default workspace matches otty's `workspace-tabs.png` (just the warm panel → "TABS" header → tab rows).
+// "New Session" stays reachable via the ⌃⌘N command / palette; the switcher reveals itself once a 2nd
+// session exists. macOS renders flat otty rows; iOS renders a leading `Section` so it composes into the
+// navigator's system `List` (iPad navigation intact).
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -62,6 +65,11 @@ struct SessionSwitcherView: View {
     /// warm sidebar above the "TABS" header (the host split item is a plain item, so no native vibrancy).
     private var macBody: some View {
         let rows = SessionRowModel.rows(for: store.tree)
+        // The DEFAULT single-session workspace shows ZERO session chrome — no "SESSIONS" header, no session
+        // rows, no "+ New Session" add row, no divider — so the sidebar matches otty's `workspace-tabs.png`
+        // (warm panel → "TABS" header → tab rows). The whole switcher block is gated on `rows.count > 1`; it
+        // reveals itself once a 2nd session exists. "New Session" stays reachable via ⌃⌘N / the palette while
+        // hidden. (Just gating the header — as before — left ~3 spurious elements in the most common state.)
         return VStack(alignment: .leading, spacing: 0) {
             if rows.count > 1 {
                 Text("SESSIONS")
@@ -70,31 +78,31 @@ struct SessionSwitcherView: View {
                     .foregroundStyle(Otty.State.header)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 6)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(rows) { row in
-                    SessionRow(
-                        model: row,
-                        isRenaming: renamingID == row.id,
-                        draft: $draft,
-                        onSelect: { store.selectSession(row.id) },
-                        onBeginRename: { beginRename(row) },
-                        onCommit: { commitRename(row.id) },
-                        onCancel: cancelRename,
-                        onClose: { store.closeSession(row.id) },
-                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(rows) { row in
+                        SessionRow(
+                            model: row,
+                            isRenaming: renamingID == row.id,
+                            draft: $draft,
+                            onSelect: { store.selectSession(row.id) },
+                            onBeginRename: { beginRename(row) },
+                            onCommit: { commitRename(row.id) },
+                            onCancel: cancelRename,
+                            onClose: { store.closeSession(row.id) },
+                        )
+                    }
                 }
-            }
-            .padding(.horizontal, 8)
-            SessionAddRow { store.newSessionDefault() }
                 .padding(.horizontal, 8)
-                .padding(.top, rows.isEmpty ? 0 : 2)
-            Rectangle()
-                .fill(Otty.Line.divider)
-                .frame(height: 1)
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-                .padding(.bottom, 4)
+                SessionAddRow { store.newSessionDefault() }
+                    .padding(.horizontal, 8)
+                    .padding(.top, 2)
+                Rectangle()
+                    .fill(Otty.Line.divider)
+                    .frame(height: 1)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                    .padding(.bottom, 4)
+            }
         }
         .padding(.top, 2)
     }
@@ -104,17 +112,22 @@ struct SessionSwitcherView: View {
     /// trailing "New Session" button adds. Renders the inline rename `TextField` in place when active.
     private var iosBody: some View {
         let rows = SessionRowModel.rows(for: store.tree)
-        return Section {
-            ForEach(rows) { row in
-                iosRow(row)
-            }
-            Button { store.newSessionDefault() } label: {
-                Label("New Session", systemSymbol: .plus)
-                    .foregroundStyle(Otty.State.accent)
-            }
-        } header: {
+        // Gate the ENTIRE leading Section on `rows.count > 1` (matching macOS): a single-session iPad workspace
+        // shows zero session chrome (no header, no row, no "New Session"). "New Session" stays reachable via the
+        // palette while hidden; the section reveals itself once a 2nd session exists.
+        return Group {
             if rows.count > 1 {
-                Text("Sessions")
+                Section {
+                    ForEach(rows) { row in
+                        iosRow(row)
+                    }
+                    Button { store.newSessionDefault() } label: {
+                        Label("New Session", systemSymbol: .plus)
+                            .foregroundStyle(Otty.State.accent)
+                    }
+                } header: {
+                    Text("Sessions")
+                }
             }
         }
     }

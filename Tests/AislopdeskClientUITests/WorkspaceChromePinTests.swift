@@ -47,4 +47,24 @@ final class WorkspaceChromePinTests: XCTestCase {
         let overlay = OverlayCoordinator()
         overlay.togglePinWindow() // no binding ⇒ the default `{}` runs, no crash
     }
+
+    /// E19 / WI-4 (M4) — the palette ✓ gutter tracks the pinned state. `OverlayHostView.toggledState(for:)`
+    /// resolves the "action.pinWindow" row to `chrome.pinned`, so the palette lights the checkmark while
+    /// pinned and clears it when unpinned — otty's checkable Pin Window (ES-E2-3). REVERT-TO-CONFIRM-FAIL:
+    /// drop the `case "action.pinWindow": chrome.pinned` arm and the resolver falls to the `default: false`,
+    /// so the ✓ never lights and `pinned == true` below fails.
+    func testToggledStateLightsPinRowWhenPinned() {
+        let chrome = WorkspaceChromeState()
+        let pinItem = PaletteItem(
+            id: "action.pinWindow", icon: "pin", title: "Pin Window",
+            subtitle: nil, shortcut: nil, filter: .actions, category: .window, action: .togglePinWindow,
+        )
+
+        let unpinnedResolver = OverlayHostView.toggledState(for: chrome)
+        XCTAssertFalse(unpinnedResolver(pinItem), "an unpinned window shows no ✓ on the Pin Window row")
+
+        chrome.togglePin() // pin it
+        let pinnedResolver = OverlayHostView.toggledState(for: chrome)
+        XCTAssertTrue(pinnedResolver(pinItem), "a pinned window lights the ✓ on the Pin Window row")
+    }
 }

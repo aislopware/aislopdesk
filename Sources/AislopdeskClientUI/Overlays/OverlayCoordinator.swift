@@ -356,6 +356,9 @@ public final class OverlayCoordinator {
         case let .selectDetailsTab(tab):
             selectDetailsTab(tab)
             if !keepOpen { closePalette() }
+        case .togglePinWindow:
+            togglePinWindow()
+            if !keepOpen { closePalette() }
         case let .selectFilter(filter):
             paletteFilter = filter
             paletteSelection = 0

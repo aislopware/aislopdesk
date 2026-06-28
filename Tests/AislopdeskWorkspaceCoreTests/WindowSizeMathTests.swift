@@ -107,7 +107,7 @@ final class WindowSizeMathTests: XCTestCase {
         XCTAssertNil(WindowSizeMath.resolvedContentSize(
             mode: .remember,
             cols: 80, rows: 24, widthPx: 1000, heightPx: 600,
-            cell: cell, visible: bigScreen, chromeInsets: .zero,
+            cell: cell, visible: bigScreen, chromeInsets: .zero, chromeOverhead: .zero,
         ))
     }
 
@@ -116,7 +116,7 @@ final class WindowSizeMathTests: XCTestCase {
         let size = WindowSizeMath.resolvedContentSize(
             mode: .grid,
             cols: 80, rows: 24, widthPx: 1000, heightPx: 600,
-            cell: cell, visible: bigScreen, chromeInsets: .zero,
+            cell: cell, visible: bigScreen, chromeInsets: .zero, chromeOverhead: .zero,
         )
         XCTAssertEqual(size, CGSize(width: 640, height: 384))
     }
@@ -126,7 +126,7 @@ final class WindowSizeMathTests: XCTestCase {
         let size = WindowSizeMath.resolvedContentSize(
             mode: .frame,
             cols: 80, rows: 24, widthPx: 1000, heightPx: 600,
-            cell: cell, visible: bigScreen, chromeInsets: .zero,
+            cell: cell, visible: bigScreen, chromeInsets: .zero, chromeOverhead: .zero,
         )
         XCTAssertEqual(size, CGSize(width: 1000, height: 600))
     }
@@ -136,15 +136,72 @@ final class WindowSizeMathTests: XCTestCase {
         let grid = WindowSizeMath.resolvedContentSize(
             mode: .grid,
             cols: 0, rows: 0, widthPx: 0, heightPx: 0,
-            cell: cell, visible: bigScreen, chromeInsets: .zero,
+            cell: cell, visible: bigScreen, chromeInsets: .zero, chromeOverhead: .zero,
         )
         XCTAssertEqual(grid, CGSize(width: 200, height: 120), "a 0-col grid floors, never 0")
         let frame = WindowSizeMath.resolvedContentSize(
             mode: .frame,
             cols: 0, rows: 0, widthPx: 0, heightPx: 0,
-            cell: cell, visible: bigScreen, chromeInsets: .zero,
+            cell: cell, visible: bigScreen, chromeInsets: .zero, chromeOverhead: .zero,
         )
         XCTAssertEqual(frame, CGSize(width: 200, height: 120), "a 0-px frame floors, never 0")
+    }
+
+    // MARK: chromeOverhead (E19/A29 — grid sizes the TERMINAL, not the whole content view)
+
+    /// `.grid` ADDS `chromeOverhead` (the revealed sidebar + shown inspector widths) to the grid extent so the
+    /// resolved WINDOW content yields a TERMINAL of exactly cols×rows. 80×24 at 8×16 = 640×384 terminal; with a
+    /// 220 sidebar + 240 inspector (460 wide) overhead the window content must be 1100×384. REVERT-TO-CONFIRM-
+    /// FAIL: the pre-fix `resolvedContentSize` ignored the overhead and returned 640×384 — an 80-col grid then
+    /// gave a terminal NARROWER than 80 cols (the sidebar ate into it). Asserts the hand-computed sum.
+    func testGridAddsChromeOverheadSoTerminalIsExactGrid() {
+        let size = WindowSizeMath.resolvedContentSize(
+            mode: .grid,
+            cols: 80, rows: 24, widthPx: 1000, heightPx: 600,
+            cell: cell, visible: bigScreen, chromeInsets: .zero,
+            chromeOverhead: CGSize(width: 460, height: 0),
+        )
+        XCTAssertEqual(size, CGSize(width: 1100, height: 384), "grid content = terminal grid + chrome overhead")
+    }
+
+    /// `.frame` IGNORES `chromeOverhead` — `window-width-px`/`window-height-px` are the explicit WHOLE-window
+    /// pixel size, not a terminal extent. A non-zero overhead must not change the resolved 1000×600 frame.
+    func testFrameIgnoresChromeOverhead() {
+        let size = WindowSizeMath.resolvedContentSize(
+            mode: .frame,
+            cols: 80, rows: 24, widthPx: 1000, heightPx: 600,
+            cell: cell, visible: bigScreen, chromeInsets: .zero,
+            chromeOverhead: CGSize(width: 460, height: 99),
+        )
+        XCTAssertEqual(size, CGSize(width: 1000, height: 600), "frame is the whole-window px size; overhead unused")
+    }
+
+    // MARK: fallbackCell (E19/A29 — font-derived cell advance, NOT a hard 8×16)
+
+    /// The default 13pt font derives ≈ 8×16pt — the old hard-coded fallback — so a default-font launch is
+    /// unchanged. (The ratios are 8/13 × 16/13, so 13pt resolves EXACTLY to 8×16.)
+    func testFallbackCellAtDefaultFontMatchesLegacyEightBySixteen() {
+        let c = WindowSizeMath.fallbackCell(fontPointSize: 13)
+        XCTAssertEqual(c.cellWidth, 8, accuracy: 0.0001)
+        XCTAssertEqual(c.cellHeight, 16, accuracy: 0.0001)
+    }
+
+    /// A LARGER font scales the fallback cell proportionally — the bug the hard 8×16 caused (a 26pt font got an
+    /// 8×16 cell → a grid window half the right size). 26pt = 2× the default ⇒ 16×32. Asserts the independent
+    /// doubling, not the function's own multiply.
+    func testFallbackCellScalesWithFontSize() {
+        let c = WindowSizeMath.fallbackCell(fontPointSize: 26)
+        XCTAssertEqual(c.cellWidth, 16, accuracy: 0.0001, "2× the default font ⇒ 2× the cell width")
+        XCTAssertEqual(c.cellHeight, 32, accuracy: 0.0001, "2× the default font ⇒ 2× the cell height")
+    }
+
+    /// A 0 / negative / gigantic font size clamps into the 8…32 band (never a 0 or absurd cell) — validate-then-
+    /// clamp, no trap. 0 floors to 8pt (→ 8×8/13 ≈ 4.92 wide); 999 caps to 32pt.
+    func testFallbackCellClampsDegenerateFontSize() {
+        let zero = WindowSizeMath.fallbackCell(fontPointSize: 0)
+        XCTAssertEqual(zero.cellWidth, 8 * WindowSizeMath.fallbackCellWidthRatio, accuracy: 0.0001, "0 floors to 8pt")
+        let huge = WindowSizeMath.fallbackCell(fontPointSize: 999)
+        XCTAssertEqual(huge.cellHeight, 32 * WindowSizeMath.fallbackCellHeightRatio, accuracy: 0.0001, "caps at 32pt")
     }
 
     // MARK: WindowSizeMode raw values + Defaults round-trip / repair

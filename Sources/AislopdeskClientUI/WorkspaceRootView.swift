@@ -193,7 +193,12 @@ public struct WorkspaceRootView: View {
         // mode flip, apply `SidebarAutoHidePolicy` to the live `chrome.sidebarCollapsed` — but only when the
         // policy has an opinion (`.auto`) and it DIFFERS from the current state, so a manual ⌘⇧L is never
         // fought (we react to the transition, not to every render). `.default`/`.always` leave it alone.
-        .onChange(of: activeTabCount) { applyAutoHidePolicy() }
+        // `initial: true` runs the policy ONCE on first render too — SwiftUI `.onChange` does not fire on first
+        // appearance, so without it a launch with a persisted `.auto` mode + a single-tab session opened with
+        // the sidebar REVEALED (the exact case `.auto` handles) until the user added/removed a tab.
+        // `sidebarCollapsed` is not persisted, so applying at launch is safe; the `!= desired` guard in
+        // `applyAutoHide` still prevents fighting a manual ⌘⇧L.
+        .onChange(of: activeTabCount, initial: true) { applyAutoHidePolicy() }
         .onChange(of: autoHideTabsPanel) { applyAutoHidePolicy() }
         #else
         NavigationSplitView(
@@ -220,8 +225,10 @@ public struct WorkspaceRootView: View {
         // E19/A18 (WI-7): drive the TABS panel auto-hide on iPad too — the SAME shared policy macOS runs. On a
         // tab-count TRANSITION or a Settings mode flip, apply `SidebarAutoHidePolicy` to `chrome.sidebarCollapsed`
         // (here mapped to the split's `columnVisibility` via `sidebarColumnVisibility`), only when the policy has
-        // an opinion (`.auto`) and it DIFFERS — so a manual reveal/hide is never fought.
-        .onChange(of: activeTabCount) { applyAutoHidePolicy() }
+        // an opinion (`.auto`) and it DIFFERS — so a manual reveal/hide is never fought. `initial: true` applies
+        // the policy ONCE at launch too (SwiftUI `.onChange` skips first appearance), so a single-tab `.auto`
+        // session opens with the TABS panel already hidden instead of waiting for a tab add/remove.
+        .onChange(of: activeTabCount, initial: true) { applyAutoHidePolicy() }
         .onChange(of: autoHideTabsPanel) { applyAutoHidePolicy() }
         // WI-5: the toolbar gear presents the in-app settings sheet (iOS has no `Settings` scene). The sheet
         // hosts the same cross-platform section structs as the macOS strip. The live `WorkspaceStore` rides

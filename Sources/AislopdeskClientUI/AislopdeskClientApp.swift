@@ -531,7 +531,14 @@ public struct AislopdeskClientApp: App {
                     // fought). All NSWindow reach stays inside THIS blessed hook.
                     windowBox.window = window
                     Self.applyPinLevel(to: window, pinned: chrome.pinned)
-                    Self.applyInitialWindowSize(to: window, store: store)
+                    // E19 WI-4 (A29): pass the LIVE chrome (for the grid `chromeOverhead` — revealed sidebar /
+                    // shown inspector) + the configured terminal font size (the font-derived fallback cell used
+                    // only before the terminal surface lays out). The grid sizing DEFERS its once-per-open
+                    // commit until real cell metrics exist, so it recomputes to the exact cols×rows.
+                    Self.applyInitialWindowSize(
+                        to: window, store: store, chrome: chrome,
+                        fontPointSize: CGFloat(preferences.terminal.fontSize),
+                    )
                     guard Self.hasAutomationEnvironment(), !window.isKeyWindow else { return }
                     NSApplication.shared.activate(ignoringOtherApps: true)
                     window.makeKeyAndOrderFront(nil)
@@ -581,10 +588,13 @@ public struct AislopdeskClientApp: App {
                 // `WorkspaceRootView.wireChromeToggles` → sets `DetailsPanelState.selected` + reveals the
                 // panel). Without this the menu rows were inert (`selectDetailsTab` was nil).
                 selectDetailsTab: { [overlayCoordinator] tab in overlayCoordinator.selectDetailsTab(tab) },
-                // E19 WI-4: Pin Window is CHORD-LESS (otty ships no chord), so the menu Button is its primary
+                // E19 WI-4: Pin Window is CHORD-LESS (otty ships no chord), so the menu item is its primary
                 // entry. Flip the SAME live `chrome.pinned` the `.onChange(of:)` above actuates to `NSWindow
                 // .level` — directly off the app-owned chrome (no overlay round-trip needed).
                 togglePinWindow: { [chrome] in chrome.togglePin() },
+                // E19 WI-4: feed the live pinned state so the View ▸ Pin Window row renders its ✓ (a checkable
+                // toggle). Reading `chrome.pinned` here re-evaluates `.commands` when the pin flips.
+                pinWindowOn: chrome.pinned,
             )
             // E7 WI-4: File ▸ Export/Import Workspace (optional parity). Shortcut-LESS — the NSEvent
             // dispatcher owns chords (DECISIONS N6); a hostile import is a no-op + toast, never a crash.
@@ -657,33 +667,56 @@ public struct AislopdeskClientApp: App {
         if window.level != level { window.level = level }
     }
 
-    /// E19 WI-4 (A29) — apply the configured initial window size EXACTLY ONCE per window open (guarded by an
+    /// E19 WI-4 (A29) — apply the configured initial window size at most once per window open (guarded by an
     /// associated object, mirroring the close-gate retain idiom), so a later manual resize always stands:
-    ///   * ``WindowSizeMode/remember`` → `setFrameAutosaveName` and return (let the autosaved frame restore);
+    ///   * ``WindowSizeMode/remember`` → `setFrameAutosaveName` and commit (let the autosaved frame restore);
     ///   * ``WindowSizeMode/grid`` / ``WindowSizeMode/frame`` → resolve a CONTENT size via the pure
-    ///     ``WindowSizeMath/resolvedContentSize(mode:cols:rows:widthPx:heightPx:cell:visible:chromeInsets:)``
-    ///     (live cell advance + the screen's `visibleFrame` + the window's chrome overhead) and `setContentSize`.
+    ///     ``WindowSizeMath/resolvedContentSize(mode:cols:rows:widthPx:heightPx:cell:visible:chromeInsets:chromeOverhead:)``
+    ///     and `setContentSize`.
+    ///
+    /// Two correctness points the pure math + this glue enforce:
+    ///   1. The grid sizes the TERMINAL, not the whole content view — `chromeOverhead` adds the revealed
+    ///      sidebar (TABS) + shown inspector (Details) widths (the SAME constants the split items adopt) so an
+    ///      80-col grid yields an 80-col TERMINAL, not 80 cols minus the sidebar. The hover-reveal titlebar is
+    ///      an OVERLAY (no layout height) and there is no horizontal tab bar, so the vertical overhead is 0.
+    ///   2. Real cell metrics: `grid` uses the LIVE per-cell advance of the active terminal surface; before it
+    ///      lays out we use a font-DERIVED fallback (`WindowSizeMath.fallbackCell`) instead of a wrong hard
+    ///      8×16, and DEFER the once-per-open commit until real metrics exist — so the window recomputes to the
+    ///      exact cols×rows once libghostty reports its true cell advance (a later introspect fire), rather than
+    ///      permanently committing the approximation.
     /// All numeric inputs are clamped inside ``WindowSizeMath`` (never 0×0 / off-screen-gigantic).
     @MainActor
-    private static func applyInitialWindowSize(to window: NSWindow, store: WorkspaceStore) {
+    private static func applyInitialWindowSize(
+        to window: NSWindow,
+        store: WorkspaceStore,
+        chrome: WorkspaceChromeState,
+        fontPointSize: CGFloat,
+    ) {
         guard objc_getAssociatedObject(window, &windowSizeAppliedKey) == nil else { return }
-        objc_setAssociatedObject(window, &windowSizeAppliedKey, true, .OBJC_ASSOCIATION_RETAIN)
 
         let mode = SettingsKey.windowSize
         if mode == .remember {
             window.setFrameAutosaveName("AislopdeskMainWindow")
+            objc_setAssociatedObject(window, &windowSizeAppliedKey, true, .OBJC_ASSOCIATION_RETAIN)
             return
         }
-        // Live per-cell advance of the active terminal pane, or a sane default before the first surface lays out.
-        let cell = Self.activeCellMetrics(store: store)
-            ?? TerminalCellMetrics(cellWidth: 8, cellHeight: 16, cols: 80, rows: 24)
+        // Live per-cell advance of the active terminal pane, or a font-derived fallback before the first
+        // surface lays out (NOT a hard 8×16, which is wrong for any non-default font).
+        let liveCell = Self.activeCellMetrics(store: store)
+        let cell = liveCell ?? WindowSizeMath.fallbackCell(fontPointSize: fontPointSize)
         let visible = window.screen?.visibleFrame ?? .zero
-        // Chrome overhead = full window frame minus the content layout rect (title bar + borders). Separate
+        // Chrome insets = full window frame minus the content layout rect (title bar + borders). Separate
         // subtraction per axis (no fma) — `WindowSizeMath` keeps the same float discipline.
         let chromeInsets = CGSize(
             width: window.frame.size.width - window.contentLayoutRect.size.width,
             height: window.frame.size.height - window.contentLayoutRect.size.height,
         )
+        // In-window non-terminal overhead for `grid` mode: the revealed sidebar + shown inspector widths
+        // (the titlebar is an overlay → no vertical cost; vertical-tabs-only → no horizontal tab bar).
+        let overheadWidth =
+            (chrome.sidebarCollapsed ? 0 : AislopdeskSplitViewController.defaultSidebarWidth)
+                + (chrome.inspectorCollapsed ? 0 : AislopdeskSplitViewController.defaultInspectorWidth)
+        let chromeOverhead = CGSize(width: overheadWidth, height: 0)
         guard let size = WindowSizeMath.resolvedContentSize(
             mode: mode,
             cols: SettingsKey.windowCols,
@@ -693,8 +726,16 @@ public struct AislopdeskClientApp: App {
             cell: cell,
             visible: visible,
             chromeInsets: chromeInsets,
+            chromeOverhead: chromeOverhead,
         ) else { return }
         window.setContentSize(size)
+
+        // Commit the once-per-open guard EXCEPT for a `grid` window still on the font-derived fallback (no real
+        // metrics yet): leave it UNSET so a later introspect fire recomputes to the exact cols×rows once the
+        // terminal surface has laid out. `.frame` (no cell dependency) and grid-with-real-metrics commit now.
+        if mode == .frame || liveCell != nil {
+            objc_setAssociatedObject(window, &windowSizeAppliedKey, true, .OBJC_ASSOCIATION_RETAIN)
+        }
     }
 
     /// E19 WI-4 — the live per-cell advance of the active terminal pane, or `nil` when the active pane is not
