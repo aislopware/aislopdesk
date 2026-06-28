@@ -1,0 +1,51 @@
+import Foundation
+
+// MARK: - Terminal-rooted external-drop ingress (E18 WI-6)
+
+/// The `WorkspaceStore` entry point the external-drag actuator (E18 WI-6, the ``PaneDropReceiver``) calls to
+/// land a dropped folder/file in a FRESH terminal — a new tab (the New-Tab zone) or a side split
+/// (Split-Left / Split-Right) — and then point that terminal at the dropped path.
+///
+/// It is lifted OUT of the view layer (it lived inline in `PaneContainer` during WI-5) precisely so the
+/// `cd`-actuation is unit-testable at the store level against the `FakePaneSession` sink
+/// (`WebPaneStoreTests`), exactly like the A26 cwd-inheritance ``setLastKnownCwd(_:for:)`` /
+/// `deferInheritedCwd` deferred send is.
+///
+/// REUSES the existing actuators verbatim — ``newTab(kind:)`` / ``splitActivePane(axis:kind:leading:)`` mint
+/// the new terminal (so the drop inherits new-tab-position + cwd-inheritance), and
+/// ``LinkActionPolicy/changeDirectoryCommandLine(_:)`` builds the `cd` line (a dropped FILE cd's to its
+/// PARENT; a folder cd's directly). The line is sent VERBATIM as `Data(utf8)` through the new pane's session
+/// handle — NEVER `SendKeysParser` (cd is verbatim UTF-8) — and is DEFERRED past the store's own 1400 ms
+/// launch-grace inheritance `cd` so the dropped path is the LAST `cd` and wins the final cwd.
+public extension WorkspaceStore {
+    /// Opens a terminal rooted at `path` and points it there.
+    ///
+    /// - `split == false` → a new TAB (the New-Tab drop zone; reuses ``newTab(kind:)``).
+    /// - `split == true` → splits the active pane horizontally (`leading` = left/top — Split-Left vs
+    ///   Split-Right; reuses ``splitActivePane(axis:kind:leading:)``).
+    ///
+    /// Then schedules a deferred `cd '<path>' 2>/dev/null || cd '<parent>'\n` into the freshly-minted pane.
+    /// The dropped path is HOST-resolved (otty is local, we are remote — the receiver layers an advisory
+    /// toast on top); the parent fallback matches a dropped FILE landing in its containing folder. A no-op
+    /// when no new pane materializes (e.g. a split with no active pane). `launchGrace` is parameterized so a
+    /// test injects `0` ms to observe the send without the 1.5 s wall-clock wait; production defers PAST the
+    /// 1400 ms inheritance `cd` (`> deferInheritedCwd`'s grace) so the drop wins the final cwd.
+    func openTerminalRooted(
+        at path: String,
+        split: Bool,
+        leading: Bool,
+        launchGrace: Duration = .milliseconds(1500),
+    ) {
+        if split {
+            splitActivePane(axis: .horizontal, kind: .terminal, leading: leading)
+        } else {
+            newTab(kind: .terminal)
+        }
+        guard let target = tree.activeSession?.activeTab?.activePane else { return }
+        let bytes = Array(LinkActionPolicy.changeDirectoryCommandLine(path).utf8)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: launchGrace)
+            self?.handle(for: target)?.sendBytes(bytes)
+        }
+    }
+}

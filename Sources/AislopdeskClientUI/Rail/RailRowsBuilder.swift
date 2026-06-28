@@ -155,3 +155,28 @@ enum TabDragPayload {
         return (from, to)
     }
 }
+
+/// The pure placement model for otty's sidebar tab-reorder INSERTION-LINE indicator (E18 WI-7). The spec
+/// (`user-interface__drag-and-drop.md`): dragging a rail tab shows "a thin insertion-line indicator [for]
+/// the landing position between tabs". The navigator draws a 2pt accent rule on the TOP edge of the row a
+/// reorder drag is hovering. This model resolves WHERE (which rendered index) that rule is anchored so the
+/// decision is unit-pinned without a SwiftUI view (the live `isTargeted`/overlay render is a Phase-3 HW
+/// target). It is purely additive to the reorder drag — it never changes the drop payload, the resolved
+/// move, or the manual-reorder gate (``TabDragPayload`` owns those).
+enum TabReorderInsertionLine {
+    /// Width (points) of the otty insertion-line indicator — a thin 2pt accent rule.
+    static let thickness: CGFloat = 2
+
+    /// The rendered index whose TOP edge gets the insertion line, or `nil` to draw NOTHING. `hovering` is the
+    /// tab id of the row the reorder drag is currently over (`nil` ⇒ no row targeted); `reorderEnabled` is
+    /// the navigator's manual-reorder gate (off under an active grouping / a search filter, where a hand
+    /// landing slot has no meaning — so NO landing rule is promised); `renderedOrder` is the LIVE flat
+    /// sidebar order. Returns `nil` when reorder is gated off, no row is targeted, or the targeted row is not
+    /// shown in the live order (a stale / filtered-out target) — never a stray rule against a hidden row.
+    static func anchorIndex(
+        hovering target: TabID?, reorderEnabled: Bool, in renderedOrder: [TabID],
+    ) -> Int? {
+        guard reorderEnabled, let target else { return nil }
+        return renderedOrder.firstIndex(of: target)
+    }
+}

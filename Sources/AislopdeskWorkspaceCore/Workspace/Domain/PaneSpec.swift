@@ -61,6 +61,14 @@ public enum PaneKind: String, Codable, Sendable, Equatable {
     /// NO live session (the reconcile skips it); ``WorkspaceStore/choosePaneKind(_:kind:)`` flips it to a real
     /// kind, at which point reconcile materializes the terminal / remote-GUI session IN PLACE (same `PaneID`).
     case chooser
+    /// A LOCAL built-in web pane (a non-persistent `WKWebView`, E18) — NOT a video kind: it rides no remote
+    /// stream and renders a browser surface entirely client-side. Like ``chooser`` it materializes NO live
+    /// session (the reconcile SKIPS it), has no PTY input funnel, and is not agent-detectable; unlike
+    /// ``chooser`` it PERSISTS — its current address survives the round-trip in the additive
+    /// ``PaneSpec/webURL`` field, so a restored web pane reopens the same page. The `WKWebView` itself lives
+    /// ONLY in the app target behind `WebRendererFactory`; the library never imports WebKit (hang-safety —
+    /// no GUI/WebKit object is ever built in a headless or test context).
+    case web
 
     /// The retired-but-tolerated legacy raw value of the removed "Claude Code" pane kind (docs/42 W11).
     /// A `.claudeCode` pane is now just a `.terminal`; an OLD persisted file (v9, or a v10 written before
@@ -172,6 +180,17 @@ public struct PaneSpec: Sendable, Equatable {
     /// `Codable`/`Equatable`/`Sendable`, so the auto-synthesis on ``PaneSpec`` still holds.
     public var floatingFrame: CGRect?
 
+    // MARK: Web-pane field (additive — E18, no schema bump)
+
+    /// The current address of a ``PaneKind/web`` pane, as a raw string (the normalized URL most recently
+    /// navigated to). Set ONLY for `.web` panes — `nil` for every other kind. Written back through the
+    /// store on each navigation (``WorkspaceStore`` `setPaneWebURL`) so a restored web pane reopens the
+    /// same page. Stored as a `String?` (not `URL`) so it survives an empty/relative draft without the
+    /// `URL` Codable's strictness; the leaf view re-normalizes it through `WebURLNormalizer` before load.
+    /// Additive: a v11 file written before this field decodes `nil` (a fresh/blank web pane), exactly the
+    /// ``floatingFrame`` pattern — NO schema bump, never traps.
+    public var webURL: String?
+
     public init(
         kind: PaneKind,
         title: String,
@@ -181,6 +200,7 @@ public struct PaneSpec: Sendable, Equatable {
         lastKnownCwd: String? = nil,
         lastKnownTitle: String? = nil,
         floatingFrame: CGRect? = nil,
+        webURL: String? = nil,
     ) {
         self.kind = kind
         self.title = title
@@ -190,6 +210,7 @@ public struct PaneSpec: Sendable, Equatable {
         self.lastKnownCwd = lastKnownCwd
         self.lastKnownTitle = lastKnownTitle
         self.floatingFrame = floatingFrame
+        self.webURL = webURL
     }
 }
 
@@ -205,6 +226,7 @@ extension PaneSpec: Codable {
         case lastKnownCwd
         case lastKnownTitle
         case floatingFrame
+        case webURL
     }
 
     public init(from decoder: any Decoder) throws {
@@ -217,6 +239,7 @@ extension PaneSpec: Codable {
         lastKnownCwd = try c.decodeIfPresent(String.self, forKey: .lastKnownCwd)
         lastKnownTitle = try c.decodeIfPresent(String.self, forKey: .lastKnownTitle)
         floatingFrame = try c.decodeIfPresent(CGRect.self, forKey: .floatingFrame)
+        webURL = try c.decodeIfPresent(String.self, forKey: .webURL)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -229,6 +252,7 @@ extension PaneSpec: Codable {
         try c.encodeIfPresent(lastKnownCwd, forKey: .lastKnownCwd)
         try c.encodeIfPresent(lastKnownTitle, forKey: .lastKnownTitle)
         try c.encodeIfPresent(floatingFrame, forKey: .floatingFrame)
+        try c.encodeIfPresent(webURL, forKey: .webURL)
     }
 }
 

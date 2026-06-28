@@ -72,4 +72,47 @@ final class TabDragPayloadTests: XCTestCase {
             "a drop target that is not in the rendered order is dropped",
         )
     }
+
+    // MARK: - E18 WI-7: tab-reorder insertion-line indicator (targeted-row resolution)
+
+    /// The insertion line (otty's "thin insertion-line indicator [for] the landing position between tabs")
+    /// anchors on the TOP edge of the row a reorder drag is hovering: ``TabReorderInsertionLine/anchorIndex``
+    /// resolves the TARGETED row to its CURRENT rendered slot, so the rule tracks the row the cursor is over
+    /// (a different target ⇒ a different anchor), not a fixed position. Fails to compile on the un-WI-7 code
+    /// (the model does not exist), so it pins the new placement behaviour.
+    func testInsertionLineAnchorsOnTheTargetedRow() {
+        let t0 = TabID(), t1 = TabID(), t2 = TabID(), t3 = TabID()
+        let order = [t0, t1, t2, t3]
+        XCTAssertEqual(
+            TabReorderInsertionLine.anchorIndex(hovering: t2, reorderEnabled: true, in: order),
+            2,
+            "the line anchors on the targeted row's current rendered slot",
+        )
+        XCTAssertEqual(
+            TabReorderInsertionLine.anchorIndex(hovering: t0, reorderEnabled: true, in: order),
+            0,
+            "targeting a different row moves the anchor to that row's slot",
+        )
+    }
+
+    /// The insertion line is SUPPRESSED (resolves to `nil` ⇒ no rule drawn) when no row is hovered, when
+    /// manual reorder is gated off (an active grouping / search filter — no hand landing slot to promise), or
+    /// when the targeted row is not shown in the live order (a stale / filtered-out target). Each case would
+    /// otherwise paint a stray rule.
+    func testInsertionLineSuppressedWhenNotTargetableOrGatedOff() {
+        let t0 = TabID(), t1 = TabID()
+        let order = [t0, t1]
+        XCTAssertNil(
+            TabReorderInsertionLine.anchorIndex(hovering: nil, reorderEnabled: true, in: order),
+            "no row hovered ⇒ no insertion line",
+        )
+        XCTAssertNil(
+            TabReorderInsertionLine.anchorIndex(hovering: t1, reorderEnabled: false, in: order),
+            "manual reorder gated off (grouping / search) ⇒ no insertion line",
+        )
+        XCTAssertNil(
+            TabReorderInsertionLine.anchorIndex(hovering: TabID(), reorderEnabled: true, in: order),
+            "a target that is not shown in the live order ⇒ no insertion line",
+        )
+    }
 }

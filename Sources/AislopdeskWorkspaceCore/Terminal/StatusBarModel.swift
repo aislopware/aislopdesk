@@ -134,6 +134,7 @@ public struct StatusBarContent: Equatable, Sendable {
         case .remoteGUI: "remote"
         case .systemDialog: "dialog"
         case .chooser: "chooser"
+        case .web: "web"
         }
     }
 }

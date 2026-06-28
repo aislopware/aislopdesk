@@ -17,6 +17,7 @@
 import AislopdeskWorkspaceCore
 import SFSafeSymbols
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct PaneContainer: View {
     let store: WorkspaceStore
@@ -46,6 +47,16 @@ struct PaneContainer: View {
     /// deferred to release so `awaitingReflow` is not armed yet, leaving a gap the overlay would flash
     /// through. Gating on a real size-change keeps it scoped to the panes actually being resized.
     @State private var resizedDuringDrag = false
+
+    /// The external-drag state for THIS pane (E18 WI-5): the classified payload of a hovering drag + the
+    /// zone under the cursor. Drives ``PaneDropOverlay`` (which zones to show / highlight) and is mutated by
+    /// the ``PaneDropReceiver`` `DropDelegate`. Per-pane (the whole pane is `.id(PaneID)`-keyed).
+    @State private var dropModel = PaneDropOverlayModel()
+
+    /// The scene-root overlay coordinator (E18 WI-6): the receiver pushes the host-resolved advisory toast
+    /// for a folder → New-Tab `cd` into it. `nil` outside the scene root (tests / the static mirror), where
+    /// the toast is a no-op.
+    @Environment(\.overlayCoordinator) private var overlayCoordinator
 
     /// How long ``size`` must hold steady before the scrim fades — long enough to span the host grid-reflow /
     /// surface relayout that lands the fresh pixels, short enough not to linger once they have.
@@ -90,6 +101,11 @@ struct PaneContainer: View {
             // window). Picking flips the spec kind in place (`choosePaneKind`) and reconcile materializes the
             // real session here on the SAME PaneID — no modal, no new leaf.
             InPaneChooserView(store: store, paneID: paneID)
+        } else if kind == .web {
+            // E18 WI-4: a LOCAL web pane (`PaneKind.web`) materializes NO live session (reconcile skips it,
+            // like `.chooser`) — `live` is `nil` and the leaf renders the otty browser chrome + the
+            // headless-safe `WebRendererFactory` seam straight from the spec's persisted address.
+            WebLeafView(store: store, paneID: paneID, isFocused: isFocused, staticMirror: staticMirror)
         } else if isVideo {
             GuiLeafView(
                 live: live,
@@ -126,6 +142,20 @@ struct PaneContainer: View {
                     .opacity(showResizeScrim ? 1 : 0)
                     .allowsHitTesting(false)
                     .animation(Otty.Anim.reveal, value: showResizeScrim)
+            }
+            // E18 WI-5: the external-drag drop-zone overlay. Kept in the tree at opacity 0 (cheap, never
+            // hit-tests) and faded in only while a supported drag hovers the pane (`dropModel.isActive`). It
+            // DRAWS from the same ``PaneDropZoneLayout`` the ``PaneDropReceiver`` below hit-tests against, so
+            // the highlighted blob is exactly the zone the cursor is over (draw == hit).
+            .overlay {
+                PaneDropOverlay(
+                    layout: PaneDropZoneLayout(size: size),
+                    activeZone: dropModel.activeZone,
+                    allowedZones: dropModel.allowedZones,
+                )
+                .opacity(dropModel.isActive ? 1 : 0)
+                .allowsHitTesting(false)
+                .animation(Otty.Anim.reveal, value: dropModel.isActive)
             }
             // Generic resize signal: when this pane's laid-out `size` changes (from ANY source) show the
             // scrim, then hold it until the size has been steady for `resizeScrimSettle`. `.task(id:)`
@@ -164,6 +194,21 @@ struct PaneContainer: View {
             // panes are separated only by the `PaneDivider` hairline `SplitContainer` places between leaves.
             .contentShape(Rectangle())
             .onTapGesture { store.focusPaneTree(paneID) }
+            // E18 WI-5/WI-6: accept external file/folder/URL/text drags. The receiver is disabled on the
+            // static snapshot path (`!staticMirror`); it gates the overlay above and on `performDrop` FOCUSES
+            // THIS pane (`paneID`) then actuates against the store (terminal-rooted `cd` / web-pane ingress),
+            // THIS (dropped-on) pane's live terminal (verbatim inject / host-open), and the overlay
+            // coordinator (advisory toast) — so a Split / Open-In-Place drop targets the pane under the cursor,
+            // not whichever pane was focused. The accepted UTTypes mirror the receiver's classifier precedence.
+            .onDrop(of: PaneDropReceiver.acceptedTypes, delegate: PaneDropReceiver(
+                paneID: paneID,
+                layout: PaneDropZoneLayout(size: size),
+                model: dropModel,
+                enabled: !staticMirror,
+                store: store,
+                terminalModel: live?.terminalModel,
+                overlayCoordinator: overlayCoordinator,
+            ))
             // Focus is conveyed ONLY by dimming the unfocused panes (otty's `⌘D` split treatment) — no ring.
             .opacity(isFocused ? 1 : Otty.Anim.unfocusedPaneOpacity)
             .animation(Otty.Anim.standard, value: isFocused)

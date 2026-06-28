@@ -112,13 +112,19 @@ struct NavigatorColumn: View {
     /// and the row has a rendered position (it is shown). The drag payload is the row's tab IDENTITY (FIX 2),
     /// so the drop resolves the dragged tab by id against the live rendered order — never a stale array index.
     /// Off (grouping on / filtered / no position) ⇒ the bare content, so the rows aren't draggable across
-    /// buckets or against hidden rows.
+    /// buckets or against hidden rows. While enabled the row is wrapped in a ``ReorderableRow`` so it can own
+    /// the per-row `isTargeted` hover flag (a `@ViewBuilder` helper can't hold `@State`) and paint the E18
+    /// WI-7 insertion-line indicator. The drop handler / payload / gate are UNCHANGED — passed straight in.
     @ViewBuilder
     private func reorderable(_ content: some View, row: RailRow) -> some View {
         if dragReorderEnabled, renderedPosition(of: row) != nil {
-            content
-                .draggable(TabDragPayload.encode(row.tabID))
-                .dropDestination(for: String.self) { items, _ -> Bool in handleTabDrop(items, onto: row) }
+            ReorderableRow(
+                payload: TabDragPayload.encode(row.tabID),
+                tabID: row.tabID,
+                reorderEnabled: dragReorderEnabled,
+                renderedOrder: renderedTabOrder,
+                onDrop: { handleTabDrop($0, onto: row) },
+            ) { content }
         } else {
             content
         }
@@ -328,6 +334,52 @@ struct NavigatorColumn: View {
     /// symbol *name* from the shared ``PaneChooserRegistry`` and wraps it in a type-safe `SFSymbol`.
     private static func symbol(for kind: PaneKind) -> SFSymbol {
         SFSymbol(rawValue: PaneChooserRegistry.option(for: kind).symbol)
+    }
+}
+
+/// A rail row wrapped with the manual drag-reorder source + drop target AND the E18 WI-7 insertion-line
+/// indicator. It owns the per-row `isTargeted` hover flag — a `@ViewBuilder` helper can't hold `@State`, so
+/// the targeting highlight lives here — and paints otty's "thin insertion-line indicator [for] the landing
+/// position between tabs" as a 2pt accent rule on the row's TOP edge while a tab-reorder drag hovers it. The
+/// drag payload, drop handler and reorder gate are passed in UNCHANGED from ``NavigatorColumn`` (the by-uuid
+/// payload, ``NavigatorColumn``'s `handleTabDrop`, and the grouping/search gate are untouched) — this view
+/// only adds the targeting highlight via the pure ``TabReorderInsertionLine`` placement model.
+private struct ReorderableRow<Content: View>: View {
+    /// The drag payload string (the row's tab IDENTITY — ``TabDragPayload/encode(_:)``).
+    let payload: String
+    /// This row's tab id — the anchor the insertion line resolves against while it is the drop target.
+    let tabID: TabID
+    /// The navigator's manual-reorder gate (off under grouping / a search filter) — suppresses the line too.
+    let reorderEnabled: Bool
+    /// The LIVE flat sidebar order, so the line is suppressed against a stale / unshown target.
+    let renderedOrder: [TabID]
+    /// The drop handler — ``NavigatorColumn``'s `handleTabDrop`, passed straight through (unchanged).
+    let onDrop: ([String]) -> Bool
+    @ViewBuilder let content: () -> Content
+
+    /// SwiftUI's per-row drop-hover flag. Drives the insertion line via ``TabReorderInsertionLine``.
+    @State private var isTargeted = false
+
+    /// Whether the 2pt accent rule is drawn — resolved by the pure placement model (suppressed when no row is
+    /// targeted, reorder is gated off, or the targeted row isn't shown in the live order).
+    private var showsInsertionLine: Bool {
+        TabReorderInsertionLine.anchorIndex(
+            hovering: isTargeted ? tabID : nil, reorderEnabled: reorderEnabled, in: renderedOrder,
+        ) != nil
+    }
+
+    var body: some View {
+        content()
+            .draggable(payload)
+            .dropDestination(for: String.self) { items, _ in onDrop(items) } isTargeted: { isTargeted = $0 }
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(Otty.State.accent)
+                    .frame(height: TabReorderInsertionLine.thickness)
+                    .opacity(showsInsertionLine ? 1 : 0)
+                    .animation(.easeOut(duration: 0.12), value: showsInsertionLine)
+                    .accessibilityHidden(true)
+            }
     }
 }
 #endif

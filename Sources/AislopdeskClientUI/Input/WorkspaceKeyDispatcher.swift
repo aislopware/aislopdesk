@@ -198,6 +198,15 @@ final class WorkspaceKeyDispatcher {
             ),
         ) else { return event }
 
+        // E18 M2: a FOCUSED local web pane OWNS the otty browser chords (⌘[ Back / ⌘] Forward / ⌘⇧R hard-
+        // Reload / ⌘F Find-in-page; `files-and-links.md` › Web Browser Pane). These DEFAULT-collide with the
+        // global pane-cycle (⌘[/⌘]), Toggle Details (⌘⇧R) and Find (⌘F) bindings, and this monitor PREEMPTS
+        // the responder chain — so without yielding them here the web pane's focus-scoped `.keyboardShortcut`
+        // (WebLeafView) would never see them. Pass them through UNCHANGED only while a `.web` leaf is active;
+        // every OTHER pane keeps the global chords byte-identical (the control in DispatcherWebChordYieldTests).
+        // ⌘R Reload is omitted — unbound globally, it already passes through to the focused responder.
+        if activePaneIsWeb, Self.webPaneChords.contains(chord) { return event }
+
         switch machine.feed(chord, at: ProcessInfo.processInfo.systemUptime) {
         case let .passthrough(passed):
             // E1/WI-7: a user `text:`/`csi:`/`esc:` config binding (otty literal-byte bindings) resolves
@@ -248,6 +257,22 @@ final class WorkspaceKeyDispatcher {
     /// no-op, which is correct — there is nothing to type into).
     private var activePaneID: PaneID? {
         store.tree.activeSession?.activeTab?.activePane
+    }
+
+    /// The DEFAULT otty web-browser chords yielded to a focused web pane (see `handle`). ⌘R Reload is omitted
+    /// — it is unbound in the global table, so it already passes through to the focused responder.
+    private static let webPaneChords: Set<KeyChord> = [
+        KeyChord(character: "[", [.command]), // Back
+        KeyChord(character: "]", [.command]), // Forward
+        KeyChord(character: "r", [.command, .shift]), // Hard reload (reloadFromOrigin)
+        KeyChord(character: "f", [.command]), // Find in page
+    ]
+
+    /// `true` when the active leaf is a local `.web` pane — the only state in which the web-browser chords are
+    /// yielded to the focused responder instead of resolving their global bindings.
+    private var activePaneIsWeb: Bool {
+        guard let active = activePaneID else { return false }
+        return store.tree.spec(for: active)?.kind == .web
     }
 
     private func dispatch(_ action: WorkspaceAction) {

@@ -254,10 +254,13 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
             // window by id); the differences — auto-management, no picker, skip revalidation, not
             // persisted — live in the store/monitor and in `setVideoActive`, not in the session shape.
             makeRemoteGUI(spec, target: target)
-        case .chooser:
-            // A `.chooser` pane materializes NO live session — the store's reconcile SKIPS it (it renders the
-            // in-pane kind picker from the spec). This arm only satisfies exhaustiveness; if a chooser ever
-            // reached here it degrades to a terminal rather than trapping.
+        case .chooser,
+             .web:
+            // A `.chooser` (in-pane kind picker) or a `.web` (local WKWebView) pane materializes NO live
+            // session — the store's reconcile SKIPS both (a chooser renders the in-pane kind picker from the
+            // spec; a web pane renders a fully-local browser surface via `WebRendererFactory`). This arm only
+            // satisfies exhaustiveness; if either ever reached here it degrades to a terminal rather than
+            // trapping.
             makeTerminal(spec, makeClient: makeClient, makeInspector: makeInspector, target: target)
         }
     }
