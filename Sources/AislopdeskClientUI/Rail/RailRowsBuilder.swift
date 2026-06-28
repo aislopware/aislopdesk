@@ -51,7 +51,10 @@ enum RailRowsBuilder {
         var out: [RailRow] = []
         for (tabIndex, tab) in session.tabs.enumerated() {
             let tabIsActive = tabIndex == activeTabIndex
-            for paneID in tab.root.allPaneIDs() {
+            // E21 ES-E21-2/-4: enumerate the FULL pane set (`tab.allPaneIDs()` = tree + floating layer), not
+            // just `tab.root.allPaneIDs()`, so a floated pane (incl. a floated `.remoteGUI` remote window)
+            // stays a first-class peer in the sidebar rail — matching OpenQuickly, which uses `tab.allPaneIDs()`.
+            for paneID in tab.allPaneIDs() {
                 let spec = session.specs[paneID]
                 let kind = spec?.kind ?? .terminal
                 let title = spec?.lastKnownTitle ?? spec?.title ?? ""

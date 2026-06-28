@@ -149,6 +149,17 @@ final class RemoteGUIFirstClassPeerTests: XCTestCase {
         XCTAssertEqual(videoRow.badge, "Window", "WI-2: a remote window is badged 'Window', not 'Pane'")
         XCTAssertEqual(videoRow.symbol, "display", "WI-2: a remote window uses the window glyph, not the split glyph")
         XCTAssertNotNil(videoRow.subtitle, "WI-2: a video row carries a host/window subtitle (it has no cwd)")
+        // F2: the subtitle is the host-side APP name (line 2), NOT an echo of the window title (line 1). On
+        // un-fixed code `paneRowSubtitle` returned `nonEmpty(title)` — the SAME string as the row title — so the
+        // row printed identical text on both lines. Pin the expected app name and that it differs from the title.
+        XCTAssertEqual(
+            videoRow.subtitle, "Safari",
+            "F2: a remote-window subtitle is the host app name (the rail's `railSubtitle` source), not the title",
+        )
+        XCTAssertNotEqual(
+            videoRow.subtitle, videoRow.title,
+            "F2: the subtitle must not echo the title — the Opened row reads window-title / host-app, two lines",
+        )
     }
 
     // MARK: - ES-E21-2 / WI-4 — the status-bar model labels the video pane

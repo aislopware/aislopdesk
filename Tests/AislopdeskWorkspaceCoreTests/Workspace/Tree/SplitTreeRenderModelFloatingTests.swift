@@ -123,4 +123,73 @@ final class SplitTreeRenderModelFloatingTests: XCTestCase {
         XCTAssertTrue(layout.floatingLeaves.isEmpty, "a zoomed tab hides floats")
         XCTAssertEqual(layout.leaves.count, 1, "zoom collapses to the one zoomed leaf")
     }
+
+    // MARK: - F4 / WI-6 — float↔embed stays within ONE keyed compositor collection (identity preserved)
+
+    /// The compositor list union pin: `Layout.compositorLeaves` merges the tiled `leaves` and the
+    /// `floatingLeaves` into ONE `PaneID`-keyed sequence (tiled first, floating last for z-order), with each
+    /// pane appearing EXACTLY once. This is the single `ForEach` source `SplitContainer` iterates so a
+    /// float↔embed move never hands a pane a new SwiftUI identity (which would tear down + rebuild its hosted
+    /// terminal / `.remoteGUI` video surface). Headless: pure model, no view / no Metal / no socket.
+    func testCompositorLeavesMergeTiledThenFloatingEachPaneOnce() {
+        let a = PaneID(), b = PaneID(), f = PaneID()
+        let root = SplitNode.split(id: SplitNodeID(), axis: .horizontal, children: [
+            WeightedChild(weight: .flex(1), node: .leaf(a)),
+            WeightedChild(weight: .flex(1), node: .leaf(b)),
+        ])
+        let layout = SplitTreeRenderModel.layout(
+            for: tab(root: root, floating: [f]),
+            in: bounds,
+            floating: [(id: f, frame: nil)],
+        )
+        let merged = layout.compositorLeaves
+        XCTAssertEqual(
+            merged.map(\.id), layout.leaves.map(\.id) + layout.floatingLeaves.map(\.id),
+            "tiled leaves first, floating last (z-order) — one ForEach source",
+        )
+        XCTAssertEqual(merged.filter { !$0.isFloating }.map(\.id), [a, b], "the tiled pair carries isFloating=false")
+        XCTAssertEqual(merged.filter(\.isFloating).map(\.id), [f], "the float carries isFloating=true")
+        // Each pane appears EXACTLY once across the whole compositor list (never in both layers → never mounted
+        // twice → never one ForEach tears it down while the other rebuilds it).
+        XCTAssertEqual(Set(merged.map(\.id)).count, merged.count, "no PaneID is duplicated in the merged list")
+    }
+
+    /// The actual F4 regression driver: a pane that EMBEDS (floating → tiled) must stay in the SAME single
+    /// `compositorLeaves` collection across the transition, keyed by the SAME `PaneID`, flipping ONLY its
+    /// `isFloating` flag. That is exactly what lets one `.id`-keyed `ForEach` preserve the pane's identity (and
+    /// its live surface) instead of the old two-sibling-`ForEach` layout that re-minted it on every float/embed.
+    /// Drives the transition through the real `WorkspaceTreeOps.toggleFloating` so it is not hand-rigged.
+    func testEmbedKeepsThePaneInOneKeyedCompositorCollection() throws {
+        // Two tiled siblings A|B in one tab; B starts FLOATING.
+        let aSpec = PaneSpec(kind: .terminal, title: "A")
+        let bSpec = PaneSpec(kind: .terminal, title: "B")
+        let ws0 = TreeWorkspace.singlePane(spec: aSpec)
+        let a = ws0.allPaneIDs()[0]
+        let (tiled, b) = WorkspaceTreeOps.splitPane(a, axis: .horizontal, newSpec: bSpec, in: ws0)
+        let floatFrame = CGRect(x: 120, y: 120, width: 400, height: 300)
+        let floated = WorkspaceTreeOps.toggleFloating(b, defaultFrame: floatFrame, bounds: bounds, in: tiled)
+
+        // While FLOATING: B is in compositorLeaves once, flagged floating; A stays tiled.
+        let floatTab = try XCTUnwrap(floated.activeSession?.activeTab)
+        let floatPairs = floatTab.floatingPanes.map { (id: $0, frame: floated.spec(for: $0)?.floatingFrame) }
+        let floatLayout = SplitTreeRenderModel.layout(for: floatTab, in: bounds, floating: floatPairs)
+        let floatEntry = try XCTUnwrap(floatLayout.compositorLeaves.first { $0.id == b })
+        XCTAssertTrue(floatEntry.isFloating, "B floats before the embed")
+        XCTAssertEqual(floatLayout.compositorLeaves.count(where: { $0.id == b }), 1, "B is in the merged list once")
+
+        // EMBED B back: floating → tiled.
+        let embedded = WorkspaceTreeOps.toggleFloating(b, defaultFrame: floatFrame, bounds: bounds, in: floated)
+        let embedTab = try XCTUnwrap(embedded.activeSession?.activeTab)
+        let embedLayout = SplitTreeRenderModel.layout(for: embedTab, in: bounds, floating: [])
+        let embedEntry = try XCTUnwrap(embedLayout.compositorLeaves.first { $0.id == b })
+
+        // The pane is STILL in the single compositorLeaves collection, keyed by the SAME PaneID — only
+        // isFloating flipped true→false. One `.id(PaneID)`-keyed ForEach therefore matches it across the
+        // transition and never reconstructs the hosted surface.
+        XCTAssertEqual(embedEntry.id, floatEntry.id, "same PaneID identity key across float→embed")
+        XCTAssertFalse(embedEntry.isFloating, "after embed B is tiled")
+        XCTAssertEqual(embedLayout.compositorLeaves.count(where: { $0.id == b }), 1, "still exactly one entry")
+        XCTAssertTrue(embedLayout.floatingLeaves.isEmpty, "no floats remain after embed")
+        XCTAssertEqual(Set(embedLayout.compositorLeaves.map(\.id)), [a, b], "both panes tiled in one collection")
+    }
 }

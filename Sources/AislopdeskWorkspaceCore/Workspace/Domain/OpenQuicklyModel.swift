@@ -416,13 +416,14 @@ public enum OpenQuicklyModel {
         title: String,
         cwd: String?,
         paneKind: PaneKind = .terminal,
+        appName: String? = nil,
     ) -> OpenQuicklyItem {
         let haystack = [title, cwd ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
         return OpenQuicklyItem(
             id: "pane:\(paneID.raw.uuidString)",
             kind: .pane,
             title: title,
-            subtitle: paneRowSubtitle(cwd: cwd, title: title, paneKind: paneKind),
+            subtitle: paneRowSubtitle(cwd: cwd, title: title, paneKind: paneKind, appName: appName),
             timestamp: nil,
             searchText: haystack,
             act: .focusPane(paneID),
@@ -432,13 +433,16 @@ public enum OpenQuicklyModel {
 
     /// The subtitle for an Opened pane row (E21 WI-2). A terminal pane shows its working directory (or nothing
     /// when the cwd is unknown — never a blank line). A VIDEO pane (`.remoteGUI`/`.systemDialog`) has no shell
-    /// cwd, so the host/window ``title`` stands in: the row is then a labelled window (glyph + badge + subtitle),
-    /// never a bare single line. A real cwd, if present, always wins (the subtitle never silently drops a
-    /// working directory). The richer host/app-name subtitle for the sidebar lives in `RailRowsBuilder` (WI-5).
-    private static func paneRowSubtitle(cwd: String?, title: String, paneKind: PaneKind) -> String? {
+    /// cwd, so the host-side window's owning APP name (`appName`) stands in — mirroring the sidebar's
+    /// ``PaneSpec/railSubtitle`` discipline (window title on line 1, host app on line 2), so a remote-window row
+    /// never echoes its own title on both lines. It falls back to the window ``title`` only when the app name is
+    /// empty (a manual-id binding), so the row is still a labelled window (glyph + badge + subtitle), never a
+    /// bare single line. A real cwd, if present, always wins (the subtitle never silently drops a working
+    /// directory).
+    private static func paneRowSubtitle(cwd: String?, title: String, paneKind: PaneKind, appName: String?) -> String? {
         if let cwd = nonEmpty(cwd) { return cwd }
         guard paneKind.isVideo else { return nil }
-        return nonEmpty(title)
+        return nonEmpty(appName) ?? nonEmpty(title)
     }
 
     /// Build one **Recent** row for a recently-closed tab at LIFO `index` (0 = most-recently closed). `↩`
@@ -478,6 +482,10 @@ public enum OpenQuicklyModel {
                         // `.terminal` when the spec side-table is momentarily missing (the same gap
                         // ``paneDisplayTitle`` tolerates) — a spec-less pane stays a generic "Pane" row.
                         paneKind: spec?.kind ?? .terminal,
+                        // E21 F2: thread the host-side app name (the same `VideoEndpoint.appName` the rail's
+                        // `railSubtitle` reads) so a remote-window row's subtitle is the host app — not an echo
+                        // of the window title already shown on line 1. Falls back to the title when absent.
+                        appName: spec?.video?.appName,
                     ))
                 }
             }

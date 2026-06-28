@@ -611,6 +611,9 @@ final class OpenQuicklyModelTests: XCTestCase {
         XCTAssertEqual(videoRow?.paneKind, .remoteGUI, "openedItems threaded the spec's `.remoteGUI` kind")
         XCTAssertEqual(videoRow?.badge, "Window", "the `.remoteGUI` row is badged a 'Window'")
         XCTAssertEqual(videoRow?.symbol, "display", "the `.remoteGUI` row uses the window glyph")
-        XCTAssertEqual(videoRow?.subtitle, "Safari — GitHub", "no cwd ⇒ the host/window title is the subtitle")
+        // F2: no cwd ⇒ the subtitle is the host-side APP name (line 2), NOT an echo of the window title on
+        // line 1. Pre-fix `paneRowSubtitle` returned the title, printing identical text on both lines.
+        XCTAssertEqual(videoRow?.subtitle, "Safari", "no cwd ⇒ the host app name is the subtitle (not the title)")
+        XCTAssertNotEqual(videoRow?.subtitle, videoRow?.title, "F2: the subtitle must not echo the row title")
     }
 }

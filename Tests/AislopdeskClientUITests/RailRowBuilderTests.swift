@@ -242,6 +242,45 @@ final class RailRowBuilderTests: XCTestCase {
         XCTAssertTrue(locked.readOnly, "the read-only lock flag is kind-generic on a video pane")
     }
 
+    // MARK: - E21 ES-E21-2/-4: a FLOATED `.remoteGUI` pane stays a first-class peer (rail + palette)
+
+    /// A floated pane (here a `.remoteGUI` remote window) must NOT vanish from the sidebar rail or the
+    /// ⌘K jump-to-pane palette — ES-E21-2 ("a remote window must appear in palette … the sidebar") and the
+    /// ES-E21-4 peer-drop sweep. The pre-fix builders enumerated `tab.root.allPaneIDs()`, which excludes the
+    /// float layer, so the moment a pane floated it disappeared from both surfaces while OpenQuickly (full
+    /// `tab.allPaneIDs()`) still listed it. This floats the remote pane through the real store op (split first
+    /// so floating it does not empty the tree) and asserts it remains in BOTH `RailRowsBuilder.rows` and
+    /// `TabsPaletteSource.snapshot(...).candidates`. Fails on the pre-fix `tab.root.allPaneIDs()` at either site.
+    func testFloatedRemoteWindowStaysInRailAndPalette() throws {
+        let store = makeStore()
+        let remote = store.newRemoteWindowTab(windowID: 7777, title: "Docs", appName: "Safari")
+        // Add a tiled sibling so floating the remote pane doesn't empty the tab's tree (the op guards that).
+        store.splitActivePane(axis: .horizontal, kind: .terminal, leading: false, launchGrace: .zero)
+        // Float the remote pane specifically (focus it first; the toggle acts on the active pane).
+        store.focusPaneTree(remote)
+        store.toggleFloatActivePane()
+
+        // Sanity: the pane really left the tiled tree for the float layer (so the assertions below exercise
+        // the float path, not a still-tiled pane).
+        let floatLayer = try XCTUnwrap(store.tree.activeSession?.activeTab?.floatingPanes)
+        XCTAssertTrue(floatLayer.contains(remote), "the remote pane is now in the tab's floating layer")
+
+        // Rail: the floated remote pane is still a row.
+        XCTAssertNotNil(
+            RailRowsBuilder.rows(for: store).first { $0.id == remote },
+            "a floated remote window must stay in the sidebar rail (ES-E21-2)",
+        )
+
+        // Palette: the floated remote pane is still a jump-to-pane candidate.
+        let paletteIDs = TabsPaletteSource.snapshot(store)
+            .candidates(query: "")
+            .map(\.id)
+        XCTAssertTrue(
+            paletteIDs.contains("tab.\(remote.raw.uuidString)"),
+            "a floated remote window must stay in the ⌘K jump-to-pane palette (ES-E21-2)",
+        )
+    }
+
     // MARK: - WI-5: `sectioned` (search filter × store-derived grouping → rendered sections)
 
     /// A three-tab store with two distinct project cwds. Tabs 1+2 share `…/alpha`, tab 3 is `…/beta`. Returns

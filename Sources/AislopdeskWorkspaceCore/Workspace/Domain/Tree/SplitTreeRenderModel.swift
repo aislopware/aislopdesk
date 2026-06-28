@@ -93,6 +93,25 @@ public enum SplitTreeRenderModel {
         public var key: Key { Key(splitID: splitID, childIndex: childIndex, axis: axis) }
     }
 
+    /// One placed leaf tagged with whether it floats — the unit a SINGLE-`ForEach` compositor iterates so a
+    /// pane's SwiftUI identity (and its hosted terminal / `.remoteGUI` video surface) survives a float↔embed
+    /// membership move. A pane in TWO sibling `ForEach`es (one tiled, one floating) is handed a NEW identity on
+    /// the transition → the hosted surface is torn down + rebuilt (the `.remoteGUI` stream reconnects + black-
+    /// flashes, contradicting DECISIONS.md WI-6's "keeps streaming across float/move/resize/embed"). Merging
+    /// both into ONE keyed list (``Layout/compositorLeaves``) keeps the move WITHIN one collection, so `.id`
+    /// dedups it and the surface is preserved.
+    public struct CompositorLeaf: Equatable, Sendable {
+        public let leaf: PlacedLeaf
+        public let isFloating: Bool
+        public init(leaf: PlacedLeaf, isFloating: Bool) {
+            self.leaf = leaf
+            self.isFloating = isFloating
+        }
+
+        /// The pane identity the compositor `ForEach` keys on — STABLE across the float↔embed transition.
+        public var id: PaneID { leaf.id }
+    }
+
     /// The full render layout: the visible tiled leaves + their dividers + the floating overlay leaves.
     /// `dividers` is empty for a single-leaf or zoomed tab; `floatingLeaves` is empty when the tab has no
     /// floating panes (or is zoomed — zoom hides floats). `floatingLeaves` is ordered by
@@ -108,6 +127,17 @@ public enum SplitTreeRenderModel {
         }
 
         public static let empty = Self(leaves: [], dividers: [], floatingLeaves: [])
+
+        /// The tiled + floating leaves as ONE ordered, `PaneID`-keyed sequence (tiled first, floating last so
+        /// the z-order is preserved when the compositor draws them in order / bumps floats above via z-index).
+        /// The compositor renders EVERY pane from this single `ForEach` so a float↔embed move stays within one
+        /// keyed collection and the pane's hosted surface is never torn down (E21 F4 / WI-6). A pane is in
+        /// EITHER `leaves` or `floatingLeaves`, never both (the float leaves the tiled tree), so each `PaneID`
+        /// appears exactly once here.
+        public var compositorLeaves: [CompositorLeaf] {
+            leaves.map { CompositorLeaf(leaf: $0, isFloating: false) }
+                + floatingLeaves.map { CompositorLeaf(leaf: $0, isFloating: true) }
+        }
     }
 
     /// The on-screen thickness of a divider handle's hit/draw band, centered on the seam between two

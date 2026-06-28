@@ -41,34 +41,44 @@ struct SplitContainer: View {
     @ViewBuilder
     private func content(in bounds: CGRect) -> some View {
         if let tab {
-            // E21 WI-6: feed the FLOATING overlay layer. The store's `floatingPanePairs(for:)` reads
+            // E21 WI-6: feed the FLOATING overlay. The store's `floatingPanePairs(for:)` reads
             // `tab.floatingPanes` × each spec's persisted `floatingFrame`; the render model clamps them into
-            // `bounds` and emits `floatingLeaves` (z-ordered, last = topmost), which `floatingLayer` draws as
-            // `FloatingPaneCard`s topmost in this ZStack. `floatingLeaves` is empty for a zoomed / float-less
-            // tab, so the non-floating path is byte-identical to before.
+            // `bounds` and emits `floatingLeaves` (z-ordered, last = topmost), merged with the tiled `leaves`
+            // into `compositorLeaves` so ONE `ForEach` draws every pane as a `CompositorPaneCard` (F4 — the
+            // float↔embed move preserves the hosted surface). `floatingLeaves` is empty for a zoomed /
+            // float-less tab, so the non-floating path is byte-identical to before.
             let layout = SplitTreeRenderModel.layout(for: tab, in: bounds, floating: store.floatingPanePairs(for: tab))
             let frames = Dictionary(layout.leaves.map { ($0.id, $0.rect) }, uniquingKeysWith: { a, _ in a })
             ZStack(alignment: .topLeading) {
-                ForEach(layout.leaves, id: \.id) { leaf in
-                    PaneContainer(
+                // F4 / WI-6: EVERY pane — tiled AND floating — renders from ONE `ForEach` over
+                // ``SplitTreeRenderModel/Layout/compositorLeaves`` (tiled first, floating last). `.id` only
+                // dedups WITHIN one `ForEach`, so a pane in two sibling loops was handed a NEW identity on a
+                // float↔embed move → its hosted terminal / `.remoteGUI` video surface was torn down + rebuilt
+                // (the stream reconnected + black-flashed). One keyed list keeps the move within one collection,
+                // so the surface survives; the per-leaf `isFloating` flag switches only the chrome + placement +
+                // z-order inside ``CompositorPaneCard``.
+                ForEach(layout.compositorLeaves, id: \.id) { entry in
+                    CompositorPaneCard(
                         store: store,
-                        paneID: leaf.id,
-                        isFocused: leaf.id == focusedPane,
-                        // The pane's laid-out size IS the generic resize signal (any source) the scrim keys off.
-                        size: leaf.rect.size,
+                        paneID: entry.id,
+                        frame: entry.leaf.rect,
+                        isFloating: entry.isFloating,
+                        isFocused: entry.id == focusedPane,
+                        containerBounds: bounds,
                         staticMirror: staticMirror,
                     )
-                    .id(leaf.id) // identity hazard: never reuse a surface across panes
-                    .frame(width: leaf.rect.width, height: leaf.rect.height)
-                    .position(x: leaf.rect.midX, y: leaf.rect.midY)
+                    .id(entry.id) // identity hazard: never reuse a surface across panes
                 }
+                // Dividers + the otty grab-handles / live drag overlay sit ABOVE the tiled panes (z 0) but
+                // BELOW the floating cards (`floatZBase`). With one mixed `ForEach` above, declaration order no
+                // longer keeps floats on top, so these layers carry an explicit z-index band.
                 ForEach(layout.dividers, id: \.key) { handle in
                     dividerView(handle)
                 }
+                .zIndex(Self.dividerZ)
                 // otty grab-handles + the live drag overlay (extracted to keep this ZStack type-checkable).
                 moveLayer(leaves: layout.leaves, frames: frames, container: bounds)
-                // FLOATING cards last → topmost over the tiled panes, dividers, and the move overlay.
-                floatingLayer(layout.floatingLeaves, container: bounds)
+                    .zIndex(Self.moveZ)
             }
             .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
             .coordinateSpace(name: PaneMoveSpace.name)
@@ -82,23 +92,15 @@ struct SplitContainer: View {
         }
     }
 
-    /// The floating overlay layer (E21 WI-6): one ``FloatingPaneCard`` per floating leaf, in z-order (the
-    /// render model emits them last = topmost). Extracted to keep the compositor ZStack type-checkable, like
-    /// ``moveLayer(leaves:frames:container:)``. Each card is keyed `.id(PaneID)` so its hosted surface is never
-    /// reconstructed across panes; the card itself bumps its z-order while a grab/resize drag is in flight.
-    private func floatingLayer(_ floats: [SplitTreeRenderModel.PlacedLeaf], container: CGRect) -> some View {
-        ForEach(floats, id: \.id) { leaf in
-            FloatingPaneCard(
-                store: store,
-                paneID: leaf.id,
-                frame: leaf.rect,
-                isFocused: leaf.id == focusedPane,
-                containerBounds: container,
-                staticMirror: staticMirror,
-            )
-            .id(leaf.id)
-        }
-    }
+    /// The z-index band the compositor ZStack stacks by (F4): tiled panes at the base (0, set inside
+    /// ``CompositorPaneCard``), then the divider layer, then the move-handle / drag-overlay layer, then the
+    /// floating cards on top (``CompositorPaneCard`` rides at ``floatZBase`` and bumps a dragged float one
+    /// above its float siblings). A single mixed `ForEach` renders tiled + floating panes, so declaration order
+    /// alone no longer keeps floats topmost — these explicit z-values restore the layering the old separate
+    /// floating overlay got for free by being declared last.
+    static let dividerZ: Double = 10
+    static let moveZ: Double = 20
+    static let floatZBase: Double = 30
 
     /// One divider, placed at its LIVE solved seam (`handle.rect.mid`, which the solver re-emits as the panes
     /// resize each drag frame). The view sits at its solved position the whole time — moving `.position` does

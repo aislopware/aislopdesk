@@ -1,23 +1,36 @@
-// FloatingPaneCard — the in-app floating-pane RENDERER (E21 WI-6 / ES-E21-3). The one genuine net-new
-// view of E21: the float DOMAIN (`WorkspaceTreeOps.toggleFloating`/`moveFloating`/`resizeFloating`/
-// `raiseFloating`/clamp + the store wrappers + `SplitTreeRenderModel.floatingLeaves`) was already built and
-// unit-tested; only the view that draws a floating leaf and feeds the gestures back to the store was
-// missing. This is that view.
+// CompositorPaneCard — the UNIFIED leaf compositor (E21 WI-6 / F4 / ES-E21-3). It renders BOTH a flush tiled
+// pane AND an in-app floating card from ONE `SplitContainer` `ForEach`, switching ONLY the chrome + placement
+// by a per-leaf `isFloating` flag — the hosted `PaneContainer` sits at the SAME structural position in either
+// mode, so a float↔embed membership move keeps the pane's SwiftUI identity (and its terminal / `.remoteGUI`
+// video surface) ALIVE.
+//
+// WHY ONE VIEW (the F4 fix): tiled panes and floating cards used to live in TWO sibling `ForEach`es. `.id`
+// only dedups WITHIN one `ForEach`, so a pane moving between them was handed a NEW identity → the hosted
+// surface was dismantled + rebuilt (a `.remoteGUI` stream RECONNECTS + black-flashes — contradicting
+// DECISIONS.md WI-6 "a floated remote window keeps streaming across float/move/resize/embed"). Merging both
+// into ``SplitTreeRenderModel/Layout/compositorLeaves`` — one keyed list — keeps the move within one
+// collection. To preserve identity ACROSS the `isFloating` toggle, the card NEVER wraps `PaneContainer` in an
+// `if`/`else` (a `_ConditionalContent` branch flip resets state): the chrome is applied as layout-stable
+// modifiers (a title strip whose height collapses to 0, an opacity-gated border/shadow/clip) so the child is
+// the same structural node either way.
 //
 // A floating pane overlays the tiled split layout, so — UNLIKE the flush, borderless tiled pane — it reads
 // as a CARD: an otty rounded surface (radius + `Otty.Line.card` hairline border + a faint `Otty.State.shadow`
-// drop shadow) with a slim top grab strip carrying the pane title + embed/close controls.
+// drop shadow) with a slim top grab strip carrying the pane title + embed/close controls. A tiled pane
+// collapses all of that to nothing (0-height strip, 0 radius, transparent border/shadow), so its rendering is
+// visually identical to the old bare `PaneContainer`.
 //
-// KIND-GENERIC by construction: the card hosts the SAME `PaneContainer` the tiled `SplitContainer` mounts,
-// so a terminal, a local web pane, AND a `.remoteGUI` / `.systemDialog` video pane all float for free (the
+// KIND-GENERIC by construction: the card hosts the SAME `PaneContainer` the tiled layout mounts, so a
+// terminal, a local web pane, AND a `.remoteGUI` / `.systemDialog` video pane all float for free (the
 // "remote window floats" acceptance is satisfied with no kind branch here).
 //
-// ONE-SURFACE / NO-TEARDOWN invariant (the load-bearing rule): the card NEVER reconstructs the hosted
-// surface across panes (`SplitContainer` keys each card `.id(PaneID)`), and the drag/resize gestures hold
-// the LIVE frame in `@GestureState` — the store is untouched until `.onEnded`, so the terminal-grid /
-// remote-window redraw (a reconcile) fires exactly ONCE on release, never per drag frame (the same remote-app
-// rule the pane-divider + pane-move affordances follow). The live preview clamps with the SAME
-// `WorkspaceTreeOps.clampFloatingFrame` the store commit uses, so the card never jumps on release.
+// ONE-SURFACE / NO-TEARDOWN invariant (the load-bearing rule): the card NEVER reconstructs the hosted surface
+// across panes (`SplitContainer` keys each card `.id(PaneID)` AND `PaneContainer` is keyed `.id(PaneID)`
+// inside), and the float drag/resize gestures hold the LIVE frame in `@GestureState` — the store is untouched
+// until `.onEnded`, so the terminal-grid / remote-window redraw (a reconcile) fires exactly ONCE on release,
+// never per drag frame (the same remote-app rule the pane-divider + pane-move affordances follow). The live
+// preview clamps with the SAME `WorkspaceTreeOps.clampFloatingFrame` the store commit uses, so the card never
+// jumps on release.
 //
 // No AppKit child window / no PiP (E19 deferred that): this is a pure SwiftUI overlay inside the split
 // container's compositor ZStack. SYSTEM / Otty tokens only.
@@ -27,18 +40,22 @@ import AislopdeskWorkspaceCore
 import SFSafeSymbols
 import SwiftUI
 
-struct FloatingPaneCard: View {
+struct CompositorPaneCard: View {
     let store: WorkspaceStore
     let paneID: PaneID
-    /// The solved + clamped placement rect from ``SplitTreeRenderModel/Layout/floatingLeaves`` (top-left
-    /// origin, in the `SplitContainer` compositor's coordinate space). The committed frame the card draws at
-    /// when no gesture is active.
+    /// The solved placement rect for this leaf (top-left origin, in the `SplitContainer` compositor's
+    /// coordinate space): the solver tile rect when tiled, or the clamped `floatingLeaves` rect when floating.
+    /// The committed frame the card draws at when no float gesture is active.
     let frame: CGRect
-    /// Whether this float is the active tab's active pane (drives the focus dim, exactly like a tiled pane).
+    /// Whether this leaf floats (card chrome + drag/resize gestures + bounds-clamped live preview) or tiles
+    /// (flush, borderless, fixed to `frame`). The ONLY thing that differs between the two modes — the hosted
+    /// `PaneContainer` is the same structural node either way, so flipping this never tears down the surface.
+    let isFloating: Bool
+    /// Whether this leaf is the active tab's active pane (drives the focus dim, exactly like a tiled pane).
     let isFocused: Bool
     /// The full container bounds the live drag/resize preview clamps into — the SAME rect the store reports
     /// via ``WorkspaceStore/updateFloatingBounds(_:)``, so the in-flight preview and the committed clamp share
-    /// one coordinate space (no jump on release).
+    /// one coordinate space (no jump on release). Unused while tiled.
     let containerBounds: CGRect
     /// EAGER/STATIC render path for headless ImageRenderer snapshots — renders the card, skips the gestures.
     var staticMirror: Bool = false
@@ -49,19 +66,23 @@ struct FloatingPaneCard: View {
     /// The live RESIZE preview (bottom-right corner drag), reset to `.zero` automatically on gesture end.
     @GestureState private var resizeTranslation: CGSize = .zero
 
-    /// The slim top grab strip / title-bar height.
+    /// The slim top grab strip / title-bar height (when floating; collapses to 0 when tiled).
     private let titleBarHeight: CGFloat = 26
     /// The bottom-right resize grip's square size.
     private let resizeGrip: CGFloat = 16
-    private var radius: CGFloat { Otty.Metric.radiusCard }
+    /// The card corner radius when floating; 0 (a plain rectangle) when tiled so a tiled pane stays flush.
+    private var radius: CGFloat { isFloating ? Otty.Metric.radiusCard : 0 }
 
-    /// Whether a drag (move or resize) is currently in flight — bumps the card's z-order so a grabbed card
-    /// draws above any overlapping neighbour while it moves (the store commits the real raise on release).
-    private var isInteracting: Bool { moveTranslation != .zero || resizeTranslation != .zero }
+    /// Whether a float drag (move or resize) is currently in flight — bumps the card's z-order so a grabbed
+    /// card draws above any overlapping neighbour while it moves (the store commits the real raise on release).
+    /// Always `false` while tiled (the gestures are disabled, so the translations never leave `.zero`).
+    private var isInteracting: Bool { isFloating && (moveTranslation != .zero || resizeTranslation != .zero) }
 
-    /// The frame to draw RIGHT NOW: the committed `frame` plus any in-flight move/resize preview, clamped
-    /// into the container with the SAME floor + edge clamp the store applies on commit (so no release jump).
+    /// The frame to draw RIGHT NOW. A TILED leaf is fixed to its solved `frame` (no gesture preview). A
+    /// FLOATING leaf adds any in-flight move/resize preview, clamped into the container with the SAME floor +
+    /// edge clamp the store applies on commit (so no release jump).
     private var liveFrame: CGRect {
+        guard isFloating else { return frame }
         var rect = frame
         rect.origin.x += moveTranslation.width
         rect.origin.y += moveTranslation.height
@@ -81,46 +102,71 @@ struct FloatingPaneCard: View {
         card
             .frame(width: liveFrame.width, height: liveFrame.height)
             .position(x: liveFrame.midX, y: liveFrame.midY)
-            // Raise-on-grab (visual): a card being dragged jumps above its neighbours; otherwise the ZStack
-            // declaration order (= `floatingPanes` z-order, last topmost) governs. The store performs the
-            // real `raiseFloating` on focus/move commit, so this is purely the in-flight pop.
-            .zIndex(isInteracting ? 1 : 0)
+            // Z-ORDER (F4): one `ForEach` mixes tiled + floating leaves, so declaration order alone can't keep
+            // floats on top of the dividers / move-handle layers (those are declared AFTER the panes). A tiled
+            // leaf sits at the base (0); a float rides above the chrome layers (`SplitContainer` keeps dividers
+            // < move < `floatZBase`), and a dragged float pops above its float neighbours.
+            .zIndex(zIndex)
+    }
+
+    /// The pane's z-index in the `SplitContainer` compositor ZStack. Tiled = base; floating = above the
+    /// divider / move-handle layers; a dragged float = one above its float siblings.
+    private var zIndex: Double {
+        guard isFloating else { return 0 }
+        return isInteracting ? SplitContainer.floatZBase + 1 : SplitContainer.floatZBase
     }
 
     private var card: some View {
         VStack(spacing: 0) {
+            // The grab strip collapses to 0 height (and stops drawing / hit-testing) when tiled, so the hosted
+            // `PaneContainer` below stays at the SAME structural slot — flipping `isFloating` never remounts it.
             titleBar
+                .frame(height: isFloating ? titleBarHeight : 0, alignment: .top)
+                .opacity(isFloating ? 1 : 0)
+                .clipped()
+                .allowsHitTesting(isFloating && !staticMirror)
             Rectangle()
                 .fill(Otty.Line.card)
-                .frame(height: Otty.Metric.hairline)
+                .frame(height: isFloating ? Otty.Metric.hairline : 0)
+                .opacity(isFloating ? 1 : 0)
             PaneContainer(
                 store: store,
                 paneID: paneID,
                 isFocused: isFocused,
                 // The content's live size IS the resize signal `PaneContainer`'s scrim keys off — during a
                 // corner-resize drag this changes each frame, so the surface shows the calm "resizing" scrim
-                // until the committed reflow lands (a move drag keeps it constant → no scrim).
+                // until the committed reflow lands (a move drag / a tiled pane keeps it constant → no scrim).
                 size: contentSize,
                 staticMirror: staticMirror,
             )
             .id(paneID) // identity hazard: never reuse a hosted surface across panes
         }
-        .background(Otty.Surface.card)
+        // The card surface / border / shadow / rounded clip are FLOATING-only chrome, gated by opacity (never
+        // an `if`, which would restructure the subtree) so the tiled pane reads as the old flush, borderless
+        // panel. `radius == 0` when tiled makes the clip a plain rectangle (a visual no-op over the solver rect).
+        .background(Otty.Surface.card.opacity(isFloating ? 1 : 0))
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(Otty.Line.card, lineWidth: Otty.Metric.cardBorderWidth),
+                .strokeBorder(Otty.Line.card, lineWidth: Otty.Metric.cardBorderWidth)
+                .opacity(isFloating ? 1 : 0),
         )
-        .shadow(color: Otty.State.shadow, radius: 12, y: 4)
-        .overlay(alignment: .bottomTrailing) { resizeHandle }
+        .shadow(color: isFloating ? Otty.State.shadow : .clear, radius: isFloating ? 12 : 0, y: isFloating ? 4 : 0)
+        .overlay(alignment: .bottomTrailing) {
+            resizeHandle
+                .opacity(isFloating ? 1 : 0)
+                .allowsHitTesting(isFloating && !staticMirror)
+        }
     }
 
-    /// The content area below the grab strip + hairline — the size handed to the hosted `PaneContainer`. Uses
-    /// the ordered, NaN-faithful `CGFloat.maximum` (the house float idiom — never a bare `<`/`>` clamp).
+    /// The content area below the grab strip + hairline — the size handed to the hosted `PaneContainer`. While
+    /// tiled the strip + hairline are 0-height so the content fills the whole leaf. Uses the ordered,
+    /// NaN-faithful `CGFloat.maximum` (the house float idiom — never a bare `<`/`>` clamp).
     private var contentSize: CGSize {
-        CGSize(
+        let chrome = isFloating ? titleBarHeight + Otty.Metric.hairline : 0
+        return CGSize(
             width: CGFloat.maximum(0, liveFrame.width),
-            height: CGFloat.maximum(0, liveFrame.height - titleBarHeight - Otty.Metric.hairline),
+            height: CGFloat.maximum(0, liveFrame.height - chrome),
         )
     }
 

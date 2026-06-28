@@ -84,6 +84,22 @@ struct GuiLeafView: View {
             }
         }
         .background(NativePaneColor.terminalBackground)
+        // E21 WI-3 (F3): the `🔒 READ ONLY ×` pill (E17 ``ReadOnlyPill``) so a read-only `.remoteGUI` /
+        // `.systemDialog` pane is a VISUAL peer of a read-only terminal leaf — same top-trailing overlay,
+        // alignment, padding, and reveal animation as ``TerminalLeafView``. Without it a locked remote window
+        // silently swallows clicks/keys (the WI-3 input gate is solid) with ZERO in-pane feedback and no exit
+        // affordance. A video pane has no ``TerminalViewModel`` (so no `exitReadOnly()`), so `×` releases the
+        // lock through the store's convergent set directly via ``WorkspaceStore/setPaneReadOnly(_:_:)`` — the
+        // SAME source of truth the input gate, the View-menu item, and the sidebar lock read. Gated by the pure
+        // ``showReadOnlyPill(staticMirror:isReadOnly:)`` (never on the static-mirror snapshot path).
+        .overlay(alignment: .topTrailing) {
+            if Self.showReadOnlyPill(staticMirror: staticMirror, isReadOnly: store.isReadOnly(for: paneID)) {
+                ReadOnlyPill(onDeactivate: { store.setPaneReadOnly(paneID, false) })
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(Otty.Metric.space2)
+            }
+        }
+        .animation(Otty.Anim.reveal, value: store.isReadOnly(for: paneID))
         // CAP ADMISSION (A2): request a slot on appear AND re-attempt whenever a sibling frees one
         // (`videoPromotionGeneration` bumps). `.task(id:)` cancels+restarts on either change. NEVER
         // calls `live.setVideoActive` directly — the store enforces the cap + tearingDownVideo
@@ -103,6 +119,15 @@ struct GuiLeafView: View {
 
     /// The `.task` identity: re-run admission when THIS session changes (mount) OR a sibling frees a slot.
     private var activationKey: String { "\(live?.id.hashValue ?? 0):\(store.videoPromotionGeneration)" }
+
+    /// E21 WI-3 (F3): whether the `🔒 READ ONLY ×` pill mounts over this video pane — the pane is read-only
+    /// (``WorkspaceStore/isReadOnly(for:)``, the convergent set) AND this is NOT the static-mirror snapshot
+    /// path (an `ImageRenderer` capture renders no live chrome). PURE so it is headless-testable without
+    /// instantiating the view (hang-safety: no SCStream/VT/Metal/NSWindow). Mirrors ``TerminalLeafView``'s
+    /// `showReadOnlyPill` gate minus the vi/copy-mode exclusion — a video pane has no copy mode.
+    static func showReadOnlyPill(staticMirror: Bool, isReadOnly: Bool) -> Bool {
+        !staticMirror && isReadOnly
+    }
 
     /// E21 WI-4: whether the bottom status bar mounts on this video pane — NOT the static-mirror snapshot path
     /// and the `Hide Status Bar` setting (``SettingsKey/hideStatusBarEnabled``) off. Mirrors ``TerminalLeafView``'s

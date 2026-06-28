@@ -58,6 +58,56 @@ final class RemoteWindowModelTests: XCTestCase {
         XCTAssertNil(m.active)
     }
 
+    // MARK: Paste-as-keystrokes read-only / teardown gate (E21 WI-3 · F5-paste-leak)
+
+    /// **F5 — a read-only lock landing MID-PASTE must withhold the remaining keystrokes.** The read-only
+    /// seam enforces WI-3 by clearing ``RemoteWindowModel/keyInjector`` (the sink). Before the fix the
+    /// paste loop captured the sink into a local at spawn and never re-read it, so toggling Read Only
+    /// mid-paste kept injecting keystrokes (incl. into a SECURE field) for the rest of the paste. The
+    /// fixed loop re-reads the LIVE sink each iteration and stops the instant it goes `nil`.
+    ///
+    /// Deterministic (no timing reliance): the injector clears the live sink on its FIRST call, so a
+    /// faithful loop delivers only the first character's down+up (2 edges) and withholds the rest. On the
+    /// un-fixed code the captured local kept firing → all 6 edges of "abc" landed (revert-to-confirm-fail).
+    func testReadOnlyLockMidPasteWithholdsRemainingKeystrokes() async {
+        let m = RemoteWindowModel(target: { self.target }, windowID: "9", pasteInterval: .zero)
+        m.open()
+        let recorder = StrokeRecorder()
+        m.keyInjector = { [weak m] keyCode, down, _ in
+            recorder.events.append(StrokeRecorder.Edge(keyCode: keyCode, down: down))
+            m?.keyInjector = nil // the read-only seam nils the sink mid-paste
+        }
+        m.pasteAsKeystrokes("abc") // 3 mappable chars → 6 edges if uninterrupted
+        for _ in 0..<200 where recorder.events.count < 2 { try? await Task.sleep(for: .milliseconds(5)) }
+        try? await Task.sleep(for: .milliseconds(20)) // let any leaked extra edges land before asserting
+        XCTAssertEqual(
+            recorder.events.count, 2,
+            "after the sink is cleared mid-paste only the first character's down+up reached the host",
+        )
+    }
+
+    /// **F5 — tearing the pane down (`close()`) MID-PASTE must cancel the in-flight paste.** Before the fix
+    /// `close()` left ``RemoteWindowModel/pasteTask`` running, so a closed pane kept injecting. Here the
+    /// injector calls `close()` on its first stroke; the cancelled task must stop at the next iteration, so
+    /// only the first character's 2 edges land. The un-fixed code (no cancel in `close()`, captured local
+    /// sink) delivered all 6 edges of "abc".
+    func testCloseMidPasteCancelsInFlightKeystrokes() async {
+        let m = RemoteWindowModel(target: { self.target }, windowID: "9", pasteInterval: .zero)
+        m.open()
+        let recorder = StrokeRecorder()
+        m.keyInjector = { [weak m] keyCode, down, _ in
+            recorder.events.append(StrokeRecorder.Edge(keyCode: keyCode, down: down))
+            m?.close() // pane torn down mid-paste must cancel the in-flight paste
+        }
+        m.pasteAsKeystrokes("abc")
+        for _ in 0..<200 where recorder.events.count < 2 { try? await Task.sleep(for: .milliseconds(5)) }
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(
+            recorder.events.count, 2,
+            "close() cancels the in-flight paste — the remaining keystrokes are not injected",
+        )
+    }
+
     // MARK: awaitingResizeReflow (the resize-scrim "fresh pixels landed" signal — generic with terminal)
 
     /// The video analogue of the terminal scrim-hold: a resize arms the hold (the Metal view shows the
@@ -289,4 +339,18 @@ final class RemoteWindowFilterTests: XCTestCase {
         XCTAssertTrue(one.contains("“xcode”"), "the filter is trimmed before display")
         XCTAssertTrue(one.contains("1 window."), "singular when exactly one window is hidden")
     }
+}
+
+// MARK: - Test support
+
+/// Records the per-key edges the model injects through ``RemoteWindowModel/keyInjector`` (no real
+/// CGEvent / secure field — pure value capture for the F5 paste-leak regression tests).
+@MainActor
+private final class StrokeRecorder {
+    struct Edge: Equatable {
+        var keyCode: UInt16
+        var down: Bool
+    }
+
+    var events: [Edge] = []
 }

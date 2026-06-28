@@ -92,7 +92,7 @@ public final class RemoteWindowModel {
     public func pasteAsKeystrokes(_ text: String) -> KeystrokeReplay.Encoded {
         let encoded = KeystrokeReplay.encode(text)
         // No sink → nothing was attempted, so nothing to report.
-        guard let injector = keyInjector else { return encoded }
+        guard keyInjector != nil else { return encoded }
         // Surface "typed N, skipped M" when characters were dropped — BEFORE the empty-strokes return, so
         // an ALL-unmappable paste (typed 0, skipped N) still tells the user nothing was sent.
         notePasteFeedback(typed: encoded.strokes.count, skipped: encoded.skipped)
@@ -100,9 +100,14 @@ public final class RemoteWindowModel {
         pasteTask?.cancel()
         let interval = pasteInterval
         let strokes = encoded.strokes
-        pasteTask = Task { @MainActor in
+        pasteTask = Task { @MainActor [weak self] in
             for stroke in strokes {
                 if Task.isCancelled { return }
+                // READ-ONLY GATE (E21 WI-3): re-read the LIVE sink each iteration rather than a value
+                // captured at spawn. If the seam clears `keyInjector` mid-paste (the pane was switched to
+                // read-only), the remaining strokes are withheld — keystrokes stop reaching the host
+                // (incl. a secure field) the instant the lock lands, not at the end of the paste.
+                guard let injector = self?.keyInjector else { return }
                 injector(stroke.keyCode, true, stroke.shift)
                 injector(stroke.keyCode, false, stroke.shift)
                 if interval > .zero { try? await Task.sleep(for: interval) }
@@ -328,6 +333,7 @@ public final class RemoteWindowModel {
     /// Closes the remote window (tears down the live view → its orchestrator `stop()`).
     public func close() {
         active = nil
+        pasteTask?.cancel() // a torn-down pane must not keep injecting a paste-in-flight into the host
         endAwaitingReflow() // a closed window will not re-capture — never leave the scrim hung
     }
 }
