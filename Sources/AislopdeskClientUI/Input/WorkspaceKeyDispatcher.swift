@@ -70,6 +70,11 @@ final class WorkspaceKeyDispatcher {
     /// ``setSelectDetailsTab(_:)`` once those exist; until then `nil` ⇒ `.selectDetailsTab` is a graceful
     /// no-op (never a dead command).
     private var selectDetailsTab: ((DetailsPanelTab) -> Void)?
+    /// E19/A30 (WI-4): "Pin Window" (otty View ▸ Pin Window). View-owned `@State` (`WorkspaceChromeState`), so
+    /// it is installed late by the root view via ``setTogglePinWindow(_:)`` once the chrome exists. Pin Window
+    /// is CHORD-LESS by default (otty ships no chord), so this fires only if a user binds a chord to the
+    /// `.pinWindow` action; until installed `nil` ⇒ `.pinWindow` is a graceful no-op (never a dead chord).
+    private var togglePinWindow: (() -> Void)?
 
     /// E11 review fix: a predicate the monitor consults BEFORE resolving any chord — `true` while a
     /// keyboard-capturing overlay (the Open-Quickly picker) is presented. The app NSEvent monitor is built to
@@ -107,6 +112,7 @@ final class WorkspaceKeyDispatcher {
         toggleJumpTo: (() -> Void)? = nil,
         toggleOpenQuickly: (() -> Void)? = nil,
         selectDetailsTab: ((DetailsPanelTab) -> Void)? = nil,
+        togglePinWindow: (() -> Void)? = nil,
         isOverlayCapturingKeys: @escaping () -> Bool = { false },
     ) {
         self.store = store
@@ -120,6 +126,7 @@ final class WorkspaceKeyDispatcher {
         self.toggleJumpTo = toggleJumpTo
         self.toggleOpenQuickly = toggleOpenQuickly
         self.selectDetailsTab = selectDetailsTab
+        self.togglePinWindow = togglePinWindow
         self.isOverlayCapturingKeys = isOverlayCapturingKeys
         // The prefix machine resolves a post-prefix key against the override-aware SEQUENCE table FIRST (so a
         // multi-key prefix sequence whose tail key is not a standalone binding still fires), falling back to
@@ -153,6 +160,11 @@ final class WorkspaceKeyDispatcher {
     /// `.selectDetailsTab(_:)` resolves but no-ops — so the four commands stay live (never dead) yet inert
     /// until the view installs the closure.
     func setSelectDetailsTab(_ select: @escaping (DetailsPanelTab) -> Void) { selectDetailsTab = select }
+
+    /// Install the "Pin Window" toggle once the `WorkspaceChromeState` exists (the root view wires this to
+    /// `chrome.togglePin()` on appear). Pin Window is chord-less by default, so this only fires when a user
+    /// binds a chord to the `.pinWindow` action; until installed `.pinWindow` is a graceful no-op.
+    func setTogglePinWindow(_ toggle: @escaping () -> Void) { togglePinWindow = toggle }
 
     /// Install the `.keyDown` local monitor. Returning `nil` from the handler SWALLOWS the event; returning
     /// the event passes it through to the focused responder (the terminal / video pane).
@@ -289,6 +301,7 @@ final class WorkspaceKeyDispatcher {
             toggleJumpTo: toggleJumpTo,
             openQuickly: toggleOpenQuickly,
             selectDetailsTab: selectDetailsTab,
+            togglePinWindow: togglePinWindow,
         )
     }
 }

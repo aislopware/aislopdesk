@@ -171,6 +171,9 @@ struct NavigatorColumn: View {
         let sections = buildSections(allRows, query: query)
         return VStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 40) // reserve the titlebar / traffic-light strip
+            // E19 WI-5 / A32: the multi-session switcher sits ABOVE the "TABS" header (below the traffic-light
+            // strip). It is additive — the tab list below still renders the ACTIVE session's tabs unchanged.
+            SessionSwitcherView(store: store)
             HStack(spacing: 0) {
                 Text("TABS")
                     .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
@@ -252,6 +255,10 @@ struct NavigatorColumn: View {
             set: { if let paneID = $0 { select(paneID) } },
         )
         return List(selection: selection) {
+            // E19 WI-5 / A32: the multi-session switcher as a leading Section so it composes into the column's
+            // system List (the root must stay a List for NavigationSplitView's push). Additive — the tab
+            // sections below still render the ACTIVE session's tabs unchanged.
+            SessionSwitcherView(store: store)
             if allRows.isEmpty {
                 Label("No tabs open", systemSymbol: .squareSplit2x1)
                     .foregroundStyle(Otty.Text.secondary)

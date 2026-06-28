@@ -249,6 +249,14 @@ public enum SettingsKey {
     /// ``TabSort`` rawValue (`created`/`updated`/`manual`); default `.created` (= `session.tabs` array order).
     public static let tabSortKey = "shell.tabSort" // TabSort.rawValue
 
+    /// When the vertical TABS panel (sidebar) is shown (otty `auto-hide-tabs-panel`, E19/A18). Stored as the
+    /// ``AutoHideTabsPanelMode`` rawValue (`default`/`always`/`auto`); default `.default` (always shown). Only
+    /// `.auto` auto-hides the panel when the active session has a single tab — the show/hide decision lives in
+    /// the pure ``SidebarAutoHidePolicy/desiredCollapsed(mode:tabCount:)`` and the view-side glue (WI-7) drives
+    /// ``WorkspaceChromeState/sidebarCollapsed`` from it. Named with the `Key` suffix (like ``tabSortKey``) so
+    /// the typed ``autoHideTabsPanel`` accessor below can take the bare name.
+    public static let autoHideTabsPanelKey = "shell.autoHideTabsPanel" // AutoHideTabsPanelMode.rawValue
+
     /// The working-directory policy for a NEW WINDOW (otty `working-directory`), default `home` — a fresh
     /// window opens at the shell's login cwd. Stored as the ``WorkingDirectoryPolicy/rawConfig`` string
     /// (`inherit` / `home` / an absolute path). Read at the new-window fire-site.
@@ -271,6 +279,28 @@ public enum SettingsKey {
     /// `docs/DECISIONS.md`), default `process`. Stored as the ``CloseConfirmationPolicy`` rawValue. Read at
     /// the window-close fire-site (`WorkspaceStore.requestCloseWindow`).
     public static let closeConfirmWindowKey = "shell.closeConfirm.window" // CloseConfirmationPolicy.rawValue
+
+    // E19/A29 (otty `window-size` — user-interface__window-tab-split.md). A NEW `window.*` namespace, so a
+    // stale read decode-fails to the key default per [[rwork-no-backcompat]] (no migration). These are the
+    // CLIENT-side initial-window-sizing settings: the macOS `NSWindow` glue (WI-4) reads them once per window
+    // open + resolves the content size via ``WindowSizeMath``; iOS has no resizable window (the keys still
+    // compile + round-trip there, inert). touchesWire:false — purely client view state.
+    /// How a new window decides its initial dimensions (otty `window-size`). Stored as the ``WindowSizeMode``
+    /// rawValue (`remember`/`grid`/`frame`); default `.remember` (restore the autosaved frame). Named with
+    /// the `Key` suffix (like ``newTabPositionKey``) so the typed ``windowSize`` accessor takes the bare name.
+    public static let windowSizeKey = "window.size" // WindowSizeMode.rawValue
+    /// The column count for a new window when ``windowSize`` is ``WindowSizeMode/grid`` (otty `window-cols`),
+    /// default `80`. Clamped into a sane band by ``WindowSizeMath/clampCols(_:)`` at the sizing fire-site.
+    public static let windowColsKey = "window.cols"
+    /// The row count for a new window when ``windowSize`` is ``WindowSizeMode/grid`` (otty `window-rows`),
+    /// default `24`. Clamped by ``WindowSizeMath/clampRows(_:)`` at the sizing fire-site.
+    public static let windowRowsKey = "window.rows"
+    /// The width (px) for a new window when ``windowSize`` is ``WindowSizeMode/frame`` (otty
+    /// `window-width-px`), default `1000`. Clamped by ``WindowSizeMath/clampPx(_:)`` at the sizing fire-site.
+    public static let windowWidthPxKey = "window.widthPx"
+    /// The height (px) for a new window when ``windowSize`` is ``WindowSizeMode/frame`` (otty
+    /// `window-height-px`), default `600`. Clamped by ``WindowSizeMath/clampPx(_:)`` at the sizing fire-site.
+    public static let windowHeightPxKey = "window.heightPx"
 
     /// Whether a layout with a trigger app auto-switches when that app launches on the host (default
     /// ON — assigning a trigger is itself the opt-in). Read at fire-time.
@@ -460,6 +490,12 @@ public enum SettingsKey {
     /// invalid persisted raw value repairs to `.created`. Read at store init.
     public static var tabSort: TabSort { Defaults[.tabSort] }
 
+    /// When the vertical TABS panel is shown (otty `auto-hide-tabs-panel`, E19/A18), default
+    /// ``AutoHideTabsPanelMode/default`` (always shown). A stale / invalid persisted raw value repairs to
+    /// `.default` via the `RawRepresentableBridge`. Read by the view-side auto-hide glue (WI-7), which feeds it
+    /// to ``SidebarAutoHidePolicy/desiredCollapsed(mode:tabCount:)``.
+    public static var autoHideTabsPanel: AutoHideTabsPanelMode { Defaults[.autoHideTabsPanel] }
+
     /// The working-directory policy applied when a NEW WINDOW opens (otty `working-directory`), default
     /// ``WorkingDirectoryPolicy/home``. Decoded from the persisted ``WorkingDirectoryPolicy/rawConfig``
     /// string (an empty / unknown value repairs to `.home`). Read at fire-time.
@@ -495,6 +531,30 @@ public enum SettingsKey {
     /// by the app-launch path via ``WorkspacePersistence/launchTree(behavior:persistence:)`` (a `.newWindow`
     /// value seeds a fresh single-pane session instead of restoring the persisted tree).
     public static var onLaunch: OnLaunchBehavior { Defaults[.onLaunch] }
+
+    // MARK: E19/A29 window-size (otty `window-size` — read once per window open by the macOS NSWindow glue)
+
+    /// How a new window decides its initial dimensions (otty `window-size`), default
+    /// ``WindowSizeMode/remember`` (restore the autosaved frame). A stale / invalid persisted raw value
+    /// repairs to `.remember` via the `RawRepresentableBridge`. Read by the macOS `NSWindow` glue (WI-4),
+    /// which resolves the content size through ``WindowSizeMath/resolvedContentSize(mode:cols:rows:widthPx:heightPx:cell:visible:chromeInsets:)``.
+    public static var windowSize: WindowSizeMode { Defaults[.windowSize] }
+
+    /// The persisted `grid`-mode column count (otty `window-cols`), default `80`. The RAW value — the
+    /// sizing math clamps it via ``WindowSizeMath/clampCols(_:)``.
+    public static var windowCols: Int { Defaults[.windowCols] }
+
+    /// The persisted `grid`-mode row count (otty `window-rows`), default `24`. The RAW value — clamped by
+    /// ``WindowSizeMath/clampRows(_:)``.
+    public static var windowRows: Int { Defaults[.windowRows] }
+
+    /// The persisted `frame`-mode width in px (otty `window-width-px`), default `1000`. The RAW value —
+    /// clamped by ``WindowSizeMath/clampPx(_:)``.
+    public static var windowWidthPx: Int { Defaults[.windowWidthPx] }
+
+    /// The persisted `frame`-mode height in px (otty `window-height-px`), default `600`. The RAW value —
+    /// clamped by ``WindowSizeMath/clampPx(_:)``.
+    public static var windowHeightPx: Int { Defaults[.windowHeightPx] }
 
     // MARK: Controls / scroll / copy (E8-owned behaviour — declared + persisted here)
 
@@ -711,6 +771,10 @@ public extension Defaults.Keys {
     // to the pre-E6 rail. The WorkspaceStore owns the read/write; these are the persisted backing.
     static let tabGrouping = Key<TabGrouping>(SettingsKey.tabGroupingKey, default: .none)
     static let tabSort = Key<TabSort>(SettingsKey.tabSortKey, default: .created)
+    // E19/A18 vertical-sidebar auto-hide (otty `auto-hide-tabs-panel`). Stores the bare `AutoHideTabsPanelMode`
+    // rawValue via the `RawRepresentableBridge` (the `PreferRawRepresentable` conformance below), repairing a
+    // stale value to `.default`. Default `.default` (always shown — byte-identical to the pre-E19 sidebar).
+    static let autoHideTabsPanel = Key<AutoHideTabsPanelMode>(SettingsKey.autoHideTabsPanelKey, default: .default)
     // Working-directory policies stored as the `WorkingDirectoryPolicy.rawConfig` String (otty config value).
     // New window defaults to `home` (login cwd); new tab / split default to `inherit` (active pane's cwd).
     static let workingDirectoryNewWindow = Key<String>(SettingsKey.workingDirectoryNewWindowKey, default: "home")
@@ -723,6 +787,15 @@ public extension Defaults.Keys {
     // On-Launch behaviour stored as the `OnLaunchBehavior` rawValue (otty `On Launch`); default
     // `.restoreLastSession` (the existing launch behaviour — the store already restores the persisted tree).
     static let onLaunch = Key<OnLaunchBehavior>(SettingsKey.onLaunchKey, default: .restoreLastSession)
+    // E19/A29 window-size (otty `window-size`). A new `window.*` namespace, CLIENT-side only (touchesWire:false).
+    // The mode stores the bare `WindowSizeMode` rawValue via the `RawRepresentableBridge` (the
+    // `PreferRawRepresentable` conformance below), repairing a stale value to `.remember`; the cols/rows/px
+    // are native `Int`s. Defaults mirror the otty config values (80×24 grid, 1000×600 frame).
+    static let windowSize = Key<WindowSizeMode>(SettingsKey.windowSizeKey, default: .remember)
+    static let windowCols = Key<Int>(SettingsKey.windowColsKey, default: 80)
+    static let windowRows = Key<Int>(SettingsKey.windowRowsKey, default: 24)
+    static let windowWidthPx = Key<Int>(SettingsKey.windowWidthPxKey, default: 1000)
+    static let windowHeightPx = Key<Int>(SettingsKey.windowHeightPxKey, default: 600)
     // Controls / scroll / copy (otty Controls). FIRE-TIME flags only — never folded into a typed prefs model
     // (so they never reach the env overlay / sidecar → golden-safe). E8 owns the behaviour; these persist
     // the user's choice and round-trip today.
@@ -802,6 +875,12 @@ extension NewTabPosition: Defaults.Serializable, Defaults.PreferRawRepresentable
 extension TabGrouping: Defaults.Serializable, Defaults.PreferRawRepresentable {}
 extension TabSort: Defaults.Serializable, Defaults.PreferRawRepresentable {}
 
+/// Store ``AutoHideTabsPanelMode`` as its bare `String` rawValue (`default`/`always`/`auto`) so the persisted
+/// otty `auto-hide-tabs-panel` setting (E19/A18) round-trips with the otty config value; `PreferRawRepresentable`
+/// selects the `RawRepresentableBridge`, which yields the key default (`.default`) for a stale / invalid raw
+/// value — the same shape as ``NewTabPosition`` / ``WindowSizeMode``.
+extension AutoHideTabsPanelMode: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+
 /// Store ``CloseConfirmationPolicy`` as its bare `String` rawValue (`process`/`always`/`multiple_tabs`) so
 /// the persisted close-confirmation setting round-trips with the otty config value; `PreferRawRepresentable`
 /// selects the `RawRepresentableBridge`. A stale / invalid raw value repairs to `.process` via the policy's
@@ -813,6 +892,12 @@ extension CloseConfirmationPolicy: Defaults.Serializable, Defaults.PreferRawRepr
 /// the `RawRepresentableBridge`. A stale / invalid raw value repairs to `.restoreLastSession` via the enum's
 /// own non-failable ``OnLaunchBehavior/init(rawValue:)`` (and the key default is also `.restoreLastSession`).
 extension OnLaunchBehavior: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+
+/// Store ``WindowSizeMode`` as its bare `String` rawValue (`remember`/`grid`/`frame`) so the persisted
+/// otty `window-size` setting (E19/A29) round-trips with the otty config value; `PreferRawRepresentable`
+/// selects the `RawRepresentableBridge`, which yields the key default (`.remember`) for a stale / invalid
+/// raw value — the same shape as ``NewTabPosition`` / ``OnLaunchBehavior``.
+extension WindowSizeMode: Defaults.Serializable, Defaults.PreferRawRepresentable {}
 
 /// Store ``NotifyWhileForeground`` as its bare `String` rawValue (`off`/`always`/`tab-unfocused`) so the
 /// persisted otty "Notify While Foreground" setting round-trips with the otty config value (E14/K9);

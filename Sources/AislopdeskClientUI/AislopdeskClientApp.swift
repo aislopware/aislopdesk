@@ -23,6 +23,7 @@ import SwiftUIIntrospect // reach THIS scene's NSWindow from the SwiftUI WindowG
 import UIKit // UIDevice.current.userInterfaceIdiom — the per-device live-video cap signal at init
 #endif
 #if os(macOS)
+import AislopdeskTerminal // E19 WI-4: TerminalCellMetrics + TerminalViewportSnapshotting (live cell advance, macOS window-size glue)
 import AppKit // NSApplication — AUTOMATION-ONLY window-front so an autoconnect launch goes live in one shot
 import ObjectiveC // objc_setAssociatedObject — retain the E3 WI-4 window-close delegate for the window's life
 import UserNotifications // explicit OSC 9/777 child notifications → local UNUserNotification
@@ -64,6 +65,19 @@ public struct AislopdeskClientApp: App {
     /// menu item and the menu can't swallow a sequence's follow-up before the terminal first responder).
     /// Installed once at launch in a scene `.task`.
     @State private var keyDispatcher: WorkspaceKeyDispatcher
+    #endif
+    /// E19 WI-4: the chrome flags (sidebar / inspector collapse + window PIN) the toolbar / menu / palette
+    /// drive. OWNED HERE (not view-local `@State` inside ``WorkspaceRootView``) so the macOS scene's blessed
+    /// `.introspect(.window)` closure + the `.onChange(of: chrome.pinned)` actuator read the SAME flag the
+    /// titlebar / menu flip — ONE `NSWindow.level` source of truth, never `NSApplication.windows`. Passed into
+    /// ``WorkspaceRootView`` (both platforms); iOS reads only the two collapse flags (pin is an inert no-op).
+    @State private var chrome: WorkspaceChromeState
+    #if os(macOS)
+    /// E19 WI-4: a WEAK handle to THIS scene's `NSWindow`, captured in the blessed `.introspect(.window)`
+    /// closure so the `.onChange(of: chrome.pinned)` pin actuator can re-level the live window WITHOUT the
+    /// forbidden `NSApplication.windows` scan (and without depending on the introspect closure re-firing on a
+    /// pure flag change). A plain holder, not `@Observable` — mutating its `window` must not re-render.
+    @State private var windowBox: WeakWindowBox
     #endif
     @Environment(\.scenePhase) private var scenePhase
     @State private var lifecycleTask: Task<Void, Never>?
@@ -354,7 +368,11 @@ public struct AislopdeskClientApp: App {
         _folderFrecency = State(initialValue: folderFrecency)
         _dialogMonitor = State(initialValue: monitor)
         _appLaunchMonitor = State(initialValue: launchMonitor)
+        // E19 WI-4: the app owns the chrome flags (incl. window PIN) so the macOS scene's blessed
+        // `.introspect(.window)` closure reads the SAME `chrome.pinned` the titlebar / menu flip.
+        _chrome = State(initialValue: WorkspaceChromeState())
         #if os(macOS)
+        _windowBox = State(initialValue: WeakWindowBox())
         _clipboardMonitor = State(initialValue: ClipboardMonitor(store: store))
         _dockProgress = State(initialValue: dockProgress)
         // WS-B / B3: build the live keybinding dispatcher over the single store. A new-pane action (split /
@@ -404,15 +422,20 @@ public struct AislopdeskClientApp: App {
             store: store,
             connection: connection,
             overlay: overlayCoordinator,
+            chrome: chrome,
             installDetailsToggle: { [keyDispatcher] toggle in keyDispatcher.setToggleDetailsPanel(toggle) },
             installSidebarToggle: { [keyDispatcher] toggle in keyDispatcher.setToggleSidebar(toggle) },
             // E9/WI-7: hand the dispatcher the four `Details: *` jump commands' tab selector (sets the shared
             // `DetailsPanelState` + reveals the panel), so a user-bound chord / palette row switches the Details
             // tab through the SAME NSEvent monitor that owns every other command.
             installSelectDetailsTab: { [keyDispatcher] select in keyDispatcher.setSelectDetailsTab(select) },
+            // E19 WI-4: hand the dispatcher the (chord-less by default) Pin Window toggle, so a user-bound
+            // chord for `.pinWindow` flips the SAME `chrome.pinned` the menu Button + the `NSWindow.level` glue
+            // read, through the one NSEvent monitor that owns every chord.
+            installPinToggle: { [keyDispatcher] toggle in keyDispatcher.setTogglePinWindow(toggle) },
         )
         #else
-        WorkspaceRootView(store: store, connection: connection, overlay: overlayCoordinator)
+        WorkspaceRootView(store: store, connection: connection, overlay: overlayCoordinator, chrome: chrome)
         #endif
     }
 
@@ -502,9 +525,22 @@ public struct AislopdeskClientApp: App {
                     // delegate routes through `WindowCloseGate` and presents a synchronous confirmation so a
                     // parked close always resolves (the window is never stranded).
                     Self.installWindowCloseGate(on: window, store: store)
+                    // E19 WI-4: capture the window weakly for the `.onChange(of: chrome.pinned)` pin actuator,
+                    // apply the current pin level (idempotent — the callback can re-fire), and apply the
+                    // configured initial size EXACTLY ONCE per window open (so a later manual resize is never
+                    // fought). All NSWindow reach stays inside THIS blessed hook.
+                    windowBox.window = window
+                    Self.applyPinLevel(to: window, pinned: chrome.pinned)
+                    Self.applyInitialWindowSize(to: window, store: store)
                     guard Self.hasAutomationEnvironment(), !window.isKeyWindow else { return }
                     NSApplication.shared.activate(ignoringOtherApps: true)
                     window.makeKeyAndOrderFront(nil)
+                }
+                // E19 WI-4: the Pin Window toggle flips `chrome.pinned`; re-level the captured window here so
+                // the toggle is LIVE even if SwiftUIIntrospect's closure does not re-fire on a pure flag
+                // change. Reading `chrome.pinned` registers the observation that re-runs this onChange.
+                .onChange(of: chrome.pinned) { _, pinned in
+                    if let window = windowBox.window { Self.applyPinLevel(to: window, pinned: pinned) }
                 }
                 // macOS delivers no reliable flush on ⌘Q; flush the tree synchronously on termination.
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
@@ -545,6 +581,10 @@ public struct AislopdeskClientApp: App {
                 // `WorkspaceRootView.wireChromeToggles` → sets `DetailsPanelState.selected` + reveals the
                 // panel). Without this the menu rows were inert (`selectDetailsTab` was nil).
                 selectDetailsTab: { [overlayCoordinator] tab in overlayCoordinator.selectDetailsTab(tab) },
+                // E19 WI-4: Pin Window is CHORD-LESS (otty ships no chord), so the menu Button is its primary
+                // entry. Flip the SAME live `chrome.pinned` the `.onChange(of:)` above actuates to `NSWindow
+                // .level` — directly off the app-owned chrome (no overlay round-trip needed).
+                togglePinWindow: { [chrome] in chrome.togglePin() },
             )
             // E7 WI-4: File ▸ Export/Import Workspace (optional parity). Shortcut-LESS — the NSEvent
             // dispatcher owns chords (DECISIONS N6); a hostile import is a no-op + toast, never a crash.
@@ -602,6 +642,73 @@ public struct AislopdeskClientApp: App {
         window.delegate = shim
         objc_setAssociatedObject(window, &windowCloseDelegateKey, shim, .OBJC_ASSOCIATION_RETAIN)
     }
+
+    /// E19 WI-4 — associated-object key marking a window whose once-per-open initial size has been applied (so
+    /// a later manual resize is never re-fought by the re-firing introspect callback). Only its ADDRESS is
+    /// used as the key, never its value — `nonisolated(unsafe)` like ``windowCloseDelegateKey``.
+    private nonisolated(unsafe) static var windowSizeAppliedKey: UInt8 = 0
+
+    /// E19 WI-4 (A30) — map the pin flag to `NSWindow.level` IDEMPOTENTLY. `.floating` keeps the window above
+    /// other apps (otty Pin Window); `.normal` restores it. The guard means the re-firing introspect callback
+    /// + a redundant `.onChange` never thrash the level.
+    @MainActor
+    private static func applyPinLevel(to window: NSWindow, pinned: Bool) {
+        let level: NSWindow.Level = pinned ? .floating : .normal
+        if window.level != level { window.level = level }
+    }
+
+    /// E19 WI-4 (A29) — apply the configured initial window size EXACTLY ONCE per window open (guarded by an
+    /// associated object, mirroring the close-gate retain idiom), so a later manual resize always stands:
+    ///   * ``WindowSizeMode/remember`` → `setFrameAutosaveName` and return (let the autosaved frame restore);
+    ///   * ``WindowSizeMode/grid`` / ``WindowSizeMode/frame`` → resolve a CONTENT size via the pure
+    ///     ``WindowSizeMath/resolvedContentSize(mode:cols:rows:widthPx:heightPx:cell:visible:chromeInsets:)``
+    ///     (live cell advance + the screen's `visibleFrame` + the window's chrome overhead) and `setContentSize`.
+    /// All numeric inputs are clamped inside ``WindowSizeMath`` (never 0×0 / off-screen-gigantic).
+    @MainActor
+    private static func applyInitialWindowSize(to window: NSWindow, store: WorkspaceStore) {
+        guard objc_getAssociatedObject(window, &windowSizeAppliedKey) == nil else { return }
+        objc_setAssociatedObject(window, &windowSizeAppliedKey, true, .OBJC_ASSOCIATION_RETAIN)
+
+        let mode = SettingsKey.windowSize
+        if mode == .remember {
+            window.setFrameAutosaveName("AislopdeskMainWindow")
+            return
+        }
+        // Live per-cell advance of the active terminal pane, or a sane default before the first surface lays out.
+        let cell = Self.activeCellMetrics(store: store)
+            ?? TerminalCellMetrics(cellWidth: 8, cellHeight: 16, cols: 80, rows: 24)
+        let visible = window.screen?.visibleFrame ?? .zero
+        // Chrome overhead = full window frame minus the content layout rect (title bar + borders). Separate
+        // subtraction per axis (no fma) — `WindowSizeMath` keeps the same float discipline.
+        let chromeInsets = CGSize(
+            width: window.frame.size.width - window.contentLayoutRect.size.width,
+            height: window.frame.size.height - window.contentLayoutRect.size.height,
+        )
+        guard let size = WindowSizeMath.resolvedContentSize(
+            mode: mode,
+            cols: SettingsKey.windowCols,
+            rows: SettingsKey.windowRows,
+            widthPx: SettingsKey.windowWidthPx,
+            heightPx: SettingsKey.windowHeightPx,
+            cell: cell,
+            visible: visible,
+            chromeInsets: chromeInsets,
+        ) else { return }
+        window.setContentSize(size)
+    }
+
+    /// E19 WI-4 — the live per-cell advance of the active terminal pane, or `nil` when the active pane is not
+    /// a laid-out terminal surface (a remote-GUI pane, or before the first layout) — the grid math then falls
+    /// back to a sane default. Reaches the surface ONLY through the public ``WorkspaceStore/handle(for:)``
+    /// chain (no private store reach-around), and only READS geometry (hang-safe: no surface instantiation).
+    @MainActor
+    private static func activeCellMetrics(store: WorkspaceStore) -> TerminalCellMetrics? {
+        guard let id = store.tree.activeSession?.activeTab?.activePane,
+              let live = store.handle(for: id) as? LivePaneSession,
+              let snapshot = live.terminalModel?.surface as? TerminalViewportSnapshotting
+        else { return nil }
+        return snapshot.cellMetrics()
+    }
     #endif
 
     private func handleScenePhase(_ phase: ScenePhase) {
@@ -631,6 +738,15 @@ public struct AislopdeskClientApp: App {
 }
 
 #if os(macOS)
+/// E19 WI-4 — a tiny WEAK holder for THIS scene's `NSWindow`, captured in the blessed `.introspect(.window)`
+/// closure so the `.onChange(of: chrome.pinned)` pin actuator can re-level the live window without the
+/// forbidden `NSApplication.windows` scan. Deliberately NOT `@Observable` — mutating `window` must not trigger
+/// a re-render; it is a pure capture slot the scene's `@State` storage keeps alive for the window's lifetime.
+@MainActor
+final class WeakWindowBox {
+    weak var window: NSWindow?
+}
+
 /// E3 WI-4 — the PURE window-close gate the macOS `windowShouldClose` consults. Factored out of the AppKit
 /// delegate so the close decision is unit-testable WITHOUT an `NSWindow` (the hang-safety rule), and so the
 /// gate can never strand the window: a parked close ALWAYS resolves here — it never returns the old bare

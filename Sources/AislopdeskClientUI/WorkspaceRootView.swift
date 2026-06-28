@@ -13,6 +13,7 @@
 #if canImport(SwiftUI)
 import AislopdeskAgentDetect
 import AislopdeskWorkspaceCore
+import Defaults
 import SFSafeSymbols
 import SwiftUI
 
@@ -24,12 +25,21 @@ public struct WorkspaceRootView: View {
     /// connection pill (and any macOS status surface) can open the Connect-to-Host overlay via
     /// ``OverlayCoordinator/openConnect()``; the `OverlayHostView` mount that renders the panels lands in WI-5.
     let overlay: OverlayCoordinator
-    /// The two split-collapse flags the toolbar toggles drive (owned here, read by the representable).
-    @State private var chrome = WorkspaceChromeState()
+    /// The two split-collapse flags + the window-pin flag the toolbar toggles drive (read by the
+    /// representable). OWNED BY THE APP (`AislopdeskClientApp` `@State`) and passed in — NOT view-local
+    /// `@State` — so the macOS scene's blessed `.introspect(.window)` closure reads the SAME `chrome.pinned`
+    /// the titlebar / menu / palette flip (E19 WI-4: ONE `NSWindow.level` source of truth, no
+    /// `NSApplication.windows`).
+    let chrome: WorkspaceChromeState
     /// The shared Details-panel tab selection (E9/WI-7). Owned here so BOTH inspector mounts (the macOS split
     /// item via the representable, the iOS detail column) read ONE selection, and the four `Details: *` jump
     /// commands can write it through the `selectDetailsTab` closure installed in `wireChromeToggles()`.
     @State private var details = DetailsPanelState()
+    /// E19/A18 (WI-7): the live otty `auto-hide-tabs-panel` mode. Read via `@Default` (NOT the plain
+    /// ``SettingsKey/autoHideTabsPanel`` accessor) so SwiftUI re-evaluates the body — and thus re-fires the
+    /// `.onChange(of: autoHideTabsPanel)` observer below — when the user flips the Settings picker. Drives the
+    /// vertical TABS panel auto-hide together with the active session's tab count (see ``applyAutoHide``).
+    @Default(.autoHideTabsPanel) private var autoHideTabsPanel
     #if os(iOS)
     /// Whether the iOS settings sheet (WI-5) is presented — flipped by the toolbar gear, read by the `.sheet`.
     @State private var showSettings = false
@@ -50,6 +60,19 @@ public struct WorkspaceRootView: View {
         Binding(
             get: { Self.compactColumn(inspectorCollapsed: chrome.inspectorCollapsed) },
             set: { chrome.inspectorCollapsed = ($0 != .detail) },
+        )
+    }
+
+    /// E19/A18 (WI-7, iOS): map the shared `chrome.sidebarCollapsed` flag — the one the auto-hide policy drives
+    /// (and macOS's split reads) — onto the `NavigationSplitView`'s `columnVisibility`, so the TABS panel
+    /// actually hides/reveals on iPad rather than the flag being a dead toggle there. The getter derives the
+    /// visibility from the flag (`Self.sidebarVisibility`); the setter writes the flag back when the user swipes
+    /// the leading column away or back, so a manual collapse round-trips through the SAME flag the policy + ⌘⇧L
+    /// (macOS) read. Mirrors ``detailsCompactColumnBinding``.
+    private var sidebarColumnVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { Self.sidebarVisibility(sidebarCollapsed: chrome.sidebarCollapsed) },
+            set: { chrome.sidebarCollapsed = ($0 == .doubleColumn || $0 == .detailOnly) },
         )
     }
 
@@ -74,21 +97,33 @@ public struct WorkspaceRootView: View {
     /// `selectDetailsTab(_:)` action switches the Details tab through the SAME NSEvent monitor / menu that
     /// owns every command. `nil` (the default / iOS / tests) leaves the four commands graceful no-ops.
     private let installSelectDetailsTab: ((@escaping (DetailsPanelTab) -> Void) -> Void)?
+    /// Installs the "Pin Window" toggle on the app-level keybinding dispatcher (same late-wiring story as
+    /// `installSidebarToggle`): on appear the root view hands it `chrome.togglePin` so a user-bound chord for
+    /// the chord-less `.pinWindow` action routes through the SAME NSEvent monitor. `nil` (the default / iOS /
+    /// tests) is a no-op — Pin Window's primary entry is then the menu Button + palette (E19 WI-4).
+    private let installPinToggle: ((@escaping () -> Void) -> Void)?
 
-    public init(
+    // INTERNAL init (not `public`): `WorkspaceRootView` is constructed only inside this module
+    // (`AislopdeskClientApp`), and `chrome` is the internal `WorkspaceChromeState`. Narrowing the init keeps
+    // the chrome model internal (CLAUDE.md "no public-API widening") instead of publishing the type.
+    init(
         store: WorkspaceStore,
         connection: AppConnection,
         overlay: OverlayCoordinator,
+        chrome: WorkspaceChromeState,
         installDetailsToggle: ((@escaping () -> Void) -> Void)? = nil,
         installSidebarToggle: ((@escaping () -> Void) -> Void)? = nil,
         installSelectDetailsTab: ((@escaping (DetailsPanelTab) -> Void) -> Void)? = nil,
+        installPinToggle: ((@escaping () -> Void) -> Void)? = nil,
     ) {
         self.store = store
         self.connection = connection
         self.overlay = overlay
+        self.chrome = chrome
         self.installDetailsToggle = installDetailsToggle
         self.installSidebarToggle = installSidebarToggle
         self.installSelectDetailsTab = installSelectDetailsTab
+        self.installPinToggle = installPinToggle
     }
 
     /// The active tab's active pane's live session, if materialized — the source of the active pane's ping
@@ -103,6 +138,12 @@ public struct WorkspaceRootView: View {
 
     /// The active pane's agent status (`.none` when no agent / no live pane).
     private var activeAgentStatus: ClaudeStatus { activeLive?.claudeStatus ?? .none }
+
+    /// E19/A18 (WI-7): the active session's tab count — the auto-hide policy's input. `nil` (no active session
+    /// materialized yet) reads as `0`, which collapses under `.auto` (there is nothing to switch between). The
+    /// `.onChange(of: activeTabCount)` observer fires the policy on a tab open/close TRANSITION, never on every
+    /// render — so a manual ⌘⇧L is never fought.
+    private var activeTabCount: Int { store.tree.activeSession?.tabs.count ?? 0 }
 
     public var body: some View {
         #if os(macOS)
@@ -148,8 +189,17 @@ public struct WorkspaceRootView: View {
         // — `[chrome]` captures the same @Observable instance the representable + titlebar read, so the
         // NSEvent chord and the titlebar button drive ONE flag.
         .onAppear { wireChromeToggles() }
+        // E19/A18 (WI-7): drive the vertical TABS panel auto-hide. On a tab-count TRANSITION or a Settings
+        // mode flip, apply `SidebarAutoHidePolicy` to the live `chrome.sidebarCollapsed` — but only when the
+        // policy has an opinion (`.auto`) and it DIFFERS from the current state, so a manual ⌘⇧L is never
+        // fought (we react to the transition, not to every render). `.default`/`.always` leave it alone.
+        .onChange(of: activeTabCount) { applyAutoHidePolicy() }
+        .onChange(of: autoHideTabsPanel) { applyAutoHidePolicy() }
         #else
-        NavigationSplitView(preferredCompactColumn: detailsCompactColumnBinding) {
+        NavigationSplitView(
+            columnVisibility: sidebarColumnVisibility,
+            preferredCompactColumn: detailsCompactColumnBinding,
+        ) {
             NavigatorColumn(store: store)
         } content: {
             ContentColumn(store: store, connection: connection, chrome: chrome)
@@ -167,6 +217,12 @@ public struct WorkspaceRootView: View {
         // palette is cross-platform; iOS has no NSEvent dispatcher, so the palette + this closure ARE the
         // surface). The macOS path wires the same closure in `wireChromeToggles()`.
         .onAppear { wireOverlaySelectDetailsTab() }
+        // E19/A18 (WI-7): drive the TABS panel auto-hide on iPad too — the SAME shared policy macOS runs. On a
+        // tab-count TRANSITION or a Settings mode flip, apply `SidebarAutoHidePolicy` to `chrome.sidebarCollapsed`
+        // (here mapped to the split's `columnVisibility` via `sidebarColumnVisibility`), only when the policy has
+        // an opinion (`.auto`) and it DIFFERS — so a manual reveal/hide is never fought.
+        .onChange(of: activeTabCount) { applyAutoHidePolicy() }
+        .onChange(of: autoHideTabsPanel) { applyAutoHidePolicy() }
         // WI-5: the toolbar gear presents the in-app settings sheet (iOS has no `Settings` scene). The sheet
         // hosts the same cross-platform section structs as the macOS strip. The live `WorkspaceStore` rides
         // the `\.workspaceStore` slot so Advanced → Workspace export/import works on iOS too.
@@ -234,6 +290,10 @@ public struct WorkspaceRootView: View {
         // (not the dead `store.sidebarCollapsed`). Bound here because `chrome` predates the app-built overlay.
         overlay.toggleSidebar = { [chrome] in chrome.toggleSidebar() }
         overlay.toggleInspector = { [chrome] in chrome.toggleInspector() }
+        // E19 WI-4 (Pin Window): route the palette / any command surface AND a user-bound chord (chord-less by
+        // default) to the SAME live `chrome.pinned` the menu Button + the macOS `NSWindow.level` glue read.
+        overlay.togglePinWindow = { [chrome] in chrome.togglePin() }
+        installPinToggle? { [chrome] in chrome.togglePin() }
         wireOverlaySelectDetailsTab()
     }
     #endif
@@ -269,6 +329,37 @@ public struct WorkspaceRootView: View {
     /// in the macOS `swift test` Gate, not only at iOS compile time.
     static func compactColumn(inspectorCollapsed: Bool) -> NavigationSplitViewColumn {
         inspectorCollapsed ? .content : .detail
+    }
+
+    /// Pure map from the shared `sidebarCollapsed` flag to the iOS `NavigationSplitView` column visibility: a
+    /// collapsed sidebar hides the leading TABS column (`.doubleColumn` = content + detail), a revealed sidebar
+    /// shows `.all`. Drives ``sidebarColumnVisibility`` (iOS) so the WI-7 auto-hide policy (which sets
+    /// `chrome.sidebarCollapsed`) hides/reveals the TABS panel on iPad too — the shared flag is not a dead
+    /// toggle there. Kept cross-platform (`NavigationSplitViewVisibility` exists on macOS) so the mapping is
+    /// unit-tested in the macOS `swift test` Gate, not only at iOS compile time.
+    static func sidebarVisibility(sidebarCollapsed: Bool) -> NavigationSplitViewVisibility {
+        sidebarCollapsed ? .doubleColumn : .all
+    }
+
+    /// E19/A18 (WI-7): the single place the `auto-hide-tabs-panel` policy ACTUATES. Apply the pure
+    /// ``SidebarAutoHidePolicy/desiredCollapsed(mode:tabCount:)`` decision to the live `chrome.sidebarCollapsed`,
+    /// but ONLY when the policy has an opinion (mode `.auto`) AND that opinion DIFFERS from the current state. A
+    /// `nil` opinion (mode `.default`/`.always`) or an already-satisfied value is left untouched, so the wiring
+    /// never fights a manual ⌘⇧L collapse — it reacts to the tab-count / mode TRANSITION the caller's
+    /// `.onChange` fires on, not to the manual toggle, and never re-applies a value that is already in place.
+    /// Static + cross-platform so the contract is unit-tested without a live view (see `SidebarAutoHideWiringTests`).
+    static func applyAutoHide(mode: AutoHideTabsPanelMode, tabCount: Int, chrome: WorkspaceChromeState) {
+        guard let desired = SidebarAutoHidePolicy.desiredCollapsed(mode: mode, tabCount: tabCount) else { return }
+        if chrome.sidebarCollapsed != desired {
+            chrome.sidebarCollapsed = desired
+        }
+    }
+
+    /// Thin view-side glue over the static, unit-tested ``applyAutoHide(mode:tabCount:chrome:)`` — read the live
+    /// inputs (the `@Default` mode + the active session's tab count) and actuate. Called from the `.onChange`
+    /// observers on both shells so the view body stays declarative and the tested unit stays the policy.
+    private func applyAutoHidePolicy() {
+        Self.applyAutoHide(mode: autoHideTabsPanel, tabCount: activeTabCount, chrome: chrome)
     }
 
     #if os(iOS)

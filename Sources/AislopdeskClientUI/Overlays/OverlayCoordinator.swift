@@ -124,6 +124,11 @@ public final class OverlayCoordinator {
     /// View ▸ Details: * menu rows both route here, so every surface drives the same live state. No-op by
     /// default (tests / previews / a pre-`onAppear` scene).
     @ObservationIgnored public var selectDetailsTab: @MainActor (DetailsPanelTab) -> Void = { _ in }
+    /// E19/A30 (WI-4): toggles the window-pin flag (otty View ▸ Pin Window). Bound by ``WorkspaceRootView`` to
+    /// `chrome.togglePin()` so any palette / command surface routed here flips the SAME live
+    /// `WorkspaceChromeState.pinned` the menu Button + the macOS `NSWindow.level` glue read. No-op by default
+    /// (iOS / tests / previews), so the seam is never a trap when no Pin-Window row is surfaced.
+    @ObservationIgnored public var togglePinWindow: @MainActor () -> Void = {}
 
     // MARK: Modal gate
 

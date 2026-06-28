@@ -39,6 +39,11 @@ struct RouteToggles {
     /// Jumps the Details panel to a specific tab (E9/WI-7). View-owned state (`DetailsPanelState` + the
     /// chrome reveal), so — like `detailsPanel` — it is a passed-in closure; `nil` = a graceful no-op.
     var selectDetailsTab: ((DetailsPanelTab) -> Void)?
+    /// Toggles "Pin Window" (E19 WI-3, otty View ▸ Pin Window). A macOS `NSWindow.level` / window-level
+    /// concern, so — like `sidebar` / `detailsPanel` — it is a passed-in closure (the live app flips
+    /// `WorkspaceChromeState.pinned`); `nil` (the headless / test / iOS default) is a graceful no-op, never a
+    /// dead chord.
+    var pinWindow: (() -> Void)?
 }
 
 public extension WorkspaceBindingRegistry {
@@ -59,12 +64,13 @@ public extension WorkspaceBindingRegistry {
         toggleJumpTo: (() -> Void)? = nil,
         openQuickly: (() -> Void)? = nil,
         selectDetailsTab: ((DetailsPanelTab) -> Void)? = nil,
+        togglePinWindow: (() -> Void)? = nil,
     ) {
         let toggles = RouteToggles(
             palette: togglePalette, cheatSheet: toggleCheatSheet, find: toggleFind,
             peekReply: togglePeekReply, detailsPanel: toggleDetailsPanel,
             sidebar: toggleSidebar, globalSearch: toggleGlobalSearch, jumpTo: toggleJumpTo,
-            openQuickly: openQuickly, selectDetailsTab: selectDetailsTab,
+            openQuickly: openQuickly, selectDetailsTab: selectDetailsTab, pinWindow: togglePinWindow,
         )
         switch store.liveModel {
         case .tree: routeTree(action, to: store, toggles: toggles)
@@ -194,6 +200,11 @@ public extension WorkspaceBindingRegistry {
         // passed-in closure like `.toggleDetailsPanel`; `nil` (the headless / test default) is a graceful
         // no-op — never a dead chord.
         case let .selectDetailsTab(tab): toggles.selectDetailsTab?(tab)
+        // Pin Window (E19 ES-E19-1 / WI-3): float the window above all other apps. A macOS NSWindow.level
+        // concern (VIEW @State `WorkspaceChromeState.pinned`), so it is a passed-in closure like
+        // `.toggleSidebar` / `.toggleDetailsPanel`; `nil` (the headless / test / iOS default) is a graceful
+        // no-op — never a dead chord.
+        case .pinWindow: toggles.pinWindow?()
         // Blocks (WB2): the navigator toggle + jump-to-block both target the active terminal pane via the store.
         case .commandNavigator: store.requestBlockNavigatorInActivePane()
         case .jumpPreviousBlock: store.jumpToBlockInActivePane(delta: -1)
@@ -358,6 +369,9 @@ public extension WorkspaceBindingRegistry {
         case .toggleDetailsPanel: toggles.detailsPanel?()
         // Details tab jump: a view overlay (tree-shell chrome); the canvas path still forwards it via the closure.
         case let .selectDetailsTab(tab): toggles.selectDetailsTab?(tab)
+        // Pin Window is a window-level concern (the live macOS app flips `WorkspaceChromeState.pinned`); the
+        // canvas path forwards it via the closure too — a graceful no-op when none is supplied, never a dead chord.
+        case .pinWindow: toggles.pinWindow?()
         // Blocks (WB2): the canvas path is retained-but-dead; route through the same store hooks (they
         // resolve the active pane via the canvas focus, so the navigator/jump still work there).
         case .commandNavigator: store.requestBlockNavigatorInActivePane()

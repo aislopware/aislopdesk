@@ -51,6 +51,11 @@ struct WorkspaceCommands: Commands {
     /// NSEvent dispatcher's `selectDetailsTab`, matching how `toggleDetailsPanel`/`toggleSidebar` aren't
     /// threaded into the menu either), never dead.
     var selectDetailsTab: ((DetailsPanelTab) -> Void)?
+    /// E19 / WI-4: the View ▸ Pin Window menu item toggle (otty Pin Window). Pin Window is CHORD-LESS (otty
+    /// ships no default chord), so unlike the chorded actions the MENU Button is its primary entry — the app
+    /// threads `chrome.togglePin()` here so the row is live. `nil` keeps it a graceful no-op via `route`,
+    /// never a dead menu item.
+    var togglePinWindow: (() -> Void)?
 
     var body: some Commands {
         // One top-level menu per display category, in the registry's display order. A `CommandMenu` inserts
@@ -117,6 +122,7 @@ struct WorkspaceCommands: Commands {
                 toggleJumpTo: toggleJumpTo,
                 openQuickly: openQuickly,
                 selectDetailsTab: selectDetailsTab,
+                togglePinWindow: togglePinWindow,
             )
         }
         // Grey the item out when its action needs an active pane and there is none (mirrors the palette /

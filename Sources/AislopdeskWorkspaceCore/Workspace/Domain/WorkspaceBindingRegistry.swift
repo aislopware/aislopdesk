@@ -76,6 +76,11 @@ public enum WorkspaceAction: Hashable, Sendable {
     case secureKeyboardEntry
     case toggleSidebar // ⌘⇧L — show/hide the sessions sidebar (otty "Toggle Tabs Panel")
     case toggleDetailsPanel // ⌘⇧R — show/hide the right-hand Details / inspector panel (otty parity)
+    // View → Pin Window (otty; E19 ES-E19-1): keep the window floating above ALL other apps' windows.
+    // CHORD-LESS — otty ships no default chord; the live macOS app flips `WorkspaceChromeState.pinned` →
+    // `NSWindow.level = .floating` via the route closure. A window-scope view concern → needs no active pane;
+    // iOS has no window level (documented no-op).
+    case pinWindow
     // Jump the Details / inspector panel to a SPECIFIC tab (Info / Outline / Git / Files) AND reveal it if
     // hidden (otty's four `Details: *` jump commands; ES-E9-5). Parameterized like `selectTab`/`applyLayout`;
     // unbound by default (the four registry rows carry `chord: nil`) — the user can bind any in Settings.
@@ -258,6 +263,7 @@ public extension WorkspaceAction {
              .toggleSidebar,
              .toggleDetailsPanel, // a window-scope panel toggle — needs no active pane
              .selectDetailsTab, // a window-scope Details-tab switch — needs no active pane (like the toggle)
+             .pinWindow, // a window-scope NSWindow.level toggle — needs no active pane (like the panel toggles)
              .openQuickly, // a global fuzzy switcher — needs no active pane
              .newSession,
              .spawnFloating, // creates its own pane — needs none
@@ -706,6 +712,19 @@ public enum WorkspaceBindingRegistry {
             id: "view.toggleDetails", action: .toggleDetailsPanel, title: "Toggle Details Panel",
             category: .view, chord: KeyChord(character: "r", [.command, .shift]),
             symbol: "sidebar.right", keywords: "details inspector panel right pane hide show collapse",
+        ),
+        // Pin Window (E19 ES-E19-1, otty "View ▸ Pin Window" — `spec/user-interface__window-tab-split.md:14`
+        // "keeps the window floating above all other apps' windows"). otty ships NO default chord — `chord:
+        // nil` surfaces the row in the menu + palette + cheat sheet WITHOUT binding a key (the chord-less
+        // idiom — like `view.readOnly` / `pane.rename`); the user may bind it in Settings → Keybindings. The
+        // live macOS app flips `WorkspaceChromeState.pinned` → `NSWindow.level = .floating` (a window-scope
+        // view concern; iOS has no window level — a documented no-op). Pinned chord-less + `.view` by
+        // `WorkspaceBindingRoutingTests`.
+        WorkspaceBinding(
+            id: "view.pinWindow", action: .pinWindow, title: "Pin Window",
+            category: .view, chord: nil,
+            symbol: "pin",
+            keywords: "pin window float floating always on top above keep front level stay topmost pip",
         ),
         // Details tab jump commands (E9/WI-7, ES-E9-5, B2): otty's four UNBOUND-by-default commands that
         // switch the right-hand Details panel to a specific tab (Info / Outline / Git / Files) AND reveal the

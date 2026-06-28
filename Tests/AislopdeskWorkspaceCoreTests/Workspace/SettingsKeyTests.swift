@@ -70,6 +70,13 @@ final class SettingsKeyTests: XCTestCase {
             SettingsKey.customLinkSchemes,
             SettingsKey.hintPatterns,
             SettingsKey.hintPatternActions,
+            // E19/A29 + A18: window-size + auto-hide-tabs-panel keys.
+            SettingsKey.windowSizeKey,
+            SettingsKey.windowColsKey,
+            SettingsKey.windowRowsKey,
+            SettingsKey.windowWidthPxKey,
+            SettingsKey.windowHeightPxKey,
+            SettingsKey.autoHideTabsPanelKey,
         ]
     }
 
@@ -502,5 +509,61 @@ final class SettingsKeyTests: XCTestCase {
         // The wire key strings are the single source of truth.
         XCTAssertEqual(SettingsKey.ipcAllowSendKeys, "advanced.ipcAllowSendKeys")
         XCTAssertEqual(SettingsKey.ipcAllowSensitiveSessions, "advanced.ipcAllowSensitiveSessions")
+    }
+
+    // MARK: - E19/A29 + A18: window-size + auto-hide-tabs-panel keys (surfaced by the Appearance WI-6 rows)
+
+    /// The E19 window-size + auto-hide keys read their declared otty defaults when unset (`.remember`, 80, 24,
+    /// 1000, 600, `.default`), round-trip a written value via the persisted raw, and a stale / hostile persisted
+    /// ENUM raw repairs to the default rather than trapping (the `Defaults.PreferRawRepresentable` bridge — a
+    /// failable `init(rawValue:)` would otherwise return nil; the bridge falls back to the key default). The
+    /// Int keys are plain raw values clamped downstream by `WindowSizeMath`, so they store/read verbatim here.
+    /// Read through the public typed accessors + the raw `UserDefaults` the `@Default(.key)` pickers bind (the
+    /// file's established no-`import Defaults` convention).
+    func testWindowSizeAndAutoHideKeyDefaultsAndRoundTrip() {
+        // Defaults when unset.
+        XCTAssertEqual(SettingsKey.windowSize, .remember, "window-size defaults to Remember")
+        XCTAssertEqual(SettingsKey.windowCols, 80, "window-cols defaults to 80")
+        XCTAssertEqual(SettingsKey.windowRows, 24, "window-rows defaults to 24")
+        XCTAssertEqual(SettingsKey.windowWidthPx, 1000, "window-width-px defaults to 1000")
+        XCTAssertEqual(SettingsKey.windowHeightPx, 600, "window-height-px defaults to 600")
+        XCTAssertEqual(SettingsKey.autoHideTabsPanel, .default, "auto-hide-tabs-panel defaults to Default")
+        // Round-trip a written value.
+        UserDefaults.standard.set(WindowSizeMode.grid.rawValue, forKey: SettingsKey.windowSizeKey)
+        UserDefaults.standard.set(120, forKey: SettingsKey.windowColsKey)
+        UserDefaults.standard.set(40, forKey: SettingsKey.windowRowsKey)
+        UserDefaults.standard.set(1440, forKey: SettingsKey.windowWidthPxKey)
+        UserDefaults.standard.set(900, forKey: SettingsKey.windowHeightPxKey)
+        UserDefaults.standard.set(AutoHideTabsPanelMode.auto.rawValue, forKey: SettingsKey.autoHideTabsPanelKey)
+        XCTAssertEqual(SettingsKey.windowSize, .grid)
+        XCTAssertEqual(SettingsKey.windowCols, 120)
+        XCTAssertEqual(SettingsKey.windowRows, 40)
+        XCTAssertEqual(SettingsKey.windowWidthPx, 1440)
+        XCTAssertEqual(SettingsKey.windowHeightPx, 900)
+        XCTAssertEqual(SettingsKey.autoHideTabsPanel, .auto)
+        // A stale / hostile persisted enum raw repairs to the default rather than trapping.
+        UserDefaults.standard.set("garbage-from-a-future-version", forKey: SettingsKey.windowSizeKey)
+        UserDefaults.standard.set("nonsense", forKey: SettingsKey.autoHideTabsPanelKey)
+        XCTAssertEqual(SettingsKey.windowSize, .remember, "an invalid raw value repairs to remember")
+        XCTAssertEqual(SettingsKey.autoHideTabsPanel, .default, "an invalid raw value repairs to default")
+    }
+
+    /// The new E19 wire key strings are the single source of truth shared with every `@Default`/`@AppStorage`
+    /// consumer (the Appearance Window + Auto Hide Tabs Panel rows, the WI-7 auto-hide glue, the macOS NSWindow
+    /// size glue) — a rename that would split-brain them fails this pin. The enum raw values are the otty config
+    /// tokens (`window-size` = `remember`/`grid`/`frame`; `auto-hide-tabs-panel` = `default`/`always`/`auto`).
+    func testWindowSizeAndAutoHideKeyStringsAreStable() {
+        XCTAssertEqual(SettingsKey.windowSizeKey, "window.size")
+        XCTAssertEqual(SettingsKey.windowColsKey, "window.cols")
+        XCTAssertEqual(SettingsKey.windowRowsKey, "window.rows")
+        XCTAssertEqual(SettingsKey.windowWidthPxKey, "window.widthPx")
+        XCTAssertEqual(SettingsKey.windowHeightPxKey, "window.heightPx")
+        XCTAssertEqual(SettingsKey.autoHideTabsPanelKey, "shell.autoHideTabsPanel")
+        XCTAssertEqual(WindowSizeMode.remember.rawValue, "remember")
+        XCTAssertEqual(WindowSizeMode.grid.rawValue, "grid")
+        XCTAssertEqual(WindowSizeMode.frame.rawValue, "frame")
+        XCTAssertEqual(AutoHideTabsPanelMode.default.rawValue, "default")
+        XCTAssertEqual(AutoHideTabsPanelMode.always.rawValue, "always")
+        XCTAssertEqual(AutoHideTabsPanelMode.auto.rawValue, "auto")
     }
 }

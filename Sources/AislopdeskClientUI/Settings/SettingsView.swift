@@ -1177,9 +1177,19 @@ private struct AppearanceSettingsTab: View {
     @Bindable var store: PreferencesStore
 
     @Default(.newTabPosition) private var newTabPosition
+    // E19/A18 vertical-sidebar auto-hide (otty `auto-hide-tabs-panel`) — cross-platform (the sidebar is on
+    // both macOS + iPad). The decision is the pure `SidebarAutoHidePolicy`; WI-7 drives `chrome.sidebarCollapsed`.
+    @Default(.autoHideTabsPanel) private var autoHideTabsPanel
     @Default(.showBlockDividers) private var showBlockDividers
     @Default(.hideStatusBar) private var hideStatusBar
     #if os(macOS)
+    // E19/A29 window-size (otty `window-size`) — macOS-only: the initial dimensions are an `NSWindow`
+    // concept (iOS has no resizable window), so the keys are bound only where the `Window` section renders.
+    @Default(.windowSize) private var windowSize
+    @Default(.windowCols) private var windowCols
+    @Default(.windowRows) private var windowRows
+    @Default(.windowWidthPx) private var windowWidthPx
+    @Default(.windowHeightPx) private var windowHeightPx
     @Default(.dockIconAnimateProgress) private var dockIconAnimateProgress
     @Default(.dockIconErrorBadge) private var dockIconErrorBadge
     #endif
@@ -1191,17 +1201,37 @@ private struct AppearanceSettingsTab: View {
             // by deliberate product decision: the horizontal tab bar is dropped from this clone, so there is no
             // layout selector to surface and a future reviewer must NOT read the missing horizontal-layout
             // option as a gap to backfill. otty's `tab-setting.png` also carries an "Auto Hide Tabs Panel" row
-            // (sidebar-layout-only) and a WINDOW group with a "Window Size" picker; both are DEFERRED-until-
-            // backed — there is no auto-hide policy or remember-window-size behaviour behind them yet, so we
-            // omit the controls rather than ship dead UI.
+            // (sidebar-layout-only) and a WINDOW group with a "Window Size" picker; both are now SURFACED below
+            // and BACKED — the Auto Hide picker drives `SidebarAutoHidePolicy` (E19/A18, WI-2/WI-7) and the
+            // Window Size picker + steppers feed `WindowSizeMath` through the macOS `NSWindow` glue (E19/A29,
+            // WI-1/WI-4); neither is dead UI.
             Section("Tabs") {
                 Picker("New tab position", selection: $newTabPosition) {
                     Text("Automatic").tag(NewTabPosition.auto)
                     Text("End").tag(NewTabPosition.end)
                     Text("After Current Tab").tag(NewTabPosition.afterCurrent)
                 }
+                // AUTO HIDE TABS PANEL (E19/A18 — otty `auto-hide-tabs-panel`, `tab-setting.png`): when to show
+                // the vertical tabs panel. `.auto` collapses the sidebar when the active session has a single tab
+                // (WI-7 reads `SidebarAutoHidePolicy`); `.default`/`.always` never auto-hide. Cross-platform.
+                pickerRow(
+                    "Auto Hide Tabs Panel",
+                    "When to show the tabs panel in Sidebar layout",
+                    selection: $autoHideTabsPanel,
+                ) {
+                    Text("Default").tag(AutoHideTabsPanelMode.default)
+                    Text("Always").tag(AutoHideTabsPanelMode.always)
+                    Text("Auto").tag(AutoHideTabsPanelMode.auto)
+                }
                 timingFooter(.live)
             }
+
+            // WINDOW (E19/A29 — otty `window-size`, `tab-setting.png`). macOS-only: the initial dimensions are
+            // an `NSWindow` concept, so iOS (no resizable window) omits the section rather than ship a dead
+            // toggle. Extracted to a computed property so the `Form` closure stays under `closure_body_length`.
+            #if os(macOS)
+            windowSection
+            #endif
 
             // THEME (E15 WI-6): the picker lists every built-in PLUS the scanned custom `.ottytheme`s
             // (`ThemeCatalog.shared.customThemes`); picking a built-in writes `theme`/`themeDark` (clearing the
@@ -1375,6 +1405,74 @@ private struct AppearanceSettingsTab: View {
             get: { store.appearance.density ?? "comfortable" },
             set: { store.appearance.density = $0 },
         )
+    }
+
+    // MARK: - E19/A29 Window section (macOS-only)
+
+    /// otty's WINDOW group (`tab-setting.png`): the `window-size` policy picker + the mode-specific steppers.
+    /// `.remember` restores the autosaved frame (the otty default); `.grid` sizes to `window-cols × window-rows`;
+    /// `.frame` to `window-width-px × window-height-px`. The raw values are clamped by `WindowSizeMath` and
+    /// applied ONCE per window open by the introspect glue (WI-4), so a later manual resize is never fought —
+    /// the footer note says so. macOS-only (no resizable window on iOS).
+    #if os(macOS)
+    private var windowSection: some View {
+        Section("Window") {
+            pickerRow(
+                "Window Size",
+                "How new windows decide their initial dimensions.",
+                selection: $windowSize,
+            ) {
+                Text("Remember last size").tag(WindowSizeMode.remember)
+                Text("Grid (cols × rows)").tag(WindowSizeMode.grid)
+                Text("Frame (pixels)").tag(WindowSizeMode.frame)
+            }
+            switch windowSize {
+            case .remember:
+                EmptyView()
+            case .grid:
+                Stepper("Columns: \(windowCols)", value: $windowCols, in: 1...1000)
+                Stepper("Rows: \(windowRows)", value: $windowRows, in: 1...1000)
+            case .frame:
+                Stepper("Width: \(windowWidthPx) px", value: $windowWidthPx, in: 64...16384, step: 50)
+                Stepper("Height: \(windowHeightPx) px", value: $windowHeightPx, in: 64...16384, step: 50)
+            }
+            Text("Applied to the next window opened.")
+                .font(.system(size: Otty.Typeface.footnote))
+                .foregroundStyle(Otty.Text.secondary)
+        }
+    }
+    #endif
+
+    // MARK: - Row helpers
+
+    /// A dropdown row (bold title + optional gray subtext leading, a `.menu` picker trailing) — the otty
+    /// label-with-subtitle picker used by Auto Hide Tabs Panel + Window Size. Binds DIRECTLY (these are plain
+    /// `Defaults`, not libghostty config — no terminal-config rebuild), mirroring `ControlsSettingsTab.pickerRow`.
+    private func pickerRow(
+        _ title: String, _ subtitle: String? = nil,
+        selection: Binding<some Hashable>, @ViewBuilder options: () -> some View,
+    ) -> some View {
+        LabeledContent {
+            Picker("", selection: selection, content: options)
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize()
+        } label: {
+            rowLabel(title, subtitle)
+        }
+    }
+
+    /// otty's row label: a bold title with an optional gray subtext beneath.
+    private func rowLabel(_ title: String, _ subtitle: String?) -> some View {
+        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+            Text(title)
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.system(size: Otty.Typeface.footnote))
+                    .foregroundStyle(Otty.Text.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }
 
