@@ -48,22 +48,33 @@ let package = Package(
     // these trades the "clean checkout builds with no prerequisite" property for SPM network resolution;
     // versions are pinned in Package.resolved. KeyboardShortcuts is macOS-only → platform-conditioned.
     dependencies: [
-        .package(url: "https://github.com/siteline/swiftui-introspect.git", from: "26.0.0"),
+        .package(url: "https://github.com/siteline/swiftui-introspect.git", from: "26.0.1"),
         .package(url: "https://github.com/SFSafeSymbols/SFSafeSymbols.git", from: "7.0.0"),
-        .package(url: "https://github.com/EmergeTools/Pow.git", from: "1.0.0"),
-        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts.git", from: "3.0.0"),
+        // Pow floor pinned to 1.0.6: 1.0.5 fails to COMPILE on Xcode 26.4+ (our CI floor is 26.5);
+        // 1.0.6 (PR #83) is the fix. GitHub's "Latest" badge still shows 1.0.5 but SPM resolves 1.0.6.
+        .package(url: "https://github.com/EmergeTools/Pow.git", from: "1.0.6"),
+        // KeyboardShortcuts floor pinned to 3.0.1: 3.0.0 CRASHES in release builds compiled by the
+        // Swift 6.3 compiler (Xcode 26.5 ships Swift 6.3.2); 3.0.1 is the crash fix. macOS-only.
+        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts.git", from: "3.0.1"),
         // Type-safe UserDefaults for the global app-flag namespace (`SettingsKey`). We depend ONLY on the
         // `Defaults` library product — it is pure-Foundation with NO transitive deps; the package's
         // swift-syntax dependency is reachable only from the `DefaultsMacros`/macro targets, which we do
-        // NOT use (verified: swift-syntax is absent from Package.resolved). `Defaults` is exempt from the
-        // "UI deps attach only to ClientUI" rule because it is not UI — it lands on the headless
-        // `AislopdeskWorkspaceCore` where `SettingsKey` lives (and on ClientUI for the `@Default` views).
+        // NOT use. `Defaults` is exempt from the "UI deps attach only to ClientUI" rule because it is not
+        // UI — it lands on the headless `AislopdeskWorkspaceCore` where `SettingsKey` lives (and on
+        // ClientUI for the `@Default` views). HELD at 8.2.0 (upToNextMajor, so the latest swift-syntax-FREE
+        // 8.x): Defaults 9.x added the `@ObservableDefault` macro target, which drags swift-syntax (603.x,
+        // a 75k-file fetch) into Package.resolved — verified absent at 8.x, present at 9.0.9. We use
+        // Defaults ONLY for type-safe UserDefaults, never the macro, so 9.x gives ZERO functional gain
+        // while regressing the deliberate "no swift-syntax in the resolved graph" invariant. Re-evaluate
+        // only if a future need requires the macro. (Phase-D upgrade 2026-06-29.)
         .package(url: "https://github.com/sindresorhus/Defaults.git", from: "8.2.0"),
         // Markdown rendering (gonzalezreal/Textual — the pure-Swift `AttributedString`-based successor to
         // swift-markdown-ui/MarkdownUI). Used by `MarkdownText` for the Claude transcript / rich block
         // output. Runtime deps are pure-Swift only (ConcurrencyExtras + SwiftUIMath; no swift-cmark / C
-        // build step, no swift-syntax). ClientUI-only (it is SwiftUI rendering). NOTE: pinned to 0.5.0 —
-        // upstream issue #23 (crash on very large docs) is mitigated by `MarkdownText`'s plain-text guard.
+        // build step, no swift-syntax). ClientUI-only (it is SwiftUI rendering). HOLD at 0.5.0 — which IS
+        // the latest release; upstream issue #23 (EXC_BAD_ACCESS on ~200+ block docs, non-lazy ForEach in
+        // BlockContent.swift) is still OPEN/unfixed at 0.5.0 (re-verified 2026-06-29), mitigated by
+        // `MarkdownText`'s plain-text guard. Re-check #23 before ever raising this floor.
         .package(url: "https://github.com/gonzalezreal/textual.git", from: "0.5.0"),
     ],
     targets: [
