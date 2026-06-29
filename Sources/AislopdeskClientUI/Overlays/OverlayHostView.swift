@@ -153,10 +153,14 @@ struct OverlayHostView: View {
     /// The toggled-state predicate the root hands to ``PaletteView`` — built from the live chrome so the
     /// palette's ✓ gutter reflects the real sidebar/inspector visibility (a visible panel ⇒ ✓ on its toggle
     /// row). Pure + `static` so it is unit-pinnable without instantiating the view (E2 / WI-6). `@MainActor`
-    /// because it reads the `@MainActor` ``WorkspaceChromeState``. Resolves the three checkable View toggles —
-    /// Toggle Tabs Panel, Toggle Details Panel, and Pin Window.
+    /// because it reads the `@MainActor` ``WorkspaceChromeState``. Resolves the checkable View toggles — Toggle
+    /// Tabs Panel, Toggle Details Panel, Pin Window — PLUS the two E17 Shell toggles whose live state lives on
+    /// the active pane (Read Only / Secure Keyboard Entry), read off the `store` so the ✓ tracks the real pane
+    /// input gate / secure-entry state rather than staying perpetually dark.
     @MainActor
-    static func toggledState(for chrome: WorkspaceChromeState) -> @MainActor (PaletteItem) -> Bool {
+    static func toggledState(
+        for chrome: WorkspaceChromeState, store: WorkspaceStore,
+    ) -> @MainActor (PaletteItem) -> Bool {
         { item in
             switch item.id {
             case "action.toggleSidebar": !chrome.sidebarCollapsed
@@ -165,6 +169,11 @@ struct OverlayHostView: View {
             // palette (and the View menu) tell the user the current pinned state. Mirrors the sidebar/inspector
             // treatment, reading the SAME live `chrome.pinned` the menu Button + the `NSWindow.level` glue flip.
             case "action.pinWindow": chrome.pinned
+            // E17 (audit fix): Read Only / Secure Keyboard Entry are CHECKABLE toggles whose live state lives on
+            // the ACTIVE pane (the convergent `paneReadOnly` set / the model's `secureInputActive` mirror), NOT
+            // on `chrome` — so the ✓ tracks the real input gate / secure-entry state instead of never lighting.
+            case "action.toggleReadOnly": store.isActivePaneReadOnly()
+            case "action.secureKeyboardEntry": store.isActivePaneSecureInputActive()
             default: false
             }
         }

@@ -867,9 +867,10 @@ final class OverlayCoordinatorMountTests: XCTestCase {
 
     /// `capturesKeyboardWhileVisible` is the SINGLE source of truth the app's `isOverlayCapturingKeys` gate
     /// reads so the global NSEvent dispatcher YIELDS modeled chords to a focused overlay. Pin that it tracks
-    /// EXACTLY the three keyboard-owning overlays (Open-Quickly, Peek & Reply, AND the E13 Send-to-Chat
-    /// dialog) and is NOT tripped by the sheet-presented panels (palette / cheat sheet / connect / remote
-    /// picker), which capture through the responder chain on their own.
+    /// EVERY keyboard-owning overlay: Open-Quickly, Peek & Reply, Send-to-Chat (E13), AND — after the
+    /// Batch-1 audit fix — the four SCRIMMED modals (palette / cheat sheet / connect / remote picker).
+    /// The NSEvent monitor PREEMPTS the responder chain so the sheet-presented panels cannot rely on it
+    /// alone; ⌘W/⌘T/⌘2 would destructively mutate the BACKGROUND tree behind their scrim without this gate.
     /// REVERT-TO-CONFIRM-FAIL (M3): drop `|| sendToChatVisible` from the property and the Send-to-Chat branch
     /// here flips to `false` — so a modeled ⌘W / ⌘1–9 would leak to a background pane behind the open dialog.
     func testCapturesKeyboardWhileVisibleFoldsInSendToChat() throws {
@@ -898,9 +899,11 @@ final class OverlayCoordinatorMountTests: XCTestCase {
         overlay.closeSendToChat()
         XCTAssertFalse(overlay.capturesKeyboardWhileVisible)
 
-        // The sheet-presented panels are NOT in this narrower gate (they own keys via the responder chain).
+        // The scrimmed panels ARE now in the gate (Batch-1 audit fix): the NSEvent monitor preempts the
+        // responder chain, so palette / cheat-sheet / connect / remote-picker must trip it or ⌘W/⌘T/⌘2
+        // destructively mutates the background tree. (Pinned deeper by DispatcherOverlayYieldTests.)
         overlay.openPalette()
-        XCTAssertFalse(overlay.capturesKeyboardWhileVisible, "the palette is a sheet — not in the chord-yield gate")
+        XCTAssertTrue(overlay.capturesKeyboardWhileVisible, "the palette scrim owns ⌘-chords via the dispatcher gate")
         overlay.closePalette()
     }
 
@@ -941,8 +944,9 @@ final class OverlayCoordinatorMountTests: XCTestCase {
     /// tracks the real panel visibility. Pin that the Toggle-Tabs-Panel row shows ✓ exactly when the sidebar is
     /// visible (`!sidebarCollapsed`), and a non-toggle row never does — test the predicate, not the view.
     func testToggledStateTracksSidebarVisibility() throws {
+        let (_, store) = makeCoordinator()
         let chrome = WorkspaceChromeState()
-        let predicate = OverlayHostView.toggledState(for: chrome)
+        let predicate = OverlayHostView.toggledState(for: chrome, store: store)
         let sidebarRow = try XCTUnwrap(
             ActionsPaletteSource.catalog.first { $0.id == "action.toggleSidebar" },
             "the catalog has the Toggle Tabs Panel row",
@@ -971,7 +975,7 @@ final class OverlayCoordinatorMountTests: XCTestCase {
         let chrome = WorkspaceChromeState()
         // Bound the way the root view binds it (`overlay.toggleSidebar = { chrome.toggleSidebar() }`).
         overlay.toggleSidebar = { [chrome] in chrome.toggleSidebar() }
-        let predicate = OverlayHostView.toggledState(for: chrome)
+        let predicate = OverlayHostView.toggledState(for: chrome, store: store)
         let sidebarRow = try XCTUnwrap(
             ActionsPaletteSource.catalog.first { $0.id == "action.toggleSidebar" },
             "the catalog has the Toggle Tabs Panel row",

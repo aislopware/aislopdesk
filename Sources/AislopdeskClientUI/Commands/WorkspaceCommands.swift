@@ -64,6 +64,11 @@ struct WorkspaceCommands: Commands {
     /// Window is a CHECKABLE toggle, ES-E2-3). Read from the live `chrome.pinned` at the scene's `.commands`
     /// site so the row re-renders its checkmark when the pin flips from the menu / palette / a bound chord.
     var pinWindowOn = false
+    /// E3 WI-4 (audit fix): the Window ▸ Close Window actuator (otty ⌘⇧W). A macOS `NSWindow.performClose`
+    /// concern, so the app threads `window.performClose(nil)` here (which fires the native `windowShouldClose`
+    /// → the existing window-close confirmation gate). `nil` falls back to the store's confirmation park in
+    /// `route` — never a dead menu row, but the closure is what makes the menu item actually CLOSE the window.
+    var closeWindow: (() -> Void)?
     /// E16 / WI-8: the File ▸ Recipe ▸ Save Snippet… entry opens the snippet editor (WI-7's `SnippetEditorSheet`,
     /// wired app-side in WI-10). `nil` (the default) HIDES the row rather than shipping a dead button — the
     /// Save / Open Recipe rows are always live (they route to the store's `pending*` flags).
@@ -176,6 +181,7 @@ struct WorkspaceCommands: Commands {
                 openQuickly: openQuickly,
                 selectDetailsTab: selectDetailsTab,
                 togglePinWindow: togglePinWindow,
+                closeWindow: closeWindow,
             )
         }
         // Grey the item out when its action needs an active pane and there is none (mirrors the palette /

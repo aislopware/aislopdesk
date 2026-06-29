@@ -174,9 +174,8 @@ struct HostMetadataProbe: MetadataQuerying {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         // E6 WI-7: the precise By-Project grouping key — the repo's absolute toplevel. Best-effort like
         // every other probe (a missing binary / non-repo / detached state → empty; the client then falls
-        // back to the pane cwd), trimmed of the trailing newline `rev-parse` prints.
-        let toplevel = Self.runProcessString(Self.gitPath, ["-C", cwd, "rev-parse", "--show-toplevel"])?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // back to the pane cwd).
+        let toplevel = Self.gitToplevel(cwd: cwd) ?? ""
         return MetadataCodec.GitStatusPayload(
             hasRepo: true, branch: branch, remoteURL: remote, repoRoot: toplevel,
             ahead: ahead, behind: behind, files: files,
@@ -184,7 +183,58 @@ struct HostMetadataProbe: MetadataQuerying {
     }
 
     func gitDiff(cwd: String, file: String) -> Data? {
-        Self.runProcessData(Self.gitPath, ["-C", cwd, "diff", "--", file])
+        Self.resolveGitDiff(cwd: cwd, file: file) { Self.runProcessData(Self.gitPath, $0) }
+    }
+
+    /// The repo's absolute toplevel for `cwd` (`git -C cwd rev-parse --show-toplevel`), trimmed of the
+    /// trailing newline; `nil` when `cwd` is not inside a repo / git is missing (the best-effort fallback).
+    static func gitToplevel(cwd: String) -> String? {
+        let top = runProcessString(gitPath, ["-C", cwd, "rev-parse", "--show-toplevel"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return top.isEmpty ? nil : top
+    }
+
+    /// The ORDERED `git diff` invocations the resolver tries for a repo-ROOT-relative `file`, all rooted
+    /// at the repo `repoRoot` (NEVER the pane cwd — porcelain status paths are repo-root-relative, so a
+    /// subdir-cwd diff of a root-relative pathspec matches nothing). The bases, in order:
+    ///  1. `diff HEAD` — the combined change vs the last commit, so a STAGED/index-only change shows just
+    ///     like an unstaged worktree change (the medium finding: `git diff` alone is empty for a staged file).
+    ///  2. `diff` — the plain unstaged worktree diff (the fallback for a repo with no commits, where
+    ///     `diff HEAD` errors, but a tracked file is modified in the worktree).
+    ///  3. `diff --cached` — the staged index-vs-HEAD diff (the no-HEAD repo where a freshly-staged add
+    ///     lives ONLY in the index and neither of the above shows it).
+    /// A PURE arg-builder (no I/O) so the base ordering is unit-pinned without spinning a `git` Process.
+    static func gitDiffArgumentPlan(repoRoot: String, file: String) -> [[String]] {
+        [
+            ["-C", repoRoot, "diff", "HEAD", "--", file],
+            ["-C", repoRoot, "diff", "--", file],
+            ["-C", repoRoot, "diff", "--cached", "--", file],
+        ]
+    }
+
+    /// Resolves the `git diff` for a repo-ROOT-relative `file` whose pane cwd is `cwd`, returning the
+    /// FIRST non-empty diff across the ``gitDiffArgumentPlan`` bases. `run` is the injected git arg-runner
+    /// (path-relative argv → captured stdout bytes, or `nil` on a spawn failure) — injected so the
+    /// subdir-relativity + staged-base logic is unit-pinned WITHOUT a real `Process` (the hang-safety rule).
+    ///
+    /// **The subdir fix:** the diff is rooted at the repo toplevel (`git rev-parse --show-toplevel`), not
+    /// the possibly-subdir `cwd`, so a root-relative pathspec from `git status` resolves. When the toplevel
+    /// can't be resolved (non-repo / git missing) it falls back to `cwd` (best-effort — the empty diff the
+    /// builder maps to `.notFound`/`.ok`). A nil/empty result from one base falls through to the next; an
+    /// all-empty chain returns the last result (empty `Data` → `.ok` empty, or `nil` → `.notFound`), the
+    /// SAME mapping the single-command path produced for an unchanged/untracked file.
+    static func resolveGitDiff(cwd: String, file: String, run: ([String]) -> Data?) -> Data? {
+        let topRaw = run(["-C", cwd, "rev-parse", "--show-toplevel"])
+            .flatMap { String(data: $0, encoding: .utf8) }?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let root = topRaw.isEmpty ? cwd : topRaw
+        var last: Data?
+        for args in gitDiffArgumentPlan(repoRoot: root, file: file) {
+            let data = run(args)
+            if let data, !data.isEmpty { return data }
+            last = data ?? last
+        }
+        return last
     }
 
     /// Parses a porcelain v1 `-b` branch header: `<branch>...<upstream> [ahead N, behind M]`, or a bare

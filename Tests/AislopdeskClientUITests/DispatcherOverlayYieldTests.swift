@@ -136,5 +136,74 @@ final class DispatcherOverlayYieldTests: XCTestCase {
         XCTAssertEqual(store.tree.allPaneIDs().count, 2, "⌘W must NOT close a pane behind the open dialog")
         XCTAssertNil(store.pendingCloseSpec, "⌘W must NOT even park a close behind the open dialog")
     }
+
+    // MARK: - overlay-keyboard-gate: the SCRIMMED modals + Global Search yield destructive ⌘-chords
+
+    /// Drives the dispatcher through the REAL `overlay.capturesKeyboardWhileVisible` seam (no view) and asserts
+    /// that while `present(overlay)` has a focus-stealing surface up, each destructive global chord PASSES
+    /// THROUGH (handle returns the event, never swallows it) and does NOT mutate the BACKGROUND tree — neither
+    /// closing a leaf (⌘W) nor minting a tab (⌘T). `name` tags the failing surface.
+    ///
+    /// REVERT-TO-CONFIRM-FAIL: narrow `capturesKeyboardWhileVisible` back to
+    /// `openQuicklyVisible || peekReplyVisible || sendToChatVisible` and every case below regresses — the
+    /// scrimmed modal / Global Search no longer trips the gate, so ⌘W is swallowed + routes `.closePane`
+    /// (a leaf drops) and ⌘T mints a terminal tab behind the open overlay.
+    private func assertOverlayYieldsDestructiveChords(
+        _ name: String, present: (OverlayCoordinator) -> Void,
+    ) {
+        let store = makeTwoLeafStore()
+        let overlay = OverlayCoordinator(store: store)
+        let dispatcher = WorkspaceKeyDispatcher(
+            store: store, isOverlayCapturingKeys: { overlay.capturesKeyboardWhileVisible },
+        )
+
+        // Load-bearing control: with NOTHING up the monitor still OWNS ⌘W (swallows + would route .closePane).
+        XCTAssertFalse(overlay.capturesKeyboardWhileVisible, "\(name): precondition — nothing up")
+
+        present(overlay)
+        XCTAssertTrue(
+            overlay.capturesKeyboardWhileVisible, "\(name): the presented overlay must own the keyboard",
+        )
+
+        // `allPaneIDs().count` captures BOTH destructive directions: ⌘W .closePane drops a leaf, ⌘T
+        // .newPane(.terminal) mints one — so while the overlay owns the keyboard it must stay PINNED.
+        let leavesBefore = store.tree.allPaneIDs().count
+
+        // ⌘W — destructive close
+        let close = dispatcher.handle(keyDown("w", keyCode: 13, command: true))
+        XCTAssertNotNil(close, "\(name): ⌘W is passed through to the overlay (not swallowed)")
+        XCTAssertEqual(store.tree.allPaneIDs().count, leavesBefore, "\(name): ⌘W must NOT close a background pane")
+        XCTAssertNil(store.pendingCloseSpec, "\(name): ⌘W must NOT even park a close behind the overlay")
+
+        // ⌘T — new terminal pane (tree-mutating)
+        let newTab = dispatcher.handle(keyDown("t", keyCode: 17, command: true))
+        XCTAssertNotNil(newTab, "\(name): ⌘T is passed through to the overlay (not swallowed)")
+        XCTAssertEqual(
+            store.tree.allPaneIDs().count,
+            leavesBefore,
+            "\(name): ⌘T must NOT mint a pane behind the overlay",
+        )
+
+        // ⌘2 — background tab-switch
+        let selectTab = dispatcher.handle(keyDown("2", keyCode: 19, command: true))
+        XCTAssertNotNil(selectTab, "\(name): ⌘2 is passed through to the overlay (not the background tab-switch)")
+    }
+
+    /// HIGH: the four SCRIMMED modals (Command Palette / Cheat Sheet / Connect / Remote-Picker) each yield the
+    /// destructive global chords through the real gate — they were in `anyModalVisible` but NOT in
+    /// `capturesKeyboardWhileVisible`, so ⌘W/⌘T/⌘2 leaked to the workspace behind their scrim.
+    func testScrimmedModalsYieldDestructiveChordsThroughTheRealOverlayGate() {
+        assertOverlayYieldsDestructiveChords("palette") { $0.openPalette() }
+        assertOverlayYieldsDestructiveChords("cheatSheet") { $0.openCheatSheet() }
+        assertOverlayYieldsDestructiveChords("connect") { $0.openConnect() }
+        assertOverlayYieldsDestructiveChords("remotePicker") { $0.openRemotePicker() }
+    }
+
+    /// MEDIUM: the non-scrimmed Global Search surface (whose query field holds focus) likewise yields the
+    /// destructive chords — it stays OUT of `anyModalVisible` (must not dim the workspace) but is now in
+    /// `capturesKeyboardWhileVisible`, so ⌘W can't destroy a pane while the user is typing a cross-tab search.
+    func testGlobalSearchYieldsDestructiveChordsThroughTheRealOverlayGate() {
+        assertOverlayYieldsDestructiveChords("globalSearch") { $0.openGlobalSearch() }
+    }
 }
 #endif

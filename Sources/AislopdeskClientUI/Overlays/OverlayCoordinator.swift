@@ -174,6 +174,12 @@ public final class OverlayCoordinator {
     /// `WorkspaceChromeState.pinned` the menu Button + the macOS `NSWindow.level` glue read. No-op by default
     /// (iOS / tests / previews), so the seam is never a trap when no Pin-Window row is surfaced.
     @ObservationIgnored public var togglePinWindow: @MainActor () -> Void = {}
+    /// Closes the active window (otty Window ▸ Close Window — the palette "Close Window" row). Bound on macOS
+    /// to `NSWindow.performClose(nil)` (→ the native `windowShouldClose` close-confirmation gate, preserving
+    /// the configured ``CloseConfirmationPolicy``). `nil` (iOS / tests / a pre-`onAppear` scene) makes the run
+    /// arm fall back to ``WorkspaceStore/requestCloseWindow()`` — the SAME parked-confirmation fallback the
+    /// ⌘⇧W route arm uses, never a dead control.
+    @ObservationIgnored public var closeWindow: (@MainActor () -> Void)?
 
     // MARK: Modal gate
 
@@ -189,15 +195,19 @@ public final class OverlayCoordinator {
             || peekReplyVisible || sendToChatVisible
     }
 
-    /// Whether a presented overlay must OWN the keyboard — the narrower subset of ``anyModalVisible`` the app's
-    /// `isOverlayCapturingKeys` gate reads so the global ``WorkspaceKeyDispatcher`` NSEvent monitor (which
-    /// PREEMPTS the responder chain) YIELDS modeled chords to the focused card instead of resolving them
-    /// behind it. The Open-Quickly picker, the Peek & Reply card, AND (E13 / WI-5) the Send-to-Chat dialog
-    /// each host a focused field / quick-answer chords (`.onKeyPress`), so a modeled ⌘W / ⌘1–9 / ⌘T must reach
-    /// them, never destroy / switch a background pane. SINGLE source of truth for that gate (the app's closure
-    /// reads THIS), so adding an overlay here keeps the dispatcher honest without duplicating the predicate.
+    /// Whether a presented overlay must OWN the keyboard — the gate the app's `isOverlayCapturingKeys` closure
+    /// reads so the global ``WorkspaceKeyDispatcher`` NSEvent monitor (which PREEMPTS the responder chain)
+    /// YIELDS modeled chords to the focused card instead of resolving them behind it. EVERY focus-stealing
+    /// overlay belongs here: the four scrimmed panels (palette / cheat sheet / connect / remote picker) own
+    /// Esc/arrows/Return and swallow clicks behind their scrim, so a modeled ⌘W / ⌘1–9 / ⌘T leaking past them
+    /// would DESTRUCTIVELY close / switch / mutate the BACKGROUND tree the user can't even see — the recurring
+    /// E11 ⌘W class. So this mirrors ``anyModalVisible`` exactly, PLUS the non-scrimmed Global Search surface
+    /// (E5), whose focused query field (``GlobalSearchView``) must likewise keep ⌘W from reaching the workspace
+    /// (Global Search is deliberately absent from ``anyModalVisible`` because it must NOT dim the workspace, but
+    /// it still owns the keyboard while up). SINGLE source of truth for that gate (the app's closure reads
+    /// THIS), so adding an overlay to ``anyModalVisible`` keeps the dispatcher honest without duplicating it.
     public var capturesKeyboardWhileVisible: Bool {
-        openQuicklyVisible || peekReplyVisible || sendToChatVisible
+        anyModalVisible || globalSearchVisible
     }
 
     // MARK: Toasts
@@ -425,6 +435,12 @@ public final class OverlayCoordinator {
         case .togglePinWindow:
             togglePinWindow()
             if !keepOpen { closePalette() }
+        case .closeWindow:
+            // The injected actuator (macOS `performClose` → the close-confirmation gate) wins; `nil` (iOS /
+            // tests) falls back to the store's parked-confirmation request — the SAME fallback the ⌘⇧W route
+            // arm uses, never a dead control. Always closes the palette (a window-scope action, not chainable).
+            if let closeWindow { closeWindow() } else { store?.requestCloseWindow() }
+            closePalette()
         case let .selectFilter(filter):
             paletteFilter = filter
             paletteSelection = 0

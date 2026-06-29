@@ -659,6 +659,16 @@ public struct AislopdeskClientApp: App {
                     // delegate routes through `WindowCloseGate` and presents a synchronous confirmation so a
                     // parked close always resolves (the window is never stranded).
                     Self.installWindowCloseGate(on: window, store: store)
+                    // E3 WI-4 (audit fix): install the ⌘⇧W "Close Window" actuator on the SAME NSEvent monitor
+                    // that owns every chord. It calls `performClose(nil)` on the captured window (via the
+                    // weak `windowBox`), firing `windowShouldClose` → the gate just installed — so the chord
+                    // ACTUATES a close instead of parking a flag nothing reads. Re-assigning on a re-fire is an
+                    // idempotent closure swap (it always reads the latest `windowBox.window`).
+                    keyDispatcher.setCloseWindow { [windowBox] in windowBox.window?.performClose(nil) }
+                    // Audit fix (palette parity): the palette "Close Window" row routes through the SAME
+                    // `performClose(nil)` actuator → the close-confirmation gate, so it actuates a real close
+                    // instead of the dead `requestCloseWindow()` park. Re-assigning on a re-fire is idempotent.
+                    overlayCoordinator.closeWindow = { [windowBox] in windowBox.window?.performClose(nil) }
                     // E19 WI-4: capture the window weakly for the `.onChange(of: chrome.pinned)` pin actuator,
                     // apply the current pin level (idempotent — the callback can re-fire), and apply the
                     // configured initial size EXACTLY ONCE per window open (so a later manual resize is never
@@ -736,6 +746,12 @@ public struct AislopdeskClientApp: App {
                 // E19 WI-4: feed the live pinned state so the View ▸ Pin Window row renders its ✓ (a checkable
                 // toggle). Reading `chrome.pinned` here re-evaluates `.commands` when the pin flips.
                 pinWindowOn: chrome.pinned,
+                // E3 WI-4 (audit fix): the Window ▸ Close Window menu row ACTUATES a real close —
+                // `performClose(nil)` on THIS scene's captured `NSWindow` fires the native `windowShouldClose`
+                // → the existing `WindowCloseConfirmationDelegate` gate (preserving the close-confirmation
+                // policy). Without this the row routed to `store.requestCloseWindow()`, which only parked a flag
+                // nothing observed — the menu item never closed the window.
+                closeWindow: { [windowBox] in windowBox.window?.performClose(nil) },
                 // E16 WI-10: light up the File ▸ Recipe ▸ Save Snippet… row — flips the app-owned
                 // `snippetEditorPresented` the `recipeSheets` modifier presents the editor off. `nil` would
                 // HIDE the row (no dead button); wiring it makes the menu entry live.

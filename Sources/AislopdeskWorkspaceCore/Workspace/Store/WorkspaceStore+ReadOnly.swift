@@ -35,6 +35,23 @@ public extension WorkspaceStore {
         paneReadOnly.contains(id)
     }
 
+    /// Whether the ACTIVE pane is currently READ-ONLY — the read the command-palette "Read Only" ✓ gutter
+    /// (``OverlayHostView/toggledState(for:store:)``) consults so the checkmark tracks the live input gate.
+    /// Resolves the active pane id in whichever live model is active, then reads the convergent ``paneReadOnly``
+    /// set (so it reflects a flip from ANY entry point). `false` for an empty shell (no active pane).
+    func isActivePaneReadOnly() -> Bool {
+        guard let id = activePaneID else { return false }
+        return isReadOnly(for: id)
+    }
+
+    /// Whether the ACTIVE pane currently has SECURE keyboard entry engaged — the observable
+    /// ``TerminalViewModel/secureInputActive`` mirror (the manual toggle OR the auto host-no-echo path). The
+    /// command-palette "Secure Keyboard Entry" ✓ gutter reads this so the checkmark tracks the live state.
+    /// `false` for a non-terminal active pane or an empty shell (no live terminal model).
+    func isActivePaneSecureInputActive() -> Bool {
+        activeTerminalModel?.secureInputActive ?? false
+    }
+
     /// Sets pane `id`'s read-only state (the pill `×` → `false`, a programmatic set, or the toggle's
     /// resolved target). Drives the pane's live ``TerminalViewModel`` when present — its
     /// ``TerminalViewModel/isReadOnly`` `didSet` fires ``TerminalViewModel/onReadOnlyChanged`` → the wired

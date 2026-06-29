@@ -175,7 +175,7 @@ public struct WorkspaceRootView: View {
                 store: store,
                 connection: connection,
                 coordinator: overlay,
-                toggledState: OverlayHostView.toggledState(for: chrome),
+                toggledState: OverlayHostView.toggledState(for: chrome, store: store),
             )
         }
         // E12 WI-6 (float): drive the non-activating floating `NSPanel` from the FLOATING composer. Reading
@@ -218,15 +218,25 @@ public struct WorkspaceRootView: View {
         }
         .toolbar { iosToolbar }
         // The floating-overlay layer mounts on iOS too (palette / connect / remote-window picker / toasts read
-        // as a ZStack overlay on both platforms). No chrome-driven ✓ gutter yet on iOS, so the toggled-state
-        // predicate is the no-op default.
+        // as a ZStack overlay on both platforms). The ✓ gutter tracks the live chrome + the active pane's
+        // read-only / secure-entry state — the SAME predicate the macOS host uses (the palette is cross-platform).
         .overlay {
-            OverlayHostView(store: store, connection: connection, coordinator: overlay)
+            OverlayHostView(
+                store: store,
+                connection: connection,
+                coordinator: overlay,
+                toggledState: OverlayHostView.toggledState(for: chrome, store: store),
+            )
         }
         // ES-E9-5: wire the four `Details: *` palette commands to the live `chrome`/`details` on iOS too (the
         // palette is cross-platform; iOS has no NSEvent dispatcher, so the palette + this closure ARE the
-        // surface). The macOS path wires the same closure in `wireChromeToggles()`.
-        .onAppear { wireOverlaySelectDetailsTab() }
+        // surface). The macOS path wires the same closure in `wireChromeToggles()`. ALSO wire the per-pane
+        // hardware-keyboard interceptor's overlay toggles (iPad has no app-level NSEvent monitor, so a focused
+        // terminal's ⌘⇧P / ⇧⌘F / ⌘⇧O / ⌘J / ⌘⌃↩ / ⌘⌥J would otherwise die at a nil toggle).
+        .onAppear {
+            wireOverlaySelectDetailsTab()
+            wireOverlayKeyToggles()
+        }
         // E19/A18 (WI-7): drive the TABS panel auto-hide on iPad too — the SAME shared policy macOS runs. On a
         // tab-count TRANSITION or a Settings mode flip, apply `SidebarAutoHidePolicy` to `chrome.sidebarCollapsed`
         // (here mapped to the split's `columnVisibility` via `sidebarColumnVisibility`), only when the policy has
@@ -324,6 +334,25 @@ public struct WorkspaceRootView: View {
         }
     }
 
+    /// Hand the live store the overlay-toggle closures the per-pane hardware-keyboard ``TerminalKeyInterceptor``
+    /// threads into `route` (``WorkspaceStore/overlayKeyToggles``), each pointed at the injected
+    /// ``OverlayCoordinator``. iOS-relevant: the iPad has no app-level NSEvent monitor, so without these a
+    /// focused terminal's ⌘⇧P / ⇧⌘F / ⌘⇧O / ⌘J / ⌘⌃↩ / ⌘⌥J resolved to a `nil` toggle and did nothing. On
+    /// macOS the dispatcher owns these chords before the surface, so this is harmless there (the interceptor
+    /// never sees them) but keeps the seam single-sourced. The `[overlay]` capture mirrors the macOS dispatcher
+    /// wiring in ``AislopdeskClientApp``.
+    private func wireOverlayKeyToggles() {
+        store.overlayKeyToggles = WorkspaceOverlayKeyToggles(
+            palette: { [overlay] in overlay.togglePalette() },
+            cheatSheet: { [overlay] in overlay.toggleCheatSheet() },
+            globalSearch: { [overlay] in overlay.toggleGlobalSearch() },
+            jumpTo: { [overlay] in overlay.toggleOpenQuickly(filter: .current) },
+            openQuickly: { [overlay] in overlay.toggleOpenQuickly(filter: .all) },
+            sendToChat: { [overlay] in overlay.toggleSendToChat() },
+            peekReply: { [overlay] in overlay.togglePeekReply() },
+        )
+    }
+
     /// The single source of truth for what a `Details: *` jump DOES to the shared workspace state: switch the
     /// visible Details tab AND reveal the panel. Both install paths (the macOS chord/menu in
     /// `wireChromeToggles()` and the cross-platform overlay in `wireOverlaySelectDetailsTab()`) call this, so
@@ -390,6 +419,14 @@ public struct WorkspaceRootView: View {
                     .foregroundStyle(StatusPresentation.agentTint(activeAgentStatus))
                     .accessibilityLabel("Agent \(StatusPresentation.agentLabel(activeAgentStatus))")
             }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            // The command palette (⌘⇧P) — iOS has no app-level NSEvent monitor (macOS's `WorkspaceKeyDispatcher`
+            // owns that chord there), so without this button the palette — the cross-platform "command surface" —
+            // had NO entry point on iPad at all. The hardware-keyboard chord is also routed (see
+            // `wireOverlayKeyToggles()`); this is the touch affordance.
+            Button { overlay.togglePalette() } label: { Image(systemSymbol: .command) }
+                .help("Command Palette")
         }
         ToolbarItem(placement: .primaryAction) {
             // The `+` opens a focused `.chooser` pane (the in-pane chooser UX — same as macOS's titlebar),

@@ -22,7 +22,7 @@ public enum WorkspaceAction: Hashable, Sendable {
     // the title menu / context menu / palette only (otty ships no rename chord — ⌘⇧R is Toggle Details).
     case breakPaneToTab // ⌃⌘T — eject the active pane into a new tab
     case toggleFloat // ⌥⌘F — float / embed the active pane (zellij toggle-float; E5 relocated off ⌘⇧F)
-    case spawnFloating // ⌃⌘F — spawn a new floating scratch pane
+    case spawnFloating // ⌃⌘⇧F — spawn a new floating scratch pane (⌃⌘F is reserved for system Toggle Fullscreen)
 
     // Move pane (Zellij "move pane" — swap with the geometric neighbour)
     case movePaneLeft // ⌥⌘⇧←
@@ -423,12 +423,16 @@ public enum WorkspaceBindingRegistry {
             category: .panes, chord: KeyChord(character: "t", [.control, .command]),
             symbol: "rectangle.portrait.and.arrow.right", keywords: "eject move detach pop out promote",
         ),
-        // Floating panes (zellij toggle-float / new floating pane). ⌥⌘F floats/embeds the active pane; ⌃⌘F
-        // spawns a new floating scratch pane (the "F = float" family, ⌃⌘F free vs the used ⌃⌘O/R/N/T/=). The
-        // float-toggle was ⌘⇧F before E5, but otty fidelity gives ⌘⇧F to Global Search (`view.globalSearch`),
-        // so float-toggle RELOCATED to ⌥⌘F — verified free (`character: "f"` is only at find/float/spawnFloating/
-        // globalSearch, and ⌥⌘F is not in the ⌥⌘⇧+arrows move-pane family). Both verified unique by
-        // `TreeCommandRoutingTests`.
+        // Floating panes (zellij toggle-float / new floating pane). ⌥⌘F floats/embeds the active pane; ⌃⌘⇧F
+        // spawns a new floating scratch pane (the "F = float" family). The float-toggle was ⌘⇧F before E5, but
+        // otty fidelity gives ⌘⇧F to Global Search (`view.globalSearch`), so float-toggle RELOCATED to ⌥⌘F.
+        // New Floating was ⌃⌘F, but otty's reference keymap reserves ⌃⌘F for **Toggle Fullscreen**
+        // (reference__keybindings.md:54 / customization__custom-keybindings.md:46 — the macOS-native
+        // Enter/Exit Full Screen); the dispatcher leaves ⌃⌘F UNBOUND so it passes through to AppKit's standard
+        // "Enter Full Screen" View-menu item (no registry action, no menu shortcut to add). New Floating
+        // RELOCATED to ⌃⌘⇧F — verified free (⌃⌘⇧ is otherwise only the resize / jump-failed arrow + bracket
+        // family, no letter). The `f` family (⌘F find, ⇧⌘F global search, ⌥⌘F float-toggle, ⌃⌘⇧F new-floating)
+        // is verified unique by `TreeCommandRoutingTests`.
         WorkspaceBinding(
             id: "pane.toggleFloat", action: .toggleFloat, title: "Float Pane",
             category: .panes, chord: KeyChord(character: "f", [.option, .command]),
@@ -436,7 +440,7 @@ public enum WorkspaceBindingRegistry {
         ),
         WorkspaceBinding(
             id: "pane.spawnFloating", action: .spawnFloating, title: "New Floating Pane",
-            category: .panes, chord: KeyChord(character: "f", [.control, .command]),
+            category: .panes, chord: KeyChord(character: "f", [.control, .command, .shift]),
             symbol: "plus.rectangle.on.rectangle", keywords: "new floating scratch overlay terminal window",
         ),
         // Move pane (Zellij "move pane" — swap with the geometric neighbour). ⌥⌘⇧+arrows are the ⌥-keyed

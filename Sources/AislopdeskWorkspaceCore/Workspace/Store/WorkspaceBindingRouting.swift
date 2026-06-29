@@ -50,6 +50,14 @@ struct RouteToggles {
     /// closure; `nil` (the headless / test default) is a graceful no-op, never a dead chord (ES-E1-5 keeps
     /// the chord LIVE).
     var sendToChat: (() -> Void)?
+    /// Actuates a real window close (otty ⌘⇧W / View ▸ Close Window, E3 WI-4 audit fix). A macOS
+    /// `NSWindow.performClose(_:)` concern — so, like `pinWindow`, it is a passed-in closure; the live app
+    /// wires it to `window.performClose(nil)`, which fires the native `windowShouldClose` → the existing
+    /// `WindowCloseGate` confirmation (preserving the configured ``CloseConfirmationPolicy``). `nil` (the
+    /// headless / test default) falls back to ``WorkspaceStore/requestCloseWindow()`` so the action still
+    /// parks the confirmation rather than trapping — never a dead chord. (The bare-park path alone had no
+    /// SwiftUI observer, so ⌘⇧W never actually closed the window — the regression this routes around.)
+    var closeWindow: (() -> Void)?
 }
 
 public extension WorkspaceBindingRegistry {
@@ -72,13 +80,14 @@ public extension WorkspaceBindingRegistry {
         openQuickly: (() -> Void)? = nil,
         selectDetailsTab: ((DetailsPanelTab) -> Void)? = nil,
         togglePinWindow: (() -> Void)? = nil,
+        closeWindow: (() -> Void)? = nil,
     ) {
         let toggles = RouteToggles(
             palette: togglePalette, cheatSheet: toggleCheatSheet, find: toggleFind,
             peekReply: togglePeekReply, detailsPanel: toggleDetailsPanel,
             sidebar: toggleSidebar, globalSearch: toggleGlobalSearch, jumpTo: toggleJumpTo,
             openQuickly: openQuickly, selectDetailsTab: selectDetailsTab, pinWindow: togglePinWindow,
-            sendToChat: toggleSendToChat,
+            sendToChat: toggleSendToChat, closeWindow: closeWindow,
         )
         switch store.liveModel {
         case .tree: routeTree(action, to: store, toggles: toggles)
@@ -252,10 +261,16 @@ public extension WorkspaceBindingRegistry {
         case .prevTab: store.cycleTab(by: -1)
         case let .selectTab(n): store.selectTabNumber(n)
         case .closeTab: store.closeActiveTab()
-        // Close Window (otty ⌘⇧W, E7 carry-over #5): a window maps to a ``Session`` — request the window close,
-        // which parks `pendingWindowClose` behind the `closeConfirmWindow` policy. The macOS
-        // `WindowCloseConfirmationDelegate` (NSAlert) resolves the park; on iOS the in-app surface does.
-        case .closeWindow: store.requestCloseWindow()
+        // Close Window (otty ⌘⇧W / View ▸ Close Window, E7 carry-over #5; E3 WI-4 audit fix): a window maps to
+        // a ``Session``. ACTUATE the close through the passed-in closure — the live app wires it to
+        // `window.performClose(nil)`, which fires the native `windowShouldClose` → the existing
+        // ``WindowCloseGate`` confirmation (preserving the configured ``CloseConfirmationPolicy``). When NO
+        // closure is supplied (headless / test / iOS) fall back to ``WorkspaceStore/requestCloseWindow()`` so
+        // the action still PARKS the confirmation (the prior behaviour), never a dead chord. The audit found
+        // the bare-park path had no SwiftUI observer — under the default `.process` policy with an idle shell it
+        // parked `nil` and nothing closed — so ⌘⇧W was a dead control until this closure made it actuate.
+        case .closeWindow:
+            if let close = toggles.closeWindow { close() } else { store.requestCloseWindow() }
         // Reopen the most recently closed TAB (E1 ES-E1-5 chord; E3 WI-3 behaviour): pops the tree shell's
         // in-memory ``WorkspaceStore/recentlyClosedTabs`` LIFO and re-inserts the tab. A graceful no-op when
         // the LIFO is empty — live, never dead.
@@ -419,8 +434,11 @@ public extension WorkspaceBindingRegistry {
         case .nextTab,
              .prevTab,
              .selectTab,
-             .closeTab,
-             .closeWindow: break // no canvas tab/window model (the tree shell owns sessions)
+             .closeTab: break // no canvas tab model (the tree shell owns sessions)
+        // Close Window (E3 WI-4 audit fix): a window-level `NSWindow.performClose` concern (not a model op),
+        // so the canvas path forwards the SAME actuator closure as the tree path — a graceful no-op when none
+        // is supplied (the canvas test default), never a dead chord.
+        case .closeWindow: toggles.closeWindow?()
         case .toggleSyncInput: break // no canvas analogue (tab-scoped, tree-only)
         case .jumpToAttention: break // tree-only (no canvas attention rollup)
         // P4 Peek & Reply is a view overlay; the canvas path still toggles it (the overlay's own selector

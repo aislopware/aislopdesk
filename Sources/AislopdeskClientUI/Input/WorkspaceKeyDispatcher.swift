@@ -80,6 +80,12 @@ final class WorkspaceKeyDispatcher {
     /// is CHORD-LESS by default (otty ships no chord), so this fires only if a user binds a chord to the
     /// `.pinWindow` action; until installed `nil` ⇒ `.pinWindow` is a graceful no-op (never a dead chord).
     private var togglePinWindow: (() -> Void)?
+    /// E3 WI-4 (audit fix): the "Close Window" actuator (otty ⌘⇧W / View ▸ Close Window). A macOS
+    /// `NSWindow.performClose(_:)` concern, so it is installed late by the app via ``setCloseWindow(_:)`` once
+    /// the scene's window is captured; the app wires it to `window.performClose(nil)`, which fires the native
+    /// `windowShouldClose` → the existing window-close confirmation gate. Until installed `nil` ⇒ `.closeWindow`
+    /// falls back to `store.requestCloseWindow()` in `route` (a non-trapping graceful park), never a dead chord.
+    private var closeWindow: (() -> Void)?
 
     /// E11 review fix: a predicate the monitor consults BEFORE resolving any chord — `true` while a
     /// keyboard-capturing overlay (the Open-Quickly picker) is presented. The app NSEvent monitor is built to
@@ -172,6 +178,13 @@ final class WorkspaceKeyDispatcher {
     /// `chrome.togglePin()` on appear). Pin Window is chord-less by default, so this only fires when a user
     /// binds a chord to the `.pinWindow` action; until installed `.pinWindow` is a graceful no-op.
     func setTogglePinWindow(_ toggle: @escaping () -> Void) { togglePinWindow = toggle }
+
+    /// Install the "Close Window" actuator once the scene's `NSWindow` is captured (the app wires this to
+    /// `window.performClose(nil)`, which fires `windowShouldClose` → the existing window-close confirmation
+    /// gate). Until installed, `.closeWindow` falls back to `store.requestCloseWindow()` in `route` (a
+    /// non-trapping graceful park), so ⌘⇧W is never a dead chord. The closure makes ⌘⇧W ACTUATE a close
+    /// (the audit found the bare store-park path never closed anything — it had no SwiftUI observer).
+    func setCloseWindow(_ close: @escaping () -> Void) { closeWindow = close }
 
     /// Install the `.keyDown` local monitor. Returning `nil` from the handler SWALLOWS the event; returning
     /// the event passes it through to the focused responder (the terminal / video pane).
@@ -310,6 +323,7 @@ final class WorkspaceKeyDispatcher {
             openQuickly: toggleOpenQuickly,
             selectDetailsTab: selectDetailsTab,
             togglePinWindow: togglePinWindow,
+            closeWindow: closeWindow,
         )
     }
 }

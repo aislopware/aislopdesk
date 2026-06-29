@@ -1969,6 +1969,14 @@ public final class WorkspaceStore {
     /// the new panes pick it up). `@ObservationIgnored`: wiring, not view state.
     @ObservationIgnored public var workspaceKeyPrefix: KeyChord = .init(character: "a", [.control])
 
+    /// View-injected overlay-toggle closures the per-pane hardware-keyboard ``TerminalKeyInterceptor`` threads
+    /// into ``WorkspaceBindingRegistry/route`` (see ``routeInterceptedKey(_:)``). On iOS the per-pane
+    /// interceptor is the ONLY hardware-chord path (there is no app-level NSEvent monitor — macOS's
+    /// `WorkspaceKeyDispatcher` PREEMPTS the surface, so these stay the all-`nil` default there and the
+    /// dispatcher owns the overlay chords). `nil` members ⇒ a graceful no-op (the prior behaviour), so a
+    /// chord like ⌘⇧P / ⇧⌘F / ⌘⇧O / ⌘J / ⌘⌃↩ from a focused iPad terminal opens its overlay instead of dying.
+    @ObservationIgnored public var overlayKeyToggles = WorkspaceOverlayKeyToggles()
+
     /// Routes a child-requested notification from pane `id` to the app poster. Internal seam — wired
     /// onto each terminal pane's connection in ``reconcile()``.
     func handlePaneNotification(id: PaneID, paneTitle: String, title: String, body: String) {
@@ -2864,7 +2872,7 @@ public final class WorkspaceStore {
     /// The command/menu entry for "Float Pane" (resolves nothing extra — the toggle reads the active pane).
     public func toggleFloatActivePaneCommand() { toggleFloatActivePane() }
 
-    /// Spawns a BRAND-NEW floating scratch pane of `kind` into the active tab (the ⌃⌘F "New Floating Pane"
+    /// Spawns a BRAND-NEW floating scratch pane of `kind` into the active tab (the ⌃⌘⇧F "New Floating Pane"
     /// entry). Materialized by reconcile like any new leaf; it overlays the tiled layout centered.
     public func spawnFloatingPane(kind: PaneKind) {
         let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))

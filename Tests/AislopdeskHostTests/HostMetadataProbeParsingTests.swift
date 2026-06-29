@@ -238,5 +238,102 @@ final class HostMetadataProbeParsingTests: XCTestCase {
             "cap + 1 exceeds the budget so the drain stops and the builder trims an already-bounded tail",
         )
     }
+
+    // MARK: - resolveGitDiff (subdir-relativity + staged-base resolution; PURE via an injected git runner)
+
+    /// A fake `git` runner that maps an exact argv → captured stdout bytes, modelling a real repo's diff
+    /// output INDEPENDENTLY of the resolver (every expected diff body is a literal). An unmatched argv → nil
+    /// (a spawn miss / empty result), so the resolver's base ordering + toplevel rooting are exercised
+    /// without spinning a real `Process` (the hang-safety rule). The recorder also captures every argv so a
+    /// test can assert WHICH `-C <root>` the diff ran under.
+    private final class FakeGitRunner {
+        var replies: [[String]: Data]
+        private(set) var calls: [[String]] = []
+        init(_ replies: [[String]: Data]) { self.replies = replies }
+        func run(_ args: [String]) -> Data? {
+            calls.append(args)
+            return replies[args]
+        }
+    }
+
+    /// FINDING 1 (subdir): the pane cwd is a SUBDIR (`/repo/docs`) while the modified file is REPO-ROOT
+    /// relative (`README.md`). `rev-parse --show-toplevel` resolves `/repo`, and the diff MUST run rooted at
+    /// `/repo`, not `/repo/docs` — a root-relative pathspec under the subdir matches nothing. The fake only
+    /// answers a diff for `-C /repo`; on the pre-fix code (which ran `git -C <cwd> diff -- file`) the
+    /// `-C /repo/docs` argv has no reply → empty, so this assertion FAILS (revert-to-confirm-fail).
+    func testResolveGitDiffRunsAtRepoToplevelNotSubdirCwd() {
+        let body = Data("diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-old\n+new\n".utf8)
+        let runner = FakeGitRunner([
+            ["-C", "/repo/docs", "rev-parse", "--show-toplevel"]: Data("/repo\n".utf8),
+            ["-C", "/repo", "diff", "HEAD", "--", "README.md"]: body,
+        ])
+        let result = HostMetadataProbe.resolveGitDiff(cwd: "/repo/docs", file: "README.md", run: runner.run)
+        XCTAssertEqual(result, body, "a subdir cwd must diff the root-relative file at the repo toplevel")
+        XCTAssertTrue(
+            runner.calls.contains(["-C", "/repo", "diff", "HEAD", "--", "README.md"]),
+            "the diff must be rooted at the toplevel /repo, never the subdir cwd /repo/docs",
+        )
+        XCTAssertFalse(
+            runner.calls.contains { $0.contains("/repo/docs") && $0.contains("diff") },
+            "no diff invocation may be rooted at the subdir cwd",
+        )
+    }
+
+    /// FINDING 2 (staged): a STAGED/index-only file — `git diff` (unstaged) is EMPTY but `git diff HEAD`
+    /// shows the combined change. The fake returns empty for the plain unstaged base and the staged body for
+    /// `diff HEAD`; the resolver returns the HEAD body. Pre-fix code ran ONLY `git diff -- file` (no
+    /// HEAD/--cached) → empty → the medium finding's blank diff, so this FAILS on the un-fixed path.
+    func testResolveGitDiffShowsStagedChangeViaHeadBase() {
+        let staged = Data("diff --git a/staged.txt b/staged.txt\n@@ -0,0 +1 @@\n+line\n".utf8)
+        let runner = FakeGitRunner([
+            ["-C", "/repo", "rev-parse", "--show-toplevel"]: Data("/repo\n".utf8),
+            // The plain unstaged diff is empty for an index-only change (the pre-fix sole command).
+            ["-C", "/repo", "diff", "--", "staged.txt"]: Data(),
+            ["-C", "/repo", "diff", "HEAD", "--", "staged.txt"]: staged,
+        ])
+        let result = HostMetadataProbe.resolveGitDiff(cwd: "/repo", file: "staged.txt", run: runner.run)
+        XCTAssertEqual(result, staged, "a staged-only change must surface via the `diff HEAD` combined base")
+    }
+
+    /// The no-HEAD repo (a freshly `git init`+`git add`, no commit yet): `diff HEAD` errors (nil) and the
+    /// plain `diff` is empty, but the staged add lives in the index — `diff --cached` shows it. Proves the
+    /// resolver falls THROUGH the bases to `--cached` and that a nil base does not short-circuit the chain.
+    func testResolveGitDiffFallsThroughToCachedBase() {
+        let cached = Data("diff --git a/new.txt b/new.txt\n@@ -0,0 +1 @@\n+hello\n".utf8)
+        let runner = FakeGitRunner([
+            ["-C", "/repo", "rev-parse", "--show-toplevel"]: Data("/repo\n".utf8),
+            // `diff HEAD` ERRORS in a no-HEAD repo → no reply (run returns nil); the plain worktree diff is empty.
+            ["-C", "/repo", "diff", "--", "new.txt"]: Data(),
+            ["-C", "/repo", "diff", "--cached", "--", "new.txt"]: cached,
+        ])
+        let result = HostMetadataProbe.resolveGitDiff(cwd: "/repo", file: "new.txt", run: runner.run)
+        XCTAssertEqual(result, cached, "with no HEAD and an empty worktree diff, the staged add shows via --cached")
+    }
+
+    /// When the toplevel can't be resolved (non-repo / git missing → empty `rev-parse`), the resolver falls
+    /// back to rooting the diff at the pane `cwd` itself (best-effort), never dropping the diff entirely.
+    func testResolveGitDiffFallsBackToCwdWhenNoToplevel() {
+        let body = Data("diff body\n".utf8)
+        let runner = FakeGitRunner([
+            ["-C", "/loose", "rev-parse", "--show-toplevel"]: Data(), // empty → no toplevel
+            ["-C", "/loose", "diff", "HEAD", "--", "f.txt"]: body,
+        ])
+        let result = HostMetadataProbe.resolveGitDiff(cwd: "/loose", file: "f.txt", run: runner.run)
+        XCTAssertEqual(result, body, "an unresolvable toplevel falls back to rooting the diff at the pane cwd")
+    }
+
+    /// The argument PLAN is rooted at the given repoRoot for EVERY base and offers the three documented
+    /// bases in order (HEAD → worktree → --cached). Independent literals of git's documented flags, not read
+    /// back from the function — a regression that drops the staged base or re-roots at a cwd fails here.
+    func testGitDiffArgumentPlanBasesAndRoot() {
+        let plan = HostMetadataProbe.gitDiffArgumentPlan(repoRoot: "/r", file: "a/b.txt")
+        XCTAssertEqual(plan, [
+            ["-C", "/r", "diff", "HEAD", "--", "a/b.txt"],
+            ["-C", "/r", "diff", "--", "a/b.txt"],
+            ["-C", "/r", "diff", "--cached", "--", "a/b.txt"],
+        ])
+        XCTAssertTrue(plan.allSatisfy { $0[0] == "-C" && $0[1] == "/r" }, "every base must be rooted at repoRoot")
+        XCTAssertTrue(plan.contains { $0.contains("--cached") }, "a staged base must be present")
+    }
 }
 #endif

@@ -202,6 +202,96 @@ public struct ActionsPaletteSource: PaletteDataSource {
             shortcut: glyph(.secureKeyboardEntry), category: .shell,
             run: { store in store.toggleSecureKeyboardEntryInActivePane() },
         ),
+        // Reopen Closed Pane (otty ⌘⇧T) — pops the tree shell's recently-closed LIFO. A graceful no-op when
+        // the LIFO is empty. Glyph derives from the registry's `.reopenClosed` chord (no drift).
+        item(
+            id: "action.reopenClosed", icon: "arrow.uturn.backward", title: "Reopen Closed Pane",
+            keywords: "reopen closed tab pane restore undo recover",
+            shortcut: glyph(.reopenClosed), category: .tab,
+            run: { store in store.reopenLastClosedPane() },
+        ),
+        // Sync Input to All Panes (otty broadcast / Zellij ToggleActiveSyncTab; ⌘⇧I) — mirror keystrokes to
+        // every other pane in the active tab. A graceful no-op when there is no active tab.
+        item(
+            id: "action.toggleSyncInput", icon: "rectangle.3.group", title: "Sync Input to All Panes",
+            keywords: "sync broadcast send all panes input mirror simultaneous",
+            shortcut: glyph(.toggleSyncInput), category: .pane,
+            run: { store in
+                if let tabID = store.tree.activeSession?.activeTab?.id { store.toggleSyncInput(tabID: tabID) }
+            },
+        ),
+        // New Session (otty ⌃⌘N) — mints a fresh session whose first pane is an in-pane `.chooser` (Terminal /
+        // Remote window). Cross-platform (the palette is the iOS entry point — there is no ⌃⌘N there).
+        item(
+            id: "action.newSession", icon: "square.stack.3d.up", title: "New Session",
+            keywords: "new session window workspace",
+            shortcut: glyph(.newSession), category: .window,
+            run: { store in store.openChooserPane(.newSession) },
+        ),
+        // Close Window (otty Window ▸ Close Window, ⌘⇧W) — routes through the injected `closeWindow` closure
+        // (macOS `NSWindow.performClose` → the close-confirmation gate), falling back to the store's parked
+        // confirmation when no closure is installed (iOS / tests). The SAME actuation the ⌘⇧W chord + menu use.
+        PaletteItem(
+            id: "action.closeWindow", icon: "xmark.square", title: "Close Window",
+            subtitle: nil, keywords: "close window quit session", shortcut: glyph(.closeWindow),
+            filter: .actions, category: .window, action: .closeWindow,
+        ),
+        // Font size (otty ⌘= / ⌘- / ⌘0) — rescale the active pane's render font (the cell box resizes, so the
+        // remote PTY grid REFLOWS). A graceful no-op off a terminal active pane.
+        item(
+            id: "action.increaseFontSize", icon: "textformat.size.larger", title: "Increase Font Size",
+            keywords: "font size bigger increase larger zoom in text",
+            shortcut: glyph(.increaseFontSize), category: .view,
+            run: { store in store.increaseFontInActivePane() },
+        ),
+        item(
+            id: "action.decreaseFontSize", icon: "textformat.size.smaller", title: "Decrease Font Size",
+            keywords: "font size smaller decrease zoom out text",
+            shortcut: glyph(.decreaseFontSize), category: .view,
+            run: { store in store.decreaseFontInActivePane() },
+        ),
+        item(
+            id: "action.resetFontSize", icon: "textformat.size", title: "Reset Font Size",
+            keywords: "font size reset default actual zoom text",
+            shortcut: glyph(.resetFontSize), category: .view,
+            run: { store in store.resetFontInActivePane() },
+        ),
+        // Open Composer (E12, otty Agents; ⌘⇧E) — toggle the active pane's Composer. A graceful no-op off a
+        // terminal active pane. Under the AGENTS section (otty's Agents menu placement).
+        item(
+            id: "action.openComposer", icon: "square.and.pencil", title: "Open Composer",
+            keywords: "composer prompt write agent message draft compose",
+            shortcut: glyph(.composer), category: .agents,
+            run: { store in store.requestComposerInActivePane() },
+        ),
+        // Fork in Split Right / Down / New Tab (E13 ES-E13-7, otty `agents__fork-branch-session`; CLAUDE-ONLY).
+        // PALETTE / MENU ONLY (the registry rows ship `chord: nil`) — the fork is started inside the agent's
+        // own `/branch` command, then the user picks a destination here. Each routes through the SAME single
+        // ``WorkspaceBindingRegistry/route`` `performFork` path (no duplicated fork logic), which is a graceful
+        // no-op when the active pane is not an agent or no `/branch` was detected — so surfacing them is never a
+        // dead/destructive control. Surfacing them in the catalog makes the fork reachable cross-platform (iOS
+        // has no Agents menu). The glyph derives from the registry (chord: nil ⇒ nil ⇒ no hint chip).
+        forkItem(
+            id: "action.forkSplitRight",
+            icon: "rectangle.split.2x1",
+            title: "Fork in Split Right",
+            keywords: "fork branch session split right parallel claude /branch new pane",
+            action: .forkInSplitRight,
+        ),
+        forkItem(
+            id: "action.forkSplitDown",
+            icon: "rectangle.split.1x2",
+            title: "Fork in Split Down",
+            keywords: "fork branch session split down parallel claude /branch new pane",
+            action: .forkInSplitDown,
+        ),
+        forkItem(
+            id: "action.forkNewTab",
+            icon: "plus.rectangle.on.rectangle",
+            title: "Fork in New Tab",
+            keywords: "fork branch session new tab parallel claude /branch open",
+            action: .forkInNewTab,
+        ),
         // Connect to a (possibly non-default) host — the only entry point to the host/port editor besides
         // the top-bar status pill. No registry chord ⇒ no hint chip.
         PaletteItem(
@@ -273,6 +363,20 @@ public struct ActionsPaletteSource: PaletteDataSource {
         PaletteItem(
             id: id, icon: icon, title: title, keywords: keywords, shortcut: shortcut,
             filter: .actions, category: category, action: .store(run),
+        )
+    }
+
+    /// Build an AGENTS "Fork in…" row whose `.store` run-arm routes the given fork ``WorkspaceAction`` through
+    /// the central ``WorkspaceBindingRegistry/route`` (the SINGLE `performFork` path — no duplicated fork
+    /// logic). A graceful no-op when the active pane has no detected `/branch`. The glyph derives from the
+    /// registry (chord: nil ⇒ no hint chip). CLAUDE-ONLY.
+    private static func forkItem(
+        id: String, icon: String, title: String, keywords: String, action: WorkspaceAction,
+    ) -> PaletteItem {
+        PaletteItem(
+            id: id, icon: icon, title: title, keywords: keywords, shortcut: glyph(action),
+            filter: .actions, category: .agents,
+            action: .store { store in WorkspaceBindingRegistry.route(action, to: store) },
         )
     }
 }

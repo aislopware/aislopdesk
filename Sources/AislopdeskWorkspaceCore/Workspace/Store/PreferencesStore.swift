@@ -332,10 +332,12 @@ public final class PreferencesStore {
 
     /// Reset EVERY pref to its model default (the "Reset All Settings" affordance). The `didSet`s persist
     /// + re-apply each typed model, so the process returns to behavior-preserving defaults (empty overlay,
-    /// no sidecar override) exactly as a fresh install. ALSO clears the `.standard`-backed global
-    /// `Defaults.Keys` toggles (the orphan + new Controls/Scroll/Copy flags + On-Launch / new-tab-position /
-    /// working-dir / close-confirm / default-pane-kind) — a real "Reset All" must zero those too, not just
-    /// the five typed models (E7 / `customization__advanced-settings.md`).
+    /// no sidecar override) exactly as a fresh install. ALSO clears EVERY `.standard`-backed global
+    /// `Defaults.Keys` user setting — both the tab-reachable toggles AND the advanced-only privilege/IPC keys
+    /// — so a "Reset All" genuinely returns the whole catalog (every row the Advanced → All Settings list
+    /// advertises) to default, not just the five typed models (E7 / `customization__advanced-settings.md`).
+    /// Non-setting STATE keys (first-launch flag, CLI-installed flag, composer pin/height, window geometry,
+    /// tab sort/grouping) are deliberately excluded — they are app state, not user-editable settings.
     public func resetAll() {
         terminal = TerminalPreferences()
         video = VideoPreferences()
@@ -343,7 +345,8 @@ public final class PreferencesStore {
         keybindings = KeybindingPreferences()
         appearance = AppearancePreferences()
         rawOverrides = [:]
-        resetTabReachableDefaultsKeys()
+        Defaults.reset(Self.tabReachableDefaultsKeys)
+        Defaults.reset(Self.advancedOnlyDefaultsKeys)
         defaults.removeObject(forKey: SettingsKey.density)
     }
 
@@ -352,42 +355,69 @@ public final class PreferencesStore {
     /// (those not reachable from General, Shell, Appearance, or Key Bindings), leaving font, theme, and
     /// keybinding choices intact."
     ///
-    /// CRITICAL (data-loss footgun fixed): in aislopdesk the ONLY truly advanced-only keys are the `video` /
-    /// `agent` host flags and the raw `AISLOPDESK_*` overrides — they have no dedicated tab and surface only
-    /// in the Advanced panel. EVERY global `Defaults.Keys` toggle in ``globalTabReachableDefaultsKeys`` IS
-    /// reachable from a dedicated tab (On-Launch / notifications / privacy / default-pane-kind → General;
-    /// working-dir / new-tab-position / close-confirm → Shell; copy / paste / mouse / scroll / system-dialog
-    /// → Controls; hide-status-bar / command-dividers → Appearance; auto-switch-layouts / clipboard-history
-    /// → Agents). So a Reset-Advanced-Only must NOT touch any of them, or it destroys the user's
-    /// General/Shell/Controls/Appearance/Agents choices — which Reset-Advanced-Only promises to leave intact.
+    /// The advanced-only surface is the `video` / `agent` host flags, the raw `AISLOPDESK_*` overrides, AND
+    /// the privilege/IPC `Defaults.Keys` that live ONLY in the Advanced panel (``advancedOnlyDefaultsKeys`` —
+    /// title gates, the OSC-52 master + read/write tri-state, the agent-control IPC guards, the auto-progress
+    /// command list). EVERY key in ``tabReachableDefaultsKeys`` IS reachable from a dedicated tab (General /
+    /// Shell / Controls / Appearance / Agents / Recipes), so this must NOT touch any of them, or it destroys
+    /// the user's other-tab choices — which Reset-Advanced-Only promises to leave intact.
     public func resetAdvancedOnly() {
         video = VideoPreferences()
         agent = AgentPreferences()
         rawOverrides = [:]
+        Defaults.reset(Self.advancedOnlyDefaultsKeys)
     }
 
-    /// The `.standard`-backed global `Defaults.Keys` app-flag toggles a FULL "Reset All Settings" must clear.
-    /// They live in `Defaults.standard` (NOT the injected ``defaults`` — the per-instance store deliberately
-    /// stays isolated for tests), so they are reset via `Defaults.reset(_:)` regardless of the store's
-    /// injected store. EVERY key here is reachable from a dedicated settings tab (General / Shell / Controls /
-    /// Appearance / Agents), so it is **tab-reachable, NOT advanced-only** — Reset-Advanced-Only must leave
-    /// these intact (the spec keeps font/theme/keybinding AND the other tabs' choices), and only Reset-All
-    /// zeroes them.
-    private static let globalTabReachableDefaultsKeys: [Defaults.Keys] = [
-        .oscNotifications, .longCommandNotifications, .systemDialogPanes, .autoSwitchLayouts,
-        .redactSecrets, .recordClipboardHistory, .hideStatusBar, .showBlockDividers,
-        .defaultPaneKind, .newTabPosition,
-        .workingDirectoryNewWindow, .workingDirectoryNewTab, .workingDirectoryNewSplit,
-        .closeConfirmTab, .closeConfirmWindow, .onLaunch,
-        .copyOnSelect, .trimTrailingSpacesOnCopy, .pasteProtection, .mouseHideWhileTyping,
-        .focusFollowsMouse, .scrollOnOutput, .scrollMultiplier,
+    /// The `.standard`-backed global `Defaults.Keys` settings that ONLY surface in the Advanced panel (no
+    /// dedicated tab) — reset by BOTH ``resetAll()`` and ``resetAdvancedOnly()``. These are the E14 privilege
+    /// gates (`title*` / `clipboard-shell-controlled` / the OSC-52 read+write tri-state), the agent-control
+    /// IPC guards, and the auto-progress command list — every one of them is edited solely from the Advanced
+    /// → Privileges section / the All-Settings inline list, so resetting them never destroys a tab choice.
+    nonisolated static let advancedOnlyDefaultsKeys: [Defaults.Keys] = [
+        .titleShellControlled, .titleReport, .clipboardShellControlled,
+        .clipboardRead, .clipboardWrite,
+        .autoProgressCommands, .ipcAllowSendKeys, .ipcAllowSensitiveSessions,
     ]
 
-    /// Reset the tab-reachable global `Defaults.Keys` toggles to their declared defaults. Called ONLY by
-    /// ``resetAll()`` (Reset-Advanced-Only leaves every tab-reachable toggle intact).
-    private func resetTabReachableDefaultsKeys() {
-        Defaults.reset(Self.globalTabReachableDefaultsKeys)
-    }
+    /// The `.standard`-backed global `Defaults.Keys` settings reachable from a DEDICATED tab — reset by
+    /// ``resetAll()`` ONLY (Reset-Advanced-Only leaves every tab-reachable choice intact). They live in
+    /// `Defaults.standard` (NOT the injected ``defaults`` — the per-instance store stays test-isolated), so
+    /// they are reset via `Defaults.reset(_:)` regardless of the store's injected suite. The list is the
+    /// union of every user setting the otty `Settings` tabs edit; together with ``advancedOnlyDefaultsKeys``
+    /// it covers every key the Advanced → All Settings catalog advertises (pinned by
+    /// `AllSettingsCatalogTests`), so no advertised row survives a Reset All at a non-default value.
+    nonisolated static let tabReachableDefaultsKeys: [Defaults.Keys] = [
+        // General
+        .onLaunch, .redactSecrets, .defaultPaneKind, .closeConfirmTab, .closeConfirmWindow,
+        // Shell — notifications / sounds / agent-notify
+        .oscNotifications, .longCommandNotifications,
+        .notifyOnFinish, .notifyOnError, .notifyOnWatchFinish, .notifyWhileForeground,
+        .bounceDockIcon, .soundShellControlled, .soundOnErrorExit,
+        .agentNotifyTaskComplete, .agentNotifyAwaitInput,
+        // Shell — working directory + CLI prefix toggles
+        .workingDirectoryNewWindow, .workingDirectoryNewTab, .workingDirectoryNewSplit,
+        .omitCLIPrefix, .allowPrefixOverwrite,
+        // Controls — selection / copy / paste
+        .copyOnSelect, .trimTrailingSpacesOnCopy, .pasteProtection, .pasteBracketedSafe,
+        .clearSelectionOnTyping, .clearSelectionOnCopy, .backspaceDeletesSelection, .shiftArrowSelect,
+        // Controls — mouse / scroll
+        .mouseHideWhileTyping, .focusFollowsMouse, .scrollOnOutput, .scrollMultiplier,
+        .allowMouseCapture, .allowShiftClick, .clickToMove, .rightClickAction,
+        .scrollPastLastLine, .scrollPastFirstLine, .smoothScroll, .undoAtPrompt,
+        // Controls — link detection + hint patterns
+        .linkDetection, .linkCmdClick, .linkCmdShiftClick, .autoDetectLinkSchemes, .customLinkSchemes,
+        .hintPatterns, .hintPatternActions,
+        // Controls — system dialog + secure input
+        .systemDialogPanes, .autoSecureInput, .secureInputIndicator,
+        // Appearance
+        .newTabPosition, .showBlockDividers, .hideStatusBar, .autoHideTabsPanel,
+        .dockIconAnimateProgress, .dockIconErrorBadge,
+        // Agents
+        .autoSwitchLayouts, .recordClipboardHistory,
+        .agentBadgeWhileProcessing, .agentBadgeWhenComplete, .agentBadgeWhenAwaitingInput,
+        // Recipes
+        .replayModeSaved, .replayModeFiles, .snippetAutoExpand,
+    ]
 
     // MARK: Block bookmarks (WB3 — per-session starred command blocks)
 

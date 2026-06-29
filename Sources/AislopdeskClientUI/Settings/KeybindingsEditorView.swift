@@ -30,6 +30,12 @@ struct KeybindingsEditorView: View {
     /// records at a time so the local key monitor has a single unambiguous target.
     @State private var recordingID: String?
 
+    /// The live "Search key bindings" query (otty filters by action name OR chord). Empty ⇒ show all rows.
+    @State private var searchQuery: String = ""
+
+    /// Whether the "Reset all key bindings?" confirmation is showing (otty's global reset, no per-row revert).
+    @State private var showResetConfirm: Bool = false
+
     var body: some View {
         let conflicts = store.keybindingConflicts()
         // The set of binding ids that collide with at least one other id on the same chord (for the badge).
@@ -37,6 +43,7 @@ struct KeybindingsEditorView: View {
 
         VStack(alignment: .leading, spacing: Otty.Metric.space3) {
             header
+            searchField
             if !conflicts.isEmpty {
                 conflictBanner(conflicts)
             }
@@ -59,24 +66,79 @@ struct KeybindingsEditorView: View {
             }
         }
         .padding(Otty.Metric.space4)
+        .confirmationDialog(
+            "Reset all key bindings?",
+            isPresented: $showResetConfirm,
+            titleVisibility: .visible,
+        ) {
+            Button("Reset to Default", role: .destructive) { resetAllOverrides() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This clears every customized shortcut and restores the defaults.")
+        }
         #if os(macOS)
-            .background(KeyCaptureMonitor(isActive: recordingID != nil) { event in
-                handleCapturedEvent(event)
-            })
+        .background(KeyCaptureMonitor(isActive: recordingID != nil) { event in
+            handleCapturedEvent(event)
+        })
         #endif
     }
 
     // MARK: Sections
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
-            Text("Keyboard Shortcuts")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
-            Text("Click a shortcut to record a replacement. Single-key chords only.")
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                Text("Keyboard Shortcuts")
+                    .font(.system(size: Otty.Typeface.body, weight: .semibold))
+                    .foregroundStyle(Otty.Text.primary)
+                Text("Click a shortcut to record a replacement; Backspace clears it, Esc cancels.")
+                    .font(.system(size: Otty.Typeface.footnote))
+                    .foregroundStyle(Otty.Text.secondary)
+            }
+            Spacer(minLength: Otty.Metric.space2)
+            // otty: the "Reset to Default" button appears in the top-right ONLY once a binding has been
+            // customized; clicking it confirms then clears ALL overrides (there is NO per-row revert).
+            if KeybindingsEditorModel.hasCustomizations(store.keybindings) {
+                Button("Reset to Default") { showResetConfirm = true }
+                    .buttonStyle(.plain)
+                    .font(.system(size: Otty.Typeface.footnote, weight: .medium))
+                    .foregroundStyle(Otty.State.accent)
+                    .help("Reset every customized shortcut to its default")
+            }
+        }
+    }
+
+    /// otty's full-width rounded "Search key bindings" field (magnifier + clear button) that filters rows by
+    /// action name OR chord — see `KeybindingsEditorModel.matches`.
+    private var searchField: some View {
+        HStack(spacing: Otty.Metric.space2) {
+            Image(systemName: "magnifyingglass")
                 .font(.system(size: Otty.Typeface.footnote))
                 .foregroundStyle(Otty.Text.secondary)
+            TextField("Search key bindings", text: $searchQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: Otty.Typeface.base))
+                .foregroundStyle(Otty.Text.primary)
+            if !searchQuery.isEmpty {
+                Button { searchQuery = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: Otty.Typeface.footnote))
+                        .foregroundStyle(Otty.Text.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
+            }
         }
+        .padding(.horizontal, Otty.Metric.space2)
+        .padding(.vertical, Otty.Metric.space1)
+        .background(
+            Otty.Surface.element,
+            in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall, style: .continuous),
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall, style: .continuous)
+                .strokeBorder(Otty.Line.subtle, lineWidth: 1),
+        )
     }
 
     private func conflictBanner(_ conflicts: [String: [String]]) -> some View {
@@ -102,7 +164,6 @@ struct KeybindingsEditorView: View {
 
     private func row(for binding: WorkspaceBinding, isConflicting: Bool) -> some View {
         let isRecording = recordingID == binding.id
-        let isOverridden = store.keybindings.chord(for: binding.id) != nil
         return HStack(spacing: Otty.Metric.space2) {
             Image(systemName: binding.symbol)
                 .font(.system(size: Otty.Metric.iconSize))
@@ -119,18 +180,9 @@ struct KeybindingsEditorView: View {
                     .help("This shortcut conflicts with another command")
             }
             Spacer(minLength: Otty.Metric.space2)
+            // otty has NO per-row revert — the chord chip records a replacement; Backspace (while recording)
+            // clears it, and the header's "Reset to Default" reverts everything at once.
             chordChip(for: binding, isRecording: isRecording)
-            if isOverridden {
-                Button {
-                    clearOverride(binding.id)
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: Otty.Typeface.small))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Otty.Text.icon)
-                .help("Reset to default")
-            }
         }
         .padding(.vertical, 4)
     }
@@ -163,16 +215,27 @@ struct KeybindingsEditorView: View {
     // MARK: Data helpers
 
     /// The bindings in `category`, excluding the synthetic ⌘1…⌘9 representative (it has no single chord to
-    /// rebind and the real per-digit chords are an implementation detail). Reads `allBindings` so the
-    /// generated select-tab chords are present but the display-only representative is filtered out.
+    /// rebind and the real per-digit chords are an implementation detail) and any row filtered OUT by the live
+    /// search query. Reads `allBindings` so the generated select-tab chords are present but the display-only
+    /// representative is filtered out.
     private func bindings(in category: WorkspaceAction.Category) -> [WorkspaceBinding] {
         WorkspaceBindingRegistry.allBindings.filter {
-            $0.category == category && $0.id != WorkspaceBindingRegistry.selectTabRepresentative.id
+            $0.category == category
+                && $0.id != WorkspaceBindingRegistry.selectTabRepresentative.id
+                && KeybindingsEditorModel.matches(
+                    $0, effectiveChord: effectiveChord(for: $0), query: searchQuery,
+                )
         }
     }
 
     private func binding(forID id: String) -> WorkspaceBinding? {
         WorkspaceBindingRegistry.allBindings.first { $0.id == id }
+    }
+
+    /// The binding's EFFECTIVE chord (user override if it maps, else the registry default) — the same source
+    /// `effectiveGlyph` renders, surfaced as a `KeyChord` so the search filter can match its glyph + canonical.
+    private func effectiveChord(for binding: WorkspaceBinding) -> KeyChord? {
+        WorkspaceBindingRegistry.resolvedChord(for: binding.action, overrides: store.keybindings)
     }
 
     /// The glyph for the binding's EFFECTIVE chord: the user override (if it maps) else the registry
@@ -202,6 +265,14 @@ struct KeybindingsEditorView: View {
         store.keybindings = KeybindingPreferences(overrides: overrides)
     }
 
+    /// otty's global "Reset to Default": clear EVERY customization (single-chord, sequence, text-byte, and
+    /// unbind overrides) at once by assigning a fresh empty model — the single persistence channel republishes
+    /// the cleared overrides to the live registry.
+    private func resetAllOverrides() {
+        recordingID = nil
+        store.keybindings = KeybindingPreferences()
+    }
+
     /// Write `chord` as the override for `id` and stop recording. The single persistence channel: setting
     /// `store.keybindings` republishes to `WorkspaceBindingRegistry.activeOverrides` (D6 invariant).
     private func setOverride(_ chord: KeybindingPreferences.KeyChord, for id: String) {
@@ -212,50 +283,31 @@ struct KeybindingsEditorView: View {
     }
 
     #if os(macOS)
-    /// Map a captured `NSEvent` to a `KeybindingPreferences.KeyChord` and store it for the recording row.
-    /// Escape cancels (no write); an event with no usable base key is ignored (stays in recording mode).
+    /// Map a captured `NSEvent` to a ``KeybindingCaptureOutcome`` (pure, headless logic in
+    /// `KeybindingCapture`) and apply it to the recording row: Escape cancels (no write), Backspace /
+    /// Forward-Delete CLEAR the binding (otty unbind), a usable chord is recorded, and an unmappable key is
+    /// ignored (stays in recording mode).
     private func handleCapturedEvent(_ event: NSEvent) {
         guard let id = recordingID else { return }
-        // Escape (keyCode 53) cancels recording without writing an override.
-        if event.keyCode == 53 {
-            recordingID = nil
-            return
-        }
-        guard let key = Self.baseKey(for: event) else { return }
         let mods = event.modifierFlags
-        let chord = KeybindingPreferences.KeyChord(
-            key: key,
+        switch KeybindingCapture.outcome(
+            keyCode: event.keyCode,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
             command: mods.contains(.command),
             shift: mods.contains(.shift),
             option: mods.contains(.option),
             control: mods.contains(.control),
-        )
-        setOverride(chord, for: id)
-    }
-
-    /// The normalized base-key token for an `NSEvent` (a lowercased single character or a named key the
-    /// `KeybindingPreferences.KeyChord` → registry mapping recognises). `nil` for a pure modifier / unmapped
-    /// key so the caller keeps recording.
-    private static func baseKey(for event: NSEvent) -> String? {
-        switch event.keyCode {
-        case 36,
-             76: return "return" // Return / keypad Enter
-        case 48: return "tab"
-        case 123: return "left"
-        case 124: return "right"
-        case 126: return "up"
-        case 125: return "down"
-        case 116: return "pageup"
-        case 121: return "pagedown"
-        case 115: return "home"
-        case 119: return "end"
-        default: break
+        ) {
+        case .cancel:
+            recordingID = nil
+        case .clear:
+            clearOverride(id)
+            recordingID = nil
+        case .ignore:
+            break // no usable chord yet — keep recording
+        case let .bind(chord):
+            setOverride(chord, for: id)
         }
-        // `charactersIgnoringModifiers` gives the base key independent of shift/option (so ⇧2 is "2").
-        guard let chars = event.charactersIgnoringModifiers, let first = chars.first else { return nil }
-        // Reject control characters / whitespace; accept a single printable char (lowercased by KeyChord).
-        guard chars.count == 1, !first.isWhitespace, first.isASCII || first.isLetter else { return nil }
-        return String(first).lowercased()
     }
     #endif
 }

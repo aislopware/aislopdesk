@@ -9,6 +9,7 @@
 
 import XCTest
 @testable import AislopdeskClientUI
+@testable import AislopdeskWorkspaceCore
 
 @MainActor
 final class WorkspaceChromePinTests: XCTestCase {
@@ -54,17 +55,18 @@ final class WorkspaceChromePinTests: XCTestCase {
     /// drop the `case "action.pinWindow": chrome.pinned` arm and the resolver falls to the `default: false`,
     /// so the ✓ never lights and `pinned == true` below fails.
     func testToggledStateLightsPinRowWhenPinned() {
+        let store = WorkspaceStore(liveModel: .tree, makeSession: { MountTestPaneSession($0) })
         let chrome = WorkspaceChromeState()
         let pinItem = PaletteItem(
             id: "action.pinWindow", icon: "pin", title: "Pin Window",
             subtitle: nil, shortcut: nil, filter: .actions, category: .window, action: .togglePinWindow,
         )
 
-        let unpinnedResolver = OverlayHostView.toggledState(for: chrome)
+        let unpinnedResolver = OverlayHostView.toggledState(for: chrome, store: store)
         XCTAssertFalse(unpinnedResolver(pinItem), "an unpinned window shows no ✓ on the Pin Window row")
 
         chrome.togglePin() // pin it
-        let pinnedResolver = OverlayHostView.toggledState(for: chrome)
+        let pinnedResolver = OverlayHostView.toggledState(for: chrome, store: store)
         XCTAssertTrue(pinnedResolver(pinItem), "a pinned window lights the ✓ on the Pin Window row")
     }
 }

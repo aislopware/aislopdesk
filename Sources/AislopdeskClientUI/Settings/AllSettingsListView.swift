@@ -81,6 +81,29 @@ struct AllSettingsListView: View {
     @Default(.linkCmdShiftClick) private var linkCmdShiftClick
     @Default(.autoDetectLinkSchemes) private var autoDetectLinkSchemes
     @Default(.customLinkSchemes) private var customLinkSchemes
+    // Notification / sound / agent-notify keys (otty Shell → NOTIFICATION + SOUND groups). They have a richer
+    // dedicated control on the Shell tab, but — exactly like `copyOnSelect` (Controls) and `oscNotifications`
+    // (Shell) above — the All-Settings list mirrors them inline so every `.advancedOnly` row is editable here
+    // rather than falling to a dead default-value label (the rows are kept in
+    // `AllSettingsCatalog.inlineEditableKeys`).
+    @Default(.notifyOnFinish) private var notifyOnFinish
+    @Default(.notifyOnError) private var notifyOnError
+    @Default(.notifyOnWatchFinish) private var notifyOnWatchFinish
+    @Default(.notifyWhileForeground) private var notifyWhileForeground
+    @Default(.bounceDockIcon) private var bounceDockIcon
+    @Default(.soundShellControlled) private var soundShellControlled
+    @Default(.soundOnErrorExit) private var soundOnErrorExit
+    @Default(.agentNotifyTaskComplete) private var agentNotifyTaskComplete
+    @Default(.agentNotifyAwaitInput) private var agentNotifyAwaitInput
+    // E14 privilege surface (title gates + OSC-52 master) + IPC guards + auto-progress list — these are the
+    // genuinely advanced-only keys (Advanced → Privileges); the IPC + auto-progress keys have NO other edit
+    // surface, so the inline control here is their ONLY editor.
+    @Default(.titleShellControlled) private var titleShellControlled
+    @Default(.titleReport) private var titleReport
+    @Default(.clipboardShellControlled) private var clipboardShellControlled
+    @Default(.ipcAllowSendKeys) private var ipcAllowSendKeys
+    @Default(.ipcAllowSensitiveSessions) private var ipcAllowSensitiveSessions
+    @Default(.autoProgressCommands) private var autoProgressCommands
 
     private var filtered: [AllSettingsCatalog.SettingEntry] { AllSettingsCatalog.filter(query) }
 
@@ -318,6 +341,36 @@ struct AllSettingsListView: View {
         case SettingsKey.customLinkSchemes:
             // Read-only live summary here — the full editor lives on the Controls → Link Schemes section.
             AnyView(Text(customLinkSchemes.isEmpty ? "None" : customLinkSchemes.joined(separator: ", "))
+                .font(.system(size: Otty.Typeface.footnote))
+                .foregroundStyle(Otty.Text.secondary)
+                .lineLimit(1))
+        // Notifications / sounds / agent-notify (otty Shell groups) — plain live toggles, no config rebuild.
+        case SettingsKey.notifyOnFinish: boolControl($notifyOnFinish)
+        case SettingsKey.notifyOnError: boolControl($notifyOnError)
+        case SettingsKey.notifyOnWatchFinish: boolControl($notifyOnWatchFinish)
+        case SettingsKey.notifyWhileForegroundKey:
+            menuPicker($notifyWhileForeground) {
+                ForEach(NotifyWhileForeground.allCases, id: \.self) { mode in
+                    Text(mode.displayLabel).tag(mode)
+                }
+            }
+        case SettingsKey.bounceDockIcon: boolControl($bounceDockIcon)
+        case SettingsKey.soundShellControlled: boolControl($soundShellControlled)
+        case SettingsKey.soundOnErrorExit: boolControl($soundOnErrorExit)
+        case SettingsKey.agentNotifyTaskComplete: boolControl($agentNotifyTaskComplete)
+        case SettingsKey.agentNotifyAwaitInput: boolControl($agentNotifyAwaitInput)
+        // E14 privilege surface. `clipboardShellControlled` is the OSC-52 master gate that feeds the libghostty
+        // clipboard-read/write tokens, so it refreshes the live config; the title gates + IPC guards are read
+        // fire-time (no config rebuild).
+        case SettingsKey.titleShellControlled: boolControl($titleShellControlled)
+        case SettingsKey.titleReport: boolControl($titleReport)
+        case SettingsKey.clipboardShellControlled: boolControl($clipboardShellControlled, refresh: true)
+        case SettingsKey.ipcAllowSendKeys: boolControl($ipcAllowSendKeys)
+        case SettingsKey.ipcAllowSensitiveSessions: boolControl($ipcAllowSensitiveSessions)
+        case SettingsKey.autoProgressCommands:
+            // Read-only live summary — the list shows what the host's auto-progress matcher is driven from;
+            // editing the prefix list is a power-user JSON / env action (no inline list editor by design).
+            AnyView(Text(autoProgressCommands.isEmpty ? "None" : "\(autoProgressCommands.count) commands")
                 .font(.system(size: Otty.Typeface.footnote))
                 .foregroundStyle(Otty.Text.secondary)
                 .lineLimit(1))

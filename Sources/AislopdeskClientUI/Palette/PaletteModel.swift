@@ -62,6 +62,7 @@ public enum PaletteCategory: String, CaseIterable, Sendable, Hashable {
     case tab = "Tab"
     case view = "View"
     case shell = "Shell"
+    case agents = "Agents"
     case settings = "Settings"
 
     /// The section-header label (otty title case; the palette view uppercases it for display).
@@ -69,9 +70,10 @@ public enum PaletteCategory: String, CaseIterable, Sendable, Hashable {
 
     /// The fixed display order: Working Directory leads (it OWNS the cwd badge in the view, per the
     /// screenshot), then otty's verb groups. An empty category is skipped by the mixer / zero-state, so it
-    /// never renders an empty header. (Shell carries the E17 "Read Only" verb — otty's "Shell → Read Only".)
+    /// never renders an empty header. (Shell carries the E17 "Read Only" verb — otty's "Shell → Read Only";
+    /// Agents carries the E12/E13 "Open Composer" + the three "Fork in…" verbs — otty's Agents menu.)
     public static let commandOrder: [Self] = [
-        .workingDirectory, .window, .pane, .tab, .view, .shell, .settings,
+        .workingDirectory, .window, .pane, .tab, .view, .shell, .agents, .settings,
     ]
 }
 
@@ -118,6 +120,13 @@ public enum PaletteAction: Sendable {
     /// read), so the palette row's ✓ gutter (resolved in ``OverlayHostView/toggledState(for:)``) tracks the
     /// real pinned state. A checkable toggle (ES-E2-3); a documented no-op on iOS (no window level).
     case togglePinWindow
+    /// Close the active window (otty Window ▸ Close Window). Routed by the overlay coordinator to the injected
+    /// ``OverlayCoordinator/closeWindow`` closure (bound on macOS to `NSWindow.performClose(nil)` → the native
+    /// `windowShouldClose` close-confirmation gate, preserving the configured ``CloseConfirmationPolicy``).
+    /// `nil` (iOS / tests / a pre-`onAppear` scene) falls back to ``WorkspaceStore/requestCloseWindow()`` so
+    /// the row PARKS the confirmation rather than trapping — the SAME fallback the ⌘⇧W route arm uses, never a
+    /// dead control.
+    case closeWindow
     /// A non-interactable separator/zero row.
     case noOp
 }

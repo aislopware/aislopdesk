@@ -692,6 +692,47 @@ public enum AllSettingsCatalog {
         ),
     ]
 
+    /// The `.advancedOnly` keys that `AllSettingsListView` renders with a real INLINE editor (toggle /
+    /// picker / stepper / live summary) — the contract the view's `inlineControl(for:)` switch must cover.
+    /// Kept in lockstep with that switch (any key listed here has a case; any `.advancedOnly` catalog row
+    /// missing from here would fall to the view's `default:` arm = a DEAD static default-value label with no
+    /// control). `AllSettingsCatalogTests.testEveryAdvancedOnlyRowHasInlineControl` pins that this set covers
+    /// EVERY `.advancedOnly` entry, so a newly-added advanced row without an inline control fails the gate.
+    /// Lives here (pure, headless) so the contract is testable without instantiating the SwiftUI view.
+    public static let inlineEditableKeys: Set<String> = [
+        // General
+        SettingsKey.onLaunchKey, SettingsKey.redactSecrets, SettingsKey.defaultPaneKindKey,
+        SettingsKey.closeConfirmTabKey, SettingsKey.closeConfirmWindowKey,
+        // Shell — notifications / sounds / agent-notify
+        SettingsKey.oscNotifications, SettingsKey.longCommandNotifications,
+        SettingsKey.notifyOnFinish, SettingsKey.notifyOnError, SettingsKey.notifyOnWatchFinish,
+        SettingsKey.notifyWhileForegroundKey, SettingsKey.bounceDockIcon,
+        SettingsKey.soundShellControlled, SettingsKey.soundOnErrorExit,
+        SettingsKey.agentNotifyTaskComplete, SettingsKey.agentNotifyAwaitInput,
+        // Shell — working directory
+        SettingsKey.workingDirectoryNewWindowKey, SettingsKey.workingDirectoryNewTabKey,
+        SettingsKey.workingDirectoryNewSplitKey,
+        // Controls — selection / copy / paste
+        SettingsKey.copyOnSelect, SettingsKey.trimTrailingSpacesOnCopy, SettingsKey.pasteProtection,
+        SettingsKey.pasteBracketedSafe, SettingsKey.clearSelectionOnTyping, SettingsKey.clearSelectionOnCopy,
+        SettingsKey.backspaceDeletesSelection, SettingsKey.shiftArrowSelect,
+        // Controls — mouse / scroll
+        SettingsKey.mouseHideWhileTyping, SettingsKey.focusFollowsMouse, SettingsKey.scrollOnOutput,
+        SettingsKey.scrollMultiplier, SettingsKey.allowMouseCapture, SettingsKey.allowShiftClickKey,
+        SettingsKey.clickToMove, SettingsKey.rightClickActionKey, SettingsKey.scrollPastLastLineKey,
+        SettingsKey.scrollPastFirstLineKey, SettingsKey.smoothScroll, SettingsKey.undoAtPrompt,
+        // Controls — links + system dialog
+        SettingsKey.linkDetection, SettingsKey.linkCmdClickKey, SettingsKey.linkCmdShiftClickKey,
+        SettingsKey.autoDetectLinkSchemesKey, SettingsKey.customLinkSchemes, SettingsKey.systemDialogPanes,
+        // Advanced — privilege gates + OSC-52 master + read/write + IPC + auto-progress
+        SettingsKey.clipboardReadKey, SettingsKey.clipboardWriteKey, SettingsKey.titleShellControlled,
+        SettingsKey.titleReport, SettingsKey.clipboardShellControlled, SettingsKey.ipcAllowSendKeys,
+        SettingsKey.ipcAllowSensitiveSessions, SettingsKey.autoProgressCommands,
+        // Appearance + Agents
+        SettingsKey.newTabPositionKey, SettingsKey.showBlockDividers, SettingsKey.hideStatusBar,
+        SettingsKey.autoSwitchLayouts, SettingsKey.recordClipboardHistory,
+    ]
+
     /// Filter the catalog by a search query, matching (case-insensitively) against the key, label,
     /// description, and keywords — the faithful clone of otty's "matching against key name, label,
     /// description, and keywords" (a substring filter, not fuzzy; the spec narrows on `cursor` / `scrollback`

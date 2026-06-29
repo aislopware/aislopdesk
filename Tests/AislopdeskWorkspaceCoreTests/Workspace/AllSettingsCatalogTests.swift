@@ -1,4 +1,5 @@
 import AislopdeskVideoProtocol
+import Defaults
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
@@ -7,14 +8,17 @@ import XCTest
 @MainActor
 final class AllSettingsCatalogTests: XCTestCase {
     // The global `Defaults.Keys` the reset tests flip live in `UserDefaults.standard`; clean them up so the
-    // dev machine's real defaults are not polluted (the catalog/filter tests touch no defaults at all).
-    private let touchedKeys = [
-        SettingsKey.copyOnSelect, SettingsKey.hideStatusBar, SettingsKey.density,
-        SettingsKey.oscNotifications, SettingsKey.autoSwitchLayouts,
-    ]
+    // dev machine's real defaults are not polluted (the catalog/filter tests touch no defaults at all). The
+    // reset-completeness tests flip keys across the whole settings catalog, so the cleanup resets BOTH
+    // PreferencesStore reset sets (every tab-reachable + advanced-only key) plus the density string key.
+    private nonisolated static func cleanDefaults() {
+        UserDefaults.standard.removeObject(forKey: SettingsKey.density)
+        Defaults.reset(PreferencesStore.tabReachableDefaultsKeys)
+        Defaults.reset(PreferencesStore.advancedOnlyDefaultsKeys)
+    }
 
-    override func setUp() { touchedKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) } }
-    override func tearDown() { touchedKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) } }
+    override nonisolated func setUp() { Self.cleanDefaults() }
+    override nonisolated func tearDown() { Self.cleanDefaults() }
 
     // MARK: - Filter
 
@@ -251,5 +255,140 @@ final class AllSettingsCatalogTests: XCTestCase {
         XCTAssertEqual(store.appearance, AppearancePreferences())
         XCTAssertTrue(store.rawOverrides.isEmpty)
         XCTAssertFalse(SettingsKey.hideStatusBarEnabled, "Reset All clears the orphan toggle")
+    }
+
+    /// "Reset All Settings" returns the keys the old 23-entry hand-list MISSED — the ~35 advanced + Controls +
+    /// notification keys that were never reset. Asserts a representative spread from EVERY previously-missed
+    /// cluster returns to its declared default: a Controls enum (`rightClickAction`), a Controls bool
+    /// (`smoothScroll`), a Shell notification bool (`notifyOnFinish` default OFF flipped ON), a privilege
+    /// gate (`titleShellControlled`), an OSC-52 tri-state (`clipboardRead`), an IPC guard (`ipcAllowSendKeys`),
+    /// and the auto-progress list (`autoProgressCommands`). Revert-to-confirm-fail: on the pre-fix
+    /// `resetAll()` (which reset only the 23-key `globalTabReachableDefaultsKeys` + the typed models) NONE of
+    /// these is cleared, so every assertion below fails.
+    func testResetAllClearsPreviouslyMissedAdvancedAndControlsKeys() {
+        let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil, applyOnInit: false)
+        Defaults[.rightClickAction] = .copy // default .contextMenu
+        Defaults[.smoothScroll] = false // default true
+        Defaults[.notifyOnFinish] = true // default false
+        Defaults[.titleShellControlled] = false // default true
+        Defaults[.clipboardRead] = .deny // default .ask
+        Defaults[.ipcAllowSendKeys] = true // default false
+        Defaults[.autoProgressCommands] = ["only-one"] // default the built-in list
+
+        store.resetAll()
+
+        XCTAssertEqual(Defaults[.rightClickAction], .contextMenu, "rightClickAction restored by Reset All")
+        XCTAssertTrue(Defaults[.smoothScroll], "smoothScroll restored by Reset All")
+        XCTAssertFalse(Defaults[.notifyOnFinish], "notifyOnFinish restored by Reset All")
+        XCTAssertTrue(Defaults[.titleShellControlled], "titleShellControlled restored by Reset All")
+        XCTAssertEqual(Defaults[.clipboardRead], .ask, "clipboardRead restored by Reset All")
+        XCTAssertFalse(Defaults[.ipcAllowSendKeys], "ipcAllowSendKeys restored by Reset All")
+        XCTAssertEqual(
+            Defaults[.autoProgressCommands], SettingsKey.autoProgressCommandsBuiltIn,
+            "autoProgressCommands restored by Reset All",
+        )
+    }
+
+    /// "Reset Advanced Only" now clears the genuinely advanced-only privilege/IPC/auto-progress keys it sits
+    /// beside in the Advanced panel — `title*`, the OSC-52 master (`clipboardShellControlled`) + read/write
+    /// tri-state, the IPC guards, and the auto-progress list — while STILL leaving every tab-reachable choice
+    /// intact. Revert-to-confirm-fail: the pre-fix `resetAdvancedOnly()` reset only video/agent/rawOverrides,
+    /// so the advanced asserts fail; meanwhile `copyOnSelect` (a Controls toggle) must survive both before and
+    /// after, guarding against an over-broad reset that would re-introduce the data-loss footgun.
+    func testResetAdvancedOnlyClearsAdvancedPrivilegeKeys() {
+        let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil, applyOnInit: false)
+        // Advanced-only keys at non-default values.
+        Defaults[.titleShellControlled] = false // default true
+        Defaults[.titleReport] = true // default false
+        Defaults[.clipboardShellControlled] = false // default true
+        Defaults[.clipboardWrite] = .deny // default .allow
+        Defaults[.ipcAllowSensitiveSessions] = true // default false
+        Defaults[.autoProgressCommands] = [] // default the built-in list
+        // A tab-reachable Controls toggle that MUST survive Reset-Advanced-Only.
+        UserDefaults.standard.set(true, forKey: SettingsKey.copyOnSelect) // default Off
+        XCTAssertTrue(SettingsKey.copyOnSelectEnabled)
+
+        store.resetAdvancedOnly()
+
+        XCTAssertTrue(Defaults[.titleShellControlled], "title gate restored by Reset Advanced")
+        XCTAssertFalse(Defaults[.titleReport], "title report restored by Reset Advanced")
+        XCTAssertTrue(Defaults[.clipboardShellControlled], "OSC-52 master restored by Reset Advanced")
+        XCTAssertEqual(Defaults[.clipboardWrite], .allow, "clipboard write restored by Reset Advanced")
+        XCTAssertFalse(Defaults[.ipcAllowSensitiveSessions], "IPC guard restored by Reset Advanced")
+        XCTAssertEqual(
+            Defaults[.autoProgressCommands], SettingsKey.autoProgressCommandsBuiltIn,
+            "auto-progress list restored by Reset Advanced",
+        )
+        // The tab-reachable Controls toggle is UNTOUCHED — Reset-Advanced-Only never destroys a tab choice.
+        XCTAssertTrue(SettingsKey.copyOnSelectEnabled, "Controls toggle survives Reset Advanced")
+    }
+
+    // MARK: - Reset coverage vs the catalog (anti-drift)
+
+    /// Every key the Advanced → All Settings catalog advertises as `.advancedOnly` (i.e. a real, editable
+    /// client `Defaults.Key`, not a `.hasDedicatedTab` render-pseudo-key like `font-family`) is cleared by a
+    /// Reset All — it appears in EITHER ``PreferencesStore/tabReachableDefaultsKeys`` OR
+    /// ``PreferencesStore/advancedOnlyDefaultsKeys``. This binds the reset sets to the catalog (the declared
+    /// "every client key" source) so a future advertised row that nobody adds to a reset set fails here rather
+    /// than silently surviving a Reset All. Revert-to-confirm-fail: the pre-fix 23-key `globalTabReachableDefaultsKeys`
+    /// omits ~35 advertised keys, so this assertion fails against it.
+    func testResetSetsCoverEveryAdvertisedAdvancedOnlyKey() {
+        let resetNames = Set(
+            (PreferencesStore.tabReachableDefaultsKeys + PreferencesStore.advancedOnlyDefaultsKeys).map(\.name),
+        )
+        for entry in AllSettingsCatalog.entries where entry.bucket == .advancedOnly {
+            XCTAssertTrue(
+                resetNames.contains(entry.key),
+                "advertised All-Settings key '\(entry.key)' is reset by neither reset set (survives Reset All)",
+            )
+        }
+    }
+
+    /// The two reset sets are DISJOINT (no key is reset twice / classified both tab-reachable and
+    /// advanced-only), so the tab-reachable/advanced-only split is unambiguous.
+    func testResetSetsAreDisjoint() {
+        let tabReachable = Set(PreferencesStore.tabReachableDefaultsKeys.map(\.name))
+        let advancedOnly = Set(PreferencesStore.advancedOnlyDefaultsKeys.map(\.name))
+        XCTAssertTrue(tabReachable.isDisjoint(with: advancedOnly), "a key is in BOTH reset sets")
+    }
+
+    // MARK: - No dead static rows (finding #3)
+
+    /// Every `.advancedOnly` catalog row renders a real INLINE control in `AllSettingsListView`, never a dead
+    /// default-value label. The view's `inlineControl(for:)` switch is mirrored by the pure
+    /// ``AllSettingsCatalog/inlineEditableKeys`` contract; this pins that the contract covers EXACTLY the
+    /// `.advancedOnly` keys (no advertised advanced row falls to the view's `default:` dead-text arm, and no
+    /// stale contract entry lingers). Spot-checks the ~15 keys that previously rendered dead (notifications,
+    /// sounds, agent-notify, the title/clipboard-master privilege gates, the IPC guards, auto-progress) via an
+    /// INDEPENDENT `SettingsKey`-constant list. Revert-to-confirm-fail: before the fix those 15 keys were
+    /// `.advancedOnly` with no inline case (dead rows) and absent from `inlineEditableKeys`.
+    func testEveryAdvancedOnlyRowHasInlineControl() {
+        let advancedOnlyKeys = Set(
+            AllSettingsCatalog.entries.filter { $0.bucket == .advancedOnly }.map(\.key),
+        )
+        XCTAssertEqual(
+            AllSettingsCatalog.inlineEditableKeys, advancedOnlyKeys,
+            "inlineEditableKeys must list EXACTLY the .advancedOnly catalog keys (else a dead/stale row)",
+        )
+        // Independent anti-regression: the specific keys that previously rendered dead static labels.
+        let previouslyDead = [
+            SettingsKey.notifyOnFinish, SettingsKey.notifyOnError, SettingsKey.notifyOnWatchFinish,
+            SettingsKey.notifyWhileForegroundKey, SettingsKey.bounceDockIcon,
+            SettingsKey.soundShellControlled, SettingsKey.soundOnErrorExit,
+            SettingsKey.agentNotifyTaskComplete, SettingsKey.agentNotifyAwaitInput,
+            SettingsKey.titleShellControlled, SettingsKey.titleReport, SettingsKey.clipboardShellControlled,
+            SettingsKey.ipcAllowSendKeys, SettingsKey.ipcAllowSensitiveSessions,
+            SettingsKey.autoProgressCommands,
+        ]
+        for key in previouslyDead {
+            XCTAssertTrue(
+                advancedOnlyKeys.contains(key),
+                "'\(key)' should be an advancedOnly catalog row",
+            )
+            XCTAssertTrue(
+                AllSettingsCatalog.inlineEditableKeys.contains(key),
+                "'\(key)' must now have an inline control (no dead static row)",
+            )
+        }
     }
 }

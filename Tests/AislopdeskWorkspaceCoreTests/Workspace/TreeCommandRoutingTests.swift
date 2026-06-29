@@ -488,10 +488,11 @@ final class TreeCommandRoutingTests: XCTestCase {
 
     // MARK: - Floating panes (P5a): chord pins + routing
 
-    /// The two floating-pane chords are the documented free defaults: ⌥⌘F float-toggle, ⌃⌘F new-floating.
+    /// The two floating-pane chords are the documented free defaults: ⌥⌘F float-toggle, ⌃⌘⇧F new-floating.
     /// Pinning them here makes a future rebind/typo a loud failure (the uniqueness test only catches a
     /// COLLISION, not a wrong-but-unique value). E5 RELOCATED float-toggle ⌘⇧F → ⌥⌘F to free ⇧⌘F for otty
-    /// Global Search (`view.globalSearch`).
+    /// Global Search (`view.globalSearch`); the otty-clone audit RELOCATED new-floating ⌃⌘F → ⌃⌘⇧F to free
+    /// ⌃⌘F for otty's Toggle Fullscreen (see `testControlCommandFIsFreeForSystemToggleFullscreen`).
     func testFloatingPaneChordsAreTheDocumentedDefaults() {
         func chord(_ action: WorkspaceAction) -> KeyChord? {
             WorkspaceBindingRegistry.binding(for: action)?.chord
@@ -499,7 +500,32 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(
             chord(.toggleFloat), KeyChord(character: "f", [.option, .command]), "toggle float = ⌥⌘F (E5 relocation)",
         )
-        XCTAssertEqual(chord(.spawnFloating), KeyChord(character: "f", [.control, .command]), "new floating = ⌃⌘F")
+        XCTAssertEqual(
+            chord(.spawnFloating), KeyChord(character: "f", [.control, .command, .shift]),
+            "new floating = ⌃⌘⇧F (audit relocation off ⌃⌘F)",
+        )
+    }
+
+    /// otty's reference keymap reserves ⌃⌘F for **Toggle Fullscreen** (the macOS-native Enter/Exit Full
+    /// Screen). The clone must NOT bind ⌃⌘F to any workspace action — the app-level NSEvent dispatcher reads
+    /// `resolvedChordTable`, so a binding there would resolve + SWALLOW ⌃⌘F and the system Full-Screen menu
+    /// item could never fire. This pins the audit fix: ⌃⌘F is free (no action), and in particular NOT
+    /// `.spawnFloating`, which moved to ⌃⌘⇧F. Revert (re-bind ⌃⌘F to spawnFloating) ⇒ both assertions fail.
+    func testControlCommandFIsFreeForSystemToggleFullscreen() {
+        let controlCommandF = KeyChord(character: "f", [.control, .command])
+        XCTAssertNil(
+            WorkspaceBindingRegistry.chordTable[controlCommandF],
+            "⌃⌘F must be unbound so it passes through to the system Toggle Fullscreen menu item",
+        )
+        XCTAssertNotEqual(
+            WorkspaceBindingRegistry.chordTable[controlCommandF], .spawnFloating,
+            "⌃⌘F no longer routes to New Floating Pane (relocated to ⌃⌘⇧F)",
+        )
+        // And the relocated chord DOES route to spawnFloating (the binding stayed live, just moved).
+        XCTAssertEqual(
+            WorkspaceBindingRegistry.chordTable[KeyChord(character: "f", [.control, .command, .shift])],
+            .spawnFloating, "⌃⌘⇧F is the new New-Floating chord",
+        )
     }
 
     /// `.toggleFloat` on a 2-leaf tab moves the active pane into the floating layer (and keeps it as the
@@ -596,6 +622,34 @@ final class TreeCommandRoutingTests: XCTestCase {
             "⌘⇧W routes to requestCloseWindow(), parking the active session's window close — not a tab close",
         )
         XCTAssertNil(store.pendingTabCloseID, "⌘⇧W is a WINDOW close now, never a tab close")
+    }
+
+    /// `.closeWindow` (otty ⌘⇧W / View ▸ Close Window) ACTUATES a real close: when an actuator closure is
+    /// supplied (the live app wires it to `window.performClose(nil)` → the native `windowShouldClose` →
+    /// `WindowCloseGate` confirmation) the route FORWARDS to it EXACTLY once and does NOT silently park
+    /// `pendingWindowClose`. The audit found the bare-park path had no SwiftUI observer, so ⌘⇧W parked a flag
+    /// nothing read and never closed the window — this proves the chord now drives a close instead.
+    ///
+    /// REVERT-TO-CONFIRM-FAIL: with the routing case left `case .closeWindow: store.requestCloseWindow()` the
+    /// actuator never fires (`fired == 0`) AND the busy window close is PARKED (`pendingWindowClose ==
+    /// sessionID`) — both assertions below flip, exactly the dead-control regression.
+    @MainActor
+    func testCloseWindowActuatesCloseActuatorInsteadOfSilentPark() throws {
+        // A busy pane under the default `.process` window policy is the case the OLD code PARKED (and nothing
+        // observed the park) — so it sharpens the contrast: the actuator must fire and NOT park.
+        UserDefaults.standard.removeObject(forKey: SettingsKey.closeConfirmWindowKey)
+        let store = makeTreeStore()
+        let active = try XCTUnwrap(activePane(store))
+        (store.handle(for: active) as? FakePaneSession)?.isShellBusy = true
+
+        var fired = 0
+        WorkspaceBindingRegistry.route(.closeWindow, to: store, closeWindow: { fired += 1 })
+
+        XCTAssertEqual(fired, 1, "⌘⇧W forwards to the close actuator exactly once (it ACTUATES a close)")
+        XCTAssertNil(
+            store.pendingWindowClose,
+            "with an actuator supplied ⌘⇧W must NOT silently park pendingWindowClose (the dead-control bug)",
+        )
     }
 
     // MARK: - Sessions: new session changes the active session + materializes its leaf
@@ -894,12 +948,18 @@ final class TreeCommandRoutingTests: XCTestCase {
     func testE5NewChordsArePresentAndChordUnique() {
         let chords = WorkspaceBindingRegistry.allBindings.compactMap(\.chord)
         XCTAssertEqual(Set(chords).count, chords.count, "no two bindings share a chord after the E5 additions")
-        // The reshuffled `f` family: ⌘F find, ⇧⌘F global search, ⌥⌘F float-toggle, ⌃⌘F new-floating — four
-        // DISTINCT chords on the same key.
+        // The reshuffled `f` family: ⌘F find, ⇧⌘F global search, ⌥⌘F float-toggle, ⌃⌘⇧F new-floating — four
+        // DISTINCT chords on the same key (⌃⌘F is deliberately ABSENT — reserved for Toggle Fullscreen).
         XCTAssertTrue(chords.contains(KeyChord(character: "f", [.command])), "⌘F find present")
         XCTAssertTrue(chords.contains(KeyChord(character: "f", [.command, .shift])), "⇧⌘F global search present")
         XCTAssertTrue(chords.contains(KeyChord(character: "f", [.option, .command])), "⌥⌘F float-toggle present")
-        XCTAssertTrue(chords.contains(KeyChord(character: "f", [.control, .command])), "⌃⌘F new-floating present")
+        XCTAssertTrue(
+            chords.contains(KeyChord(character: "f", [.control, .command, .shift])), "⌃⌘⇧F new-floating present",
+        )
+        XCTAssertFalse(
+            chords.contains(KeyChord(character: "f", [.control, .command])),
+            "⌃⌘F is reserved for system Toggle Fullscreen — not a workspace binding",
+        )
         XCTAssertTrue(chords.contains(KeyChord(character: "g", [.command])), "⌘G find next present")
         XCTAssertTrue(chords.contains(KeyChord(character: "g", [.command, .shift])), "⇧⌘G find previous present")
     }

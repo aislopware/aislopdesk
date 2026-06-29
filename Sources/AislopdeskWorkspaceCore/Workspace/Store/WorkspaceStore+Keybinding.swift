@@ -4,7 +4,59 @@
 
 import Foundation
 
+/// The view-injected overlay-toggle closures the per-pane hardware-keyboard ``TerminalKeyInterceptor`` threads
+/// into ``WorkspaceBindingRegistry/route`` (held on ``WorkspaceStore/overlayKeyToggles``). Each mirrors one
+/// `route` toggle param. iOS wires these to the ``OverlayCoordinator`` so a focused-pane hardware chord opens
+/// the matching overlay; macOS leaves them `nil` (its app-level NSEvent dispatcher owns those chords before the
+/// surface). A `nil` member is a graceful no-op — the chord's `route` arm then falls back to its store path or
+/// does nothing, never a dead/destructive control.
+public struct WorkspaceOverlayKeyToggles {
+    public var palette: (() -> Void)?
+    public var cheatSheet: (() -> Void)?
+    public var globalSearch: (() -> Void)?
+    public var jumpTo: (() -> Void)?
+    public var openQuickly: (() -> Void)?
+    public var sendToChat: (() -> Void)?
+    public var peekReply: (() -> Void)?
+
+    public init(
+        palette: (() -> Void)? = nil,
+        cheatSheet: (() -> Void)? = nil,
+        globalSearch: (() -> Void)? = nil,
+        jumpTo: (() -> Void)? = nil,
+        openQuickly: (() -> Void)? = nil,
+        sendToChat: (() -> Void)? = nil,
+        peekReply: (() -> Void)? = nil,
+    ) {
+        self.palette = palette
+        self.cheatSheet = cheatSheet
+        self.globalSearch = globalSearch
+        self.jumpTo = jumpTo
+        self.openQuickly = openQuickly
+        self.sendToChat = sendToChat
+        self.peekReply = peekReply
+    }
+}
+
 extension WorkspaceStore {
+    /// Route a hardware-keyboard `action` resolved by a per-pane ``TerminalKeyInterceptor`` through
+    /// ``WorkspaceBindingRegistry/route``, threading the view-injected ``overlayKeyToggles`` so an OVERLAY chord
+    /// (⌘⇧P / ⇧⌘F / ⌘⇧O / ⌘J / ⌘⌃↩ / ⌘⌥J) fires its panel on a platform with no app-level NSEvent monitor (iOS).
+    /// macOS installs no toggles here (its dispatcher owns the chord BEFORE the surface ever sees it), so this
+    /// degenerates to the bare `route` there. A `nil` toggle is a graceful no-op (the `route` arm's own fallback).
+    func routeInterceptedKey(_ action: WorkspaceAction) {
+        WorkspaceBindingRegistry.route(
+            action, to: self,
+            togglePalette: overlayKeyToggles.palette,
+            toggleCheatSheet: overlayKeyToggles.cheatSheet,
+            togglePeekReply: overlayKeyToggles.peekReply,
+            toggleSendToChat: overlayKeyToggles.sendToChat,
+            toggleGlobalSearch: overlayKeyToggles.globalSearch,
+            toggleJumpTo: overlayKeyToggles.jumpTo,
+            openQuickly: overlayKeyToggles.openQuickly,
+        )
+    }
+
     /// Hand pane `id`'s libghostty surface its PURE ``TerminalKeyInterceptor`` (prefix engine + the
     /// override-aware single-chord table). The surface's `keyDown` consults it BEFORE its own raw-byte
     /// branches, so (a) a tmux-style prefix sequence (⌃A → D) is claimed before the Ctrl+C0 path leaks the
@@ -17,7 +69,9 @@ extension WorkspaceStore {
             prefix: workspaceKeyPrefix,
             onAction: { [weak self] action in
                 guard let self else { return }
-                WorkspaceBindingRegistry.route(action, to: self)
+                // Thread the view-injected overlay toggles (iOS hardware-keyboard path — macOS leaves them nil
+                // and its NSEvent dispatcher owns overlay chords before the surface). `nil` ⇒ graceful no-op.
+                routeInterceptedKey(action)
             },
         )
     }
