@@ -58,6 +58,12 @@ public final class HostOutputSniffer: @unchecked Sendable {
     /// When the foreground command started (set on `133;C`, cleared on `133;D`); `nil` idle.
     private var runningSince: Date?
 
+    /// `true` once an idle signal has been emitted for the current prompt cycle (set by `133;D` and by the
+    /// `133;B` startup-prompt path, reset by `133;C`). Prevents `133;B` from emitting a redundant second
+    /// `.idle` after `133;D` has already advertised the exit code — while still surfacing `133;B` at first
+    /// launch (before any command has run, so no `133;D` has fired).
+    private var idleSentSinceLastC = false
+
     // MARK: Parser state (verbatim from HostTitleBellSniffer)
 
     private enum State {
@@ -398,7 +404,8 @@ public final class HostOutputSniffer: @unchecked Sendable {
 
             switch fields[1] {
             case "C":
-                // A command began executing — mark RUNNING and start the duration clock.
+                // A command began executing — mark RUNNING, reset the idle-sent flag, and start the clock.
+                idleSentSinceLastC = false
                 runningSince = clock()
                 messages.append(.commandStatus(.running))
             case "D":
@@ -406,11 +413,22 @@ public final class HostOutputSniffer: @unchecked Sendable {
                 // phantom `D;0`) — never emit a 0-duration `.idle` for a command that never ran.
                 guard let started = runningSince else { return }
                 runningSince = nil
+                idleSentSinceLastC = true
                 let exit = Self.parseExit(fields)
                 let durationMS = Self.durationMS(from: started, to: clock())
                 messages.append(.commandStatus(.idle(exitCode: exit, durationMS: durationMS)))
+            case "B":
+                // Prompt-ready mark: the shell has finished rendering its prompt and the line editor
+                // is accepting input. When no idle signal has been sent since the last command (i.e. at
+                // first launch, before any command has run), emit `.idle` so the client knows the shell
+                // is at a prompt. After a `D` the client already has the idle signal — suppress the
+                // redundant B to preserve the exit-code and duration the D carried.
+                if runningSince == nil, !idleSentSinceLastC {
+                    idleSentSinceLastC = true
+                    messages.append(.commandStatus(.idle(exitCode: nil, durationMS: 0)))
+                }
             default:
-                break // A / B / unknown 133 subcommand — not surfaced.
+                break // A / unknown 133 subcommand — not surfaced.
             }
 
         case "9":

@@ -34,6 +34,10 @@ struct AgentSessionHistoryView: View {
     /// Performs a Resume for the open session: jump to its live pane, or spawn one running the VERBATIM
     /// `claude --resume <id>`. No-op default so the viewer is standalone-mountable (previews / tests). E13/WI-6.
     var onResume: (AgentResumeRouter.ResumeTarget) -> Void = { _ in }
+    /// Opens the Send-to-Chat dialog pre-loaded with the transcript row the user right-clicked (otty:
+    /// "select text in transcript → context menu → Send to Chat"). No-op default so the viewer is
+    /// standalone-mountable (previews / tests). Wired by `InspectorColumn` to `overlay.openSendToChat(context:)`.
+    var onSendToChat: (SendToChatContext) -> Void = { _ in }
 
     /// The session whose transcript is open, or `nil` while showing the session LIST (master view).
     @State private var selectedSession: MetadataCodec.AgentSessionInfo?
@@ -313,6 +317,29 @@ struct AgentSessionHistoryView: View {
         .padding(.horizontal, Otty.Metric.space3)
         .padding(.vertical, Otty.Metric.space2)
         .background(entry.role == .user ? Otty.State.hover : Color.clear)
+        .contextMenu {
+            // Copy the row's text body — the Markdown source (without the speaker header).
+            if !entry.markdown.isEmpty {
+                Button {
+                    LinkActionActuator.copyToPasteboard(entry.markdown)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+            }
+            // Send to Chat: pre-load the dialog with this row's text as the quoted context (otty:
+            // "select text in transcript → context menu → Send to Chat"). Dismiss the history sheet
+            // FIRST so the send-to-chat overlay opens in front of a clean workspace (not behind the sheet).
+            if !entry.markdown.isEmpty {
+                Button {
+                    let title = "\(entry.speaker) (transcript)"
+                    let ctx = SendToChatContext(title: title, quoted: entry.markdown)
+                    onClose()
+                    onSendToChat(ctx)
+                } label: {
+                    Label("Send to Chat", systemImage: "arrow.up.message")
+                }
+            }
+        }
     }
 
     private func rowHeader(_ entry: AgentTranscriptEntry) -> some View {

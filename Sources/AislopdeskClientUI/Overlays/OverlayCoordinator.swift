@@ -638,6 +638,15 @@ public final class OverlayCoordinator {
 
     // MARK: Send to Chat (⌘⌃↩ — quote the active pane → a chosen agent · E13 WI-5 / ES-E13-5)
 
+    /// Open the Send-to-Chat dialog with a CALLER-SUPPLIED `context` (the transcript context-menu path —
+    /// the viewer already has the text, so no capture / async fallback is needed). Builds the Claude-only
+    /// session picker off the store and pre-selects the last-used (or first live) agent pane. A no-op when
+    /// no store is attached (previews / pre-injection).
+    public func openSendToChat(context: SendToChatContext) {
+        guard let store else { return }
+        presentSendToChat(context, store: store)
+    }
+
     /// Present the Send-to-Chat dialog over the active pane's captured quote (ES-E13-5's "selection OR last
     /// command output"). Two passes: the SYNCHRONOUS selection capture wins (the injected closure — the app
     /// wires it to the live store, a test overrides it — else the attached store); failing that, the ASYNC

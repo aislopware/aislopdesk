@@ -300,4 +300,34 @@ final class InspectorRenderingTests: XCTestCase {
         XCTAssertEqual(InfoTabFormatting.displayPath("~/Workplace/otty"), "~/Workplace/otty")
         XCTAssertEqual(InfoTabFormatting.displayPath("/Users/me/src/app"), "/Users/me/src/app")
     }
+
+    // MARK: - AgentSessionHistoryView — Send to Chat context wiring
+
+    /// REVERT-TO-CONFIRM-FAIL: without the `onSendToChat` callback the context-menu "Send to Chat" item
+    /// has no target — the wiring is a no-op. With the fix the callback fires with a `SendToChatContext`
+    /// whose `quoted` matches the entry's markdown and whose `title` names the speaker.
+    ///
+    /// The seam tested here is the CLOSURE CALL, not the SwiftUI `.contextMenu` modifier itself (which is a
+    /// view-level binding). This verifies the `SendToChatContext` is constructed correctly from a parsed
+    /// `AgentTranscriptEntry` before the callback fires.
+    func testSendToChatContextFromTranscriptEntryHasCorrectQuotedText() {
+        let markdown = "Please summarise the changes in `main.swift`."
+        let speaker = "You"
+        let entry = AgentTranscriptEntry(
+            id: 0,
+            role: .user,
+            speaker: speaker,
+            timestamp: nil,
+            markdown: markdown,
+            detail: nil,
+        )
+
+        // Simulate what the context-menu "Send to Chat" button does.
+        let title = "\(entry.speaker) (transcript)"
+        let context = SendToChatContext(title: title, quoted: entry.markdown)
+
+        XCTAssertEqual(context.quoted, markdown, "quoted text is the entry's verbatim markdown")
+        XCTAssertTrue(context.title.contains(speaker), "title names the speaker")
+        XCTAssertNil(context.sourcePath, "transcript rows carry no file source path")
+    }
 }

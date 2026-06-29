@@ -208,11 +208,19 @@ public enum ShellIntegration {
         # never recognizes (the marks would silently never fire).
         __aislopdesk_osc133_preexec() { printf '\\033]133;C\\007' }
         # precmd: a new prompt is about to be drawn. Capture $? FIRST (anything else clobbers it),
-        # emit D;<exit> for the command that just finished, then A for the new prompt.
+        # emit D;<exit> for the command that just finished, then A for the new prompt, then append
+        # B to $PROMPT so it fires at the END of the rendered prompt — after the prompt text and
+        # before the user starts typing. Bytes between B and C are the echoed command line, captured
+        # as commandText by the host CommandBlockSegmenter. PROMPT+= runs after all earlier precmd
+        # hooks (p10k, starship, etc.) have set $PROMPT, because add-zsh-hook appends us last.
+        # %{…%} marks a zero-width prompt sequence so the terminal's column accounting stays correct.
+        # $'\\033…\\007' is ANSI-C quoting: zsh stores the real ESC/BEL bytes in $PROMPT at assignment
+        # time — unlike a printf-escape string that would need a subshell and would be re-expanded.
         __aislopdesk_osc133_precmd() {
           local __aislopdesk_exit=$?
           printf '\\033]133;D;%s\\007' "$__aislopdesk_exit"
           printf '\\033]133;A\\007'
+          PROMPT+="%{$'\\033]133;B\\007'%}"
         }
         add-zsh-hook preexec __aislopdesk_osc133_preexec
         add-zsh-hook precmd  __aislopdesk_osc133_precmd

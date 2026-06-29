@@ -382,13 +382,29 @@ struct NavigatorColumn: View {
 
     /// Make the row's tab active (if it isn't) then focus its pane. Both go through the store.
     private func select(_ paneID: PaneID) {
+        Self.selectRow(paneID, in: store)
+    }
+
+    /// The full tab-row SELECT path, exposed as a static testable helper (mirrors ``owningTabIndex(of:in:)``):
+    /// switch to the owning tab (float-aware, stamps recency), focus the pane, then AUTO-CLEAR every agent
+    /// badge on the newly-focused tab (otty: "Badge auto-clears on tab focus"). All three steps go through
+    /// the store. Static so ``NavigatorColumnSelectTests`` exercises this logic headlessly without a live view.
+    @MainActor
+    static func selectRow(_ paneID: PaneID, in store: WorkspaceStore) {
         if let session = store.tree.activeSession,
-           let index = Self.owningTabIndex(of: paneID, in: session),
+           let index = owningTabIndex(of: paneID, in: session),
            index != session.activeTabIndex
         {
             store.selectTab(index)
         }
         store.focusPaneTree(paneID)
+        // Auto-clear the agent badge for every pane in the now-focused tab (otty: "Badge auto-clears on
+        // tab focus"). Runs AFTER focusPaneTree so the active tab is already the focused one.
+        if let tab = store.tree.activeSession?.activeTab {
+            for id in tab.allPaneIDs() {
+                store.clearAgentBadge(id)
+            }
+        }
     }
 
     /// The index of the tab that OWNS `paneID` in `session`, FLOAT-AWARE: `Session.tabIndex(containing:)`

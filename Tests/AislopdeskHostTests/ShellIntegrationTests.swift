@@ -169,10 +169,11 @@ final class ShellIntegrationTests: XCTestCase {
                 || zshrc.contains("add-zsh-hook precmd __aislopdesk_osc133_precmd"),
             "must register the precmd hook via add-zsh-hook",
         )
-        // Emits the C (preexec) and D / A (precmd) marks.
+        // Emits the C (preexec), D / A (precmd), and B (prompt-end / command-start) marks.
         XCTAssertTrue(zshrc.contains("133;C"), "preexec must emit OSC 133;C")
         XCTAssertTrue(zshrc.contains("133;D;%s"), "precmd must emit OSC 133;D;<exit>")
         XCTAssertTrue(zshrc.contains("133;A"), "precmd must emit OSC 133;A")
+        XCTAssertTrue(zshrc.contains("133;B"), "precmd must emit OSC 133;B (end of prompt / start of input)")
     }
 
     /// REGRESSION (live-host bug): the printf escapes must reach the shell as the LITERAL text
@@ -243,6 +244,44 @@ final class ShellIntegrationTests: XCTestCase {
         XCTAssertTrue(
             zshrc.contains("0|false|no|off"),
             "AISLOPDESK_OSC133 must accept the standard falsy opt-out values",
+        )
+    }
+
+    /// OSC 133 B mark: the host CommandBlockSegmenter captures bytes between B and C as
+    /// `commandText`. B must fire AFTER the prompt is drawn (not before it), so it uses
+    /// `PROMPT+=` — bytes between B and C are then only the echoed command, not the prompt text.
+    ///
+    /// Revert-to-confirm-fail: on the un-fixed code this test fails because `133;B` is absent.
+    func testZshrcOSC133BMarkIsAppendedToPromptAfterA() throws {
+        let dir = try XCTUnwrap(ShellIntegration.writeShimDirectory(into: makeTempDir()))
+        let zshrc = try String(contentsOf: dir.appendingPathComponent(".zshrc"), encoding: .utf8)
+        // The B mark must be present.
+        XCTAssertTrue(zshrc.contains("133;B"), "zshrc must emit OSC 133;B")
+        // B must be in a PROMPT+= line (so it fires at the end of the rendered prompt, after the
+        // prompt text — NOT printed before the prompt, which would cause the prompt text to leak
+        // into commandText and break the auto-progress prefix match).
+        XCTAssertTrue(
+            zshrc.contains("PROMPT+=\"%{$'\\033]133;B\\007'%}\"")
+                || zshrc.contains("PROMPT+=\"%{$'"),
+            "B must be appended to $PROMPT via PROMPT+= (not emitted before the prompt)",
+        )
+        // The PROMPT+= must appear INSIDE the precmd function and AFTER the A mark emit — A first,
+        // then prompt rendered, then B (at the end of the prompt) — so the OSC bytes arrive in the
+        // correct order in the PTY stream.
+        guard let precmdRange = zshrc.range(of: "__aislopdesk_osc133_precmd()") else {
+            XCTFail("precmd function not found in zshrc")
+            return
+        }
+        let afterPrecmd = zshrc[precmdRange.lowerBound...]
+        guard let aRange = afterPrecmd.range(of: "133;A"),
+              let bRange = afterPrecmd.range(of: "133;B")
+        else {
+            XCTFail("A or B mark not found in zshrc after precmd definition")
+            return
+        }
+        XCTAssertTrue(
+            aRange.lowerBound < bRange.lowerBound,
+            "A must appear before B in the precmd body (A for prompt-start, B for prompt-end)",
         )
     }
 

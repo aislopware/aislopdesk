@@ -2724,6 +2724,13 @@ public final class WorkspaceStore {
         // E6 WI-3: stamp the newly-active tab as just-active so the `.updated` tab sort floats it first.
         if let activeTabID = tree.activeSession?.activeTab?.id { stampTabActivity(activeTabID) }
         reconcileTree()
+        // Badge auto-clear: acknowledge any completion/done badge for every pane in the newly-active tab
+        // regardless of HOW the tab switch was triggered (keyboard ⌘1–⌘9, cycleTab, NavigatorColumn, or a
+        // direct selectTab call). The `NavigatorColumn.selectRow` badge loop keeps its own copy so it fires
+        // even for a same-tab pane-focus that never reaches `selectTab`.
+        if let tab = tree.activeSession?.activeTab {
+            for id in tab.allPaneIDs() { clearAgentBadge(id) }
+        }
     }
 
     /// Adds a new session (one tab, one leaf of `kind`) and selects it; materializes its leaf. The new

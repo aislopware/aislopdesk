@@ -31,6 +31,10 @@ struct InspectorColumn: View {
     /// macOS Details panel's Status row is a GUI-verifiable connect affordance (the iOS toolbar pill is the
     /// other entry point). No-op default keeps the column standalone-mountable (previews / tests).
     var onConnect: () -> Void = {}
+    /// Opens the Send-to-Chat dialog pre-loaded with a transcript context (wired to
+    /// `overlay.openSendToChat(context:)` by the root view). No-op default keeps the column
+    /// standalone-mountable (previews / tests).
+    var onSendToChat: (SendToChatContext) -> Void = { _ in }
 
     /// Whether the "View Session History" viewer (`AgentSessionHistoryView`) is presented over the panel.
     /// Set by the Info tab's agent-sessions action; the viewer binds the focused pane's model (its session
@@ -123,6 +127,7 @@ struct InspectorColumn: View {
                 onClose: { showSessionHistory = false },
                 liveSessionIDs: store.liveAgentSessionIDs(),
                 onResume: { performResume($0) },
+                onSendToChat: onSendToChat,
             )
         }
     }

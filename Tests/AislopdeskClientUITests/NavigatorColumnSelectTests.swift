@@ -83,4 +83,58 @@ final class NavigatorColumnSelectTests: XCTestCase {
         if let before { XCTAssertGreaterThanOrEqual(after, before, "the stamp advances, never rewinds") }
         XCTAssertEqual(store.tree.activeSession?.activeTabIndex, 1, "tab B is now the active tab")
     }
+
+    // MARK: - Badge auto-clear on tab-row select
+
+    /// REVERT-TO-CONFIRM-FAIL: without the ``NavigatorColumn/selectRow(_:in:)`` badge-clearing loop the agent
+    /// status for the pane remains `.done` after a row click, so the badge persists — failing the `.idle`
+    /// assertion below. With the fix the loop clears every pane in the focused tab.
+    func testSelectingTabRowWithDoneBadgeClearsBadge() throws {
+        let store = makeStore()
+        let pane = try XCTUnwrap(store.tree.activeSession?.activeTab?.activePane, "initial pane exists")
+
+        // Plant a `.done` agent status (the completion badge that should auto-clear on focus).
+        store.setAgentStatus(.done, for: pane)
+        XCTAssertEqual(store.agentStatus(for: pane), .done, "precondition: badge is set")
+
+        // Drive the same static select path the rail row's onSelect fires.
+        NavigatorColumn.selectRow(pane, in: store)
+
+        // The badge must be gone — `clearAgentBadge` settles `.done` → `.idle`.
+        XCTAssertEqual(
+            store.agentStatus(for: pane), .idle,
+            "selecting a tab row auto-clears the agent badge (otty: 'Badge auto-clears on tab focus')",
+        )
+    }
+
+    // MARK: - Badge auto-clear on keyboard tab switch (⌘1–⌘9)
+
+    /// REVERT-TO-CONFIRM-FAIL: before `WorkspaceStore.selectTab` gained its badge-clearing loop, switching
+    /// tabs via ⌘1–⌘9 (which routes `selectTabNumber → selectTab` WITHOUT going through
+    /// `NavigatorColumn.selectRow`) left the `.done` badge intact — failing the `.idle` assertion below.
+    /// With the fix `selectTab` itself clears badges so keyboard-driven tab switches are equivalent to
+    /// sidebar-click tab switches (otty: badge auto-clears whenever the tab gains focus).
+    func testKeyboardTabSwitchClearsBadge() throws {
+        let store = makeStore()
+
+        // Build a second tab so switching tabs via selectTab makes sense.
+        store.newTab(kind: .terminal, launchGrace: .zero) // tab index 1, now active
+        let paneInTab1 = try XCTUnwrap(
+            store.tree.activeSession?.activeTab?.activePane, "tab 1 has an active pane",
+        )
+
+        // Plant a `.done` badge on tab 1's pane (simulates a completed agent run).
+        store.setAgentStatus(.done, for: paneInTab1)
+        XCTAssertEqual(store.agentStatus(for: paneInTab1), .done, "precondition: badge is set on tab 1")
+
+        // Switch AWAY to tab 0, then back to tab 1 via the direct `selectTab` path (⌘1–⌘9 route).
+        store.selectTab(0)
+        store.selectTab(1)
+
+        // The badge must be cleared — `selectTab` now runs the same badge-clearing loop as `selectRow`.
+        XCTAssertEqual(
+            store.agentStatus(for: paneInTab1), .idle,
+            "keyboard tab switch (⌘1–⌘9 → selectTab) auto-clears the agent badge",
+        )
+    }
 }

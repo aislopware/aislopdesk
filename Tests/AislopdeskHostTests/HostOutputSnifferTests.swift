@@ -567,10 +567,45 @@ final class HostOutputSnifferTests: XCTestCase {
         XCTAssertEqual(sniffer.observe(osc133("D;0")), [])
     }
 
-    func testAandBmarksAreNotSurfaced() {
+    func testAmarkIsNotSurfaced() {
         let sniffer = HostOutputSniffer(clock: { Date() })
         XCTAssertEqual(sniffer.observe(osc133("A")), [], "prompt-start A is not a command status")
-        XCTAssertEqual(sniffer.observe(osc133("B")), [], "command-line-start B is not a command status")
+    }
+
+    // MARK: OSC 133;B — prompt-ready signal at first launch
+
+    /// REVERT-TO-CONFIRM-FAIL: without the `idleSentSinceLastC` gate the B handler is in `default: break`,
+    /// so the first B returns `[]` — failing the `.idle` assertion. With the fix the first B emits idle
+    /// (the shell is at a prompt, prompt-ready at startup); a second B is a no-op (idle already sent).
+    func testBMarkSignalsPromptReadyAtStartup() {
+        let sniffer = HostOutputSniffer(clock: { Date() })
+        // Phantom first-prompt D;0 (no matching C → ignored), then A (ignored), then B → idle.
+        XCTAssertEqual(sniffer.observe(osc133("D;0")), [], "phantom D is ignored")
+        XCTAssertEqual(sniffer.observe(osc133("A")), [], "prompt-start A is not a command status")
+        XCTAssertEqual(
+            sniffer.observe(osc133("B")),
+            [.commandStatus(.idle(exitCode: nil, durationMS: 0))],
+            "first B after startup emits idle (shell is at a prompt)",
+        )
+        // A second B (same prompt, no C in between) must be silent — idle already sent.
+        XCTAssertEqual(sniffer.observe(osc133("B")), [], "subsequent B is silent (idle already sent)")
+    }
+
+    /// After a full C→D cycle the `D` already sends idle, so the following `B` must be silent
+    /// (the exit code and duration from `D` are the authoritative idle signal — `B` must not erase them).
+    func testBMarkAfterDIsSilent() {
+        let clock = TestClock()
+        let sniffer = HostOutputSniffer(clock: clock.date)
+        var out: [WireMessage] = []
+        out += sniffer.observe(osc133("C"))
+        clock.advance(3)
+        out += sniffer.observe(osc133("D;5"))
+        // B must NOT add a second idle (would overwrite the exit code + duration from D).
+        out += sniffer.observe(osc133("B"))
+        XCTAssertEqual(out, [
+            .commandStatus(.running),
+            .commandStatus(.idle(exitCode: 5, durationMS: 3000)),
+        ], "B after D is silent — D already carries the authoritative idle with exit code")
     }
 
     // MARK: Full prompt cycle (A→C→D→A) yields exactly running then idle

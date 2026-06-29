@@ -122,9 +122,10 @@ final class MuxChannelSessionBlocksTests: XCTestCase {
         let snifferOff = HostOutputSniffer(clock: { Date(timeIntervalSinceReferenceDate: 0) }).observe(scripted)
         XCTAssertEqual(snifferOn, snifferOff, "the sniffer/commandStatus stream is identical ON vs OFF")
         XCTAssertEqual(snifferOn, [
+            .commandStatus(.idle(exitCode: nil, durationMS: 0)), // 133;B prompt-ready (startup idle)
             .commandStatus(.running),
             .commandStatus(.idle(exitCode: 0, durationMS: 0)),
-        ], "and is exactly the running→idle status for this cycle (pinned, not tautological)")
+        ], "and is exactly the prompt-ready→running→idle status for this cycle (pinned, not tautological)")
 
         // (b) The TAP differential: same scripted stream, flag ON enqueues type-28; flag OFF enqueues none.
         let onSession = makeSession(blocksEnabled: true)

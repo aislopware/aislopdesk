@@ -1,22 +1,22 @@
 // OpenQuicklyView — the floating Open-Quickly picker (E11 / WI-6), the otty Xcode-style `⌘⇧O` multi-source
 // quick switcher (`open-quickly.png`). It FOLDS in the E10 Jump-To panel: ONE centered, SCRIMMED card with a
-// pre-focused search field, a row of filter pills (All / Opened / Recent / Folders / Agents / Current — SSH +
-// Recipes are a deliberate product cut), a sectioned + fuzzy-ranked result list, a per-row `⌘K` Actions
+// pre-focused search field, a row of filter pills (All / Opened / Recent / Folders / Agents / Current /
+// Recipes — SSH is absent by product decision), a sectioned + fuzzy-ranked result list, a per-row `⌘K` Actions
 // popover, and a context-sensitive footer hint bar. `⌘⇧O` opens it on **All**; `⌘J` opens it on **Current**
 // (the Jump-To scope).
 //
 // SEAM discipline: every source is assembled by the PURE `OpenQuicklyModel` (headlessly tested) — Opened from
 // the live `WorkspaceStore.tree`, Recent from `recentlyClosedTabs`, Folders from the injected
-// `FolderFrecencyStore`, Current from the focused pane's `JumpToModel` snapshot, and Agents from the focused
-// pane's host metadata RPC (`MetadataClient.listAgentSessions`, Claude-only) loaded ASYNC. Ranking runs the
-// vendored `FuzzyMatcher`. Every row's default action + its `⌘K` action table actuate through the shared
-// `LinkActionActuator` (the same thin platform dispatch the renderer + Jump-To use), so link/cd/host routing
-// has ONE home. The active pill lives on the `OverlayCoordinator` (`openQuicklyFilter`); the search query +
-// keyboard selection are local view state.
+// `FolderFrecencyStore`, Current from the focused pane's `JumpToModel` snapshot, Agents from the focused
+// pane's host metadata RPC (`MetadataClient.listAgentSessions`, Claude-only) loaded ASYNC, and Recipes from
+// `store.savedRecipeFiles()` snapshotted on appear. Ranking runs the vendored `FuzzyMatcher`. Every row's
+// default action + its `⌘K` action table actuate through the shared `LinkActionActuator` (the same thin
+// platform dispatch the renderer + Jump-To use), so link/cd/host routing has ONE home. The active pill lives
+// on the `OverlayCoordinator` (`openQuicklyFilter`); the search query + keyboard selection are local view state.
 //
 // Picker-LOCAL keys (handled here, NEVER globally registered): `Tab`/`⇧Tab` cycle pills, `⌘1–9` quick-pick a
-// visible row, `⌘K` toggles the Actions popover, `⌘0/⌘W/⌘R/⌘Z/⌘G/⌘J` jump straight to a pill, `↑`/`↓` move,
-// `↩` runs the selected row, `Esc` closes. The scrim + centering + fade are added by `OverlayHostView`;
+// visible row, `⌘K` toggles the Actions popover, `⌘0/⌘W/⌘R/⌘Z/⌘G/⌘J/⌘E` jump straight to a pill, `↑`/`↓`
+// move, `↩` runs the selected row, `Esc` closes. The scrim + centering + fade are added by `OverlayHostView`;
 // OpenQuicklyView IS the panel. `Otty.*` tokens ONLY (raw font/colour/radius literals fail check-ds-leaks).
 
 #if canImport(SwiftUI)
@@ -55,6 +55,9 @@ struct OpenQuicklyView: View {
     @State private var agentItems: [OpenQuicklyItem] = []
     /// Whether an Agents fetch is in flight (drives the honest "Loading agents…" state).
     @State private var agentsLoading = false
+    /// The **Recipes** rows — the saved `.ottyrecipe` library, snapshotted on appear (the library is
+    /// on-disk; a rescan on every keystroke would be wasteful). Rebuilt when the picker closes+reopens.
+    @State private var recipeItems: [OpenQuicklyItem] = []
 
     /// Pre-focuses the search field on appear so typing reaches it immediately (otty parity).
     @FocusState private var searchFocused: Bool
@@ -89,7 +92,10 @@ struct OpenQuicklyView: View {
                 .stroke(Otty.Line.card, lineWidth: Otty.Metric.hairline),
         )
         .shadow(color: Otty.State.shadow, radius: 30, x: 0, y: 12)
-        .onAppear { snapshotCurrent() }
+        .onAppear {
+            snapshotCurrent()
+            recipeItems = OpenQuicklyModel.recipeItems(from: store.savedRecipeFiles())
+        }
         .onChange(of: query) { _, _ in
             selection = 0
             actionsVisible = false
@@ -112,8 +118,8 @@ struct OpenQuicklyView: View {
         .task(id: agentLoadKey) { await loadAgents() }
         // Keyboard: while this picker is presented the app NSEvent monitor YIELDS the whole keyboard to this
         // focused overlay (its `isOverlayCapturingKeys` gate, keyed on `openQuicklyVisible`), so the global
-        // chord table never fires behind it — the picker-local chords below (⌘0/⌘W/⌘R/⌘Z/⌘G/⌘J, ⌘1–9, ⌘K, Tab,
-        // arrows) reach ``handleKey`` instead of switching the background tab / closing the focused pane. Plain
+        // chord table never fires behind it — the picker-local chords below (⌘0/⌘W/⌘R/⌘Z/⌘G/⌘J/⌘E, ⌘1–9, ⌘K,
+        // Tab, arrows) reach ``handleKey`` instead of switching the background tab / closing the focused pane. Plain
         // ↩ is the field's `.onSubmit` (TextField-native), so a single ↩ never double-fires.
         .onKeyPress(phases: .down) { press in handleKey(press) }
         #if os(macOS)
@@ -158,10 +164,9 @@ struct OpenQuicklyView: View {
 
     // MARK: - Filter pill bar
 
-    // Recipes pill: added in E16 once the recipe store exists.
     /// The otty pill ring (open-quickly.png): the active pill is FILLED (`Otty.State.selected`) with primary
-    /// text; inactive pills are OUTLINED (`Otty.Line.card`) with secondary text. SSH + Recipes are absent by
-    /// product decision (see ``OpenQuicklyFilter``).
+    /// text; inactive pills are OUTLINED (`Otty.Line.card`) with secondary text. SSH is absent by
+    /// product decision (see ``OpenQuicklyFilter``). Recipes is now wired (E16 complete).
     private var pillBar: some View {
         HStack(spacing: Otty.Metric.space2) {
             ForEach(OpenQuicklyFilter.pickerPills, id: \.self) { filter in
@@ -394,6 +399,7 @@ struct OpenQuicklyView: View {
         case .path,
              .url,
              .fileURL: "Open"
+        case .recipe: "Open Recipe"
         case nil: "Open"
         }
     }
@@ -589,6 +595,16 @@ struct OpenQuicklyView: View {
                 })
             }
             return actions
+        case let .openRecipe(url):
+            return [
+                RowAction(title: "Open Recipe", symbol: "book") {
+                    store.openRecipe(at: url, source: .savedLibrary)
+                    close()
+                },
+                RowAction(title: "Copy Path", symbol: "doc.on.doc") {
+                    LinkActionActuator.copyToPasteboard(url.path)
+                },
+            ]
         }
     }
 
@@ -646,8 +662,8 @@ struct OpenQuicklyView: View {
 
     // MARK: - Sources + sectioning
 
-    /// The per-pill source rows, assembled from the live store / folders / async Agents / Current snapshot via
-    /// the PURE `OpenQuicklyModel` builders — the view stays a thin renderer.
+    /// The per-pill source rows, assembled from the live store / folders / async Agents / Current snapshot /
+    /// Recipes snapshot via the PURE `OpenQuicklyModel` builders — the view stays a thin renderer.
     private var sources: [OpenQuicklyFilter: [OpenQuicklyItem]] {
         [
             .opened: OpenQuicklyModel.openedItems(from: store.tree),
@@ -655,6 +671,7 @@ struct OpenQuicklyView: View {
             .folders: OpenQuicklyModel.folderItems(from: folders?.ranked() ?? []),
             .agents: agentItems,
             .current: OpenQuicklyModel.currentItems(from: currentJumpItems),
+            .recipes: recipeItems,
         ]
     }
 
@@ -813,8 +830,8 @@ struct OpenQuicklyView: View {
     // MARK: - Keyboard (picker-local)
 
     /// The single picker-local key router. `Tab`/`⇧Tab` cycle pills; `↑`/`↓` move; `⌘K` toggles the Actions
-    /// popover; `⌘1–9` quick-pick a visible row; `⌘0/⌘W/⌘R/⌘Z/⌘G/⌘J` jump straight to a pill. Everything else
-    /// is `.ignored` (plain typing is already consumed by the focused field; `↩` is its `.onSubmit`).
+    /// popover; `⌘1–9` quick-pick a visible row; `⌘0/⌘W/⌘R/⌘Z/⌘G/⌘J/⌘E` jump straight to a pill. Everything
+    /// else is `.ignored` (plain typing is already consumed by the focused field; `↩` is its `.onSubmit`).
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
         // Match keys directly (NOT gated on an empty modifier set): AppKit decorates arrow keys with the
         // `.numericPad`/`.function` flags, so an `isEmpty` guard would silently drop them.
@@ -911,6 +928,8 @@ struct OpenQuicklyView: View {
             case let .link(link):
                 LinkActionActuator.actuate(LinkActionPolicy.explicitOpenAction(link: link), model: activeModel)
             }
+        case let .openRecipe(url):
+            store.openRecipe(at: url, source: .savedLibrary)
         }
         close()
     }

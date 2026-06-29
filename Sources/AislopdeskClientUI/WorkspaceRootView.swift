@@ -218,7 +218,10 @@ public struct WorkspaceRootView: View {
         } content: {
             ContentColumn(store: store, connection: connection, chrome: chrome)
         } detail: {
-            InspectorColumn(store: store, connection: connection, details: details, onConnect: openConnect)
+            InspectorColumn(
+                store: store, connection: connection, details: details, onConnect: openConnect,
+                onSendToChat: { [overlay] ctx in overlay.openSendToChat(context: ctx) },
+            )
         }
         .toolbar { iosToolbar }
         // The floating-overlay layer mounts on iOS too (palette / connect / remote-window picker / toasts read
@@ -578,6 +581,7 @@ struct WorkspaceSplitRepresentable: NSViewControllerRepresentable {
         AislopdeskSplitViewController(
             store: store, connection: connection, chrome: chrome, details: details, preferences: preferences,
             onConnect: { [overlay] in overlay.openConnect() },
+            onSendToChat: { [overlay] ctx in overlay.openSendToChat(context: ctx) },
         )
     }
 

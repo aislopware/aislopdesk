@@ -44,6 +44,7 @@
 // Otty.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
+import AislopdeskCLICore
 import AislopdeskVideoProtocol
 import AislopdeskWorkspaceCore
 import Defaults
@@ -2115,6 +2116,8 @@ private struct AdvancedSettingsTab: View {
             }
 
             VideoHostSettingsView(store: store)
+
+            configFileSection
             #endif
 
             // E7 WI-4: portable workspace export / import (file picker over `WorkspaceTransferDocument`).
@@ -2222,6 +2225,57 @@ private struct AdvancedSettingsTab: View {
         text = ""
         #endif
     }
+
+    // MARK: - Config File (otty settings-import-export parity)
+
+    /// otty Settings → Advanced → CONFIG FILE group: the resolved config path + "Open Config File" +
+    /// "Reload Config". macOS-only — the config file lives in the user's `~/.config` directory tree,
+    /// which is inaccessible on iOS (no user-visible filesystem). "Open Config File" creates the parent
+    /// directory and the file (if absent) then opens it in the default text editor so the user lands in
+    /// a usable state even on a fresh install. "Reload Config" calls the SAME action as the command
+    /// palette's "Reload Config" row: `reapplyLiveSettings()` + the config-reload broadcast.
+    #if os(macOS)
+    private var configFileSection: some View {
+        ottyFormSection("Config File") {
+            LabeledContent("Config path") {
+                // `resolvePath(override:nil)` respects `AISLOPDESK_CONFIG_FILE` env override so the
+                // displayed path always matches the file the app actually honours (not just the XDG default).
+                Text(CLIConfig.resolvePath(override: nil))
+                    .font(.system(size: Otty.Typeface.footnote, design: .monospaced))
+                    .foregroundStyle(Otty.Text.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            HStack(spacing: Otty.Metric.space3) {
+                Button("Open Config File") {
+                    let path = CLIConfig.resolvePath(override: nil)
+                    let url = URL(fileURLWithPath: path)
+                    // Create the parent directory so a first-time open works without a separate setup step.
+                    try? FileManager.default.createDirectory(
+                        at: url.deletingLastPathComponent(),
+                        withIntermediateDirectories: true,
+                        attributes: nil,
+                    )
+                    // Create an empty file if the config doesn't exist yet so the editor opens something.
+                    if !FileManager.default.fileExists(atPath: path) {
+                        try? "".write(to: url, atomically: true, encoding: .utf8)
+                    }
+                    NSWorkspace.shared.open(url)
+                }
+                .buttonStyle(.bordered)
+                Button("Reload Config") {
+                    // Mirror the palette's "Reload Config" action exactly (same as WorkspaceControlBackend.configReload).
+                    store.reapplyLiveSettings()
+                    NotificationCenter.default.post(
+                        name: WorkspaceControlBackend.configReloadNotification, object: nil,
+                    )
+                }
+                .buttonStyle(.bordered)
+            }
+            timingFooter(.live)
+        }
+    }
+    #endif
 
     #if os(macOS)
     /// Parse the `key=value` lines and write them into `store.rawOverrides` (empty / malformed lines ignored).

@@ -29,6 +29,10 @@ final class AislopdeskSplitViewController: NSSplitViewController {
     /// Opens the Connect-to-Host editor — wired into the inspector's Status row (ES-E2-6). The shell binds
     /// this to `overlay.openConnect()`; the no-op default keeps the controller buildable without an overlay.
     private let onConnect: () -> Void
+    /// Opens the Send-to-Chat dialog with a pre-built context (the transcript context-menu path). The shell
+    /// binds this to `overlay.openSendToChat(context:)`; the no-op default keeps the controller buildable
+    /// without an overlay.
+    private let onSendToChat: (SendToChatContext) -> Void
 
     /// Retained so the titlebar toggles can animate their collapse (set in `viewDidLoad`).
     private var sidebarItem: NSSplitViewItem?
@@ -47,6 +51,7 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         details: DetailsPanelState,
         preferences: PreferencesStore? = nil,
         onConnect: @escaping () -> Void = {},
+        onSendToChat: @escaping (SendToChatContext) -> Void = { _ in },
     ) {
         self.store = store
         self.connection = connection
@@ -54,6 +59,7 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         self.details = details
         self.preferences = preferences
         self.onConnect = onConnect
+        self.onSendToChat = onSendToChat
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -106,7 +112,10 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         //    silhouette; revealed from the toolbar (L4a). Matches otty, whose Details panel is hidden until
         //    ⌘⇧R.
         let inspector = NSHostingController(
-            rootView: InspectorColumn(store: store, connection: connection, details: details, onConnect: onConnect),
+            rootView: InspectorColumn(
+                store: store, connection: connection, details: details,
+                onConnect: onConnect, onSendToChat: onSendToChat,
+            ),
         )
 
         // Each column hosts SwiftUI in its own NSHostingController, which by DEFAULT insets its content below
