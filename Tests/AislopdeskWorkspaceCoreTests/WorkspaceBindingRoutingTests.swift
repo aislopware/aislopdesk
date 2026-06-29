@@ -74,6 +74,37 @@ final class WorkspaceBindingRoutingTests: XCTestCase {
         XCTAssertEqual(queueOpened, 2, "each ⌘⇧M re-fires the queue-mode focus nudge")
     }
 
+    // MARK: - C4 / C5: hint-mode + copy-mode arm NUDGE first responder to the active terminal
+
+    /// C4 — `.hintToOpen` arms hint mode AND fires the active terminal's `onRequestFocus` (the first-responder
+    /// nudge). Without it, if focus was elsewhere (sidebar / settings) when ⌘⇧… fired, Escape never reaches the
+    /// renderer's `keyDown` → `cancelHintMode()`, so the hint badge could never be dismissed.
+    /// REVERT-TO-CONFIRM-FAIL: with the arm left `case .hintToOpen: store.activeTerminalModel?.beginHint(.open)`
+    /// (no focus nudge) `focused` stays 0 and this fails.
+    func testHintToOpenNudgesFocusToTheActiveTerminal() throws {
+        let store = makeStore()
+        let session = try activeSession(store)
+        var focused = 0
+        session.terminalModel?.onRequestFocus = { focused += 1 }
+
+        WorkspaceBindingRegistry.route(.hintToOpen, to: store)
+        XCTAssertEqual(focused, 1, ".hintToOpen nudges first responder to the terminal so Escape can dismiss (C4)")
+    }
+
+    /// C5 — `.toggleCopyMode` arms copy-mode AND fires the active terminal's `onRequestFocus`, so Escape reaches
+    /// `keyDown` → `exitCopyMode()` even when focus was elsewhere when the chord fired (the vi/copy-mode pill
+    /// could otherwise never be dismissed via Escape). REVERT-TO-CONFIRM-FAIL: with the arm left
+    /// `case .toggleCopyMode: store.requestCopyModeInActivePane()` (no focus nudge) `focused` stays 0 and this fails.
+    func testToggleCopyModeNudgesFocusToTheActiveTerminal() throws {
+        let store = makeStore()
+        let session = try activeSession(store)
+        var focused = 0
+        session.terminalModel?.onRequestFocus = { focused += 1 }
+
+        WorkspaceBindingRegistry.route(.toggleCopyMode, to: store)
+        XCTAssertEqual(focused, 1, ".toggleCopyMode nudges first responder to the terminal so Escape can dismiss (C5)")
+    }
+
     // MARK: - .sendToChat (E13 WI-5 — forwards to the view dialog toggle, no direct composer effect)
 
     /// `.sendToChat` (E13 WI-5) opens the view-owned Send-to-Chat DIALOG via a passed-in toggle — it never

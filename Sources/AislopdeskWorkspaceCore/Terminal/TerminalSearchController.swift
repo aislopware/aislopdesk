@@ -16,6 +16,10 @@ import Foundation
 ///   occurrence on every line (overlapping matches advance by one, so "aa" in "aaa" yields two).
 /// - **Regex**: an `NSRegularExpression` over each line; an invalid pattern yields zero matches (never
 ///   traps — validate-then-drop, the untrusted-input contract applied to a user-typed pattern).
+/// - **Whole-word** (the underlined `ab` toggle): a post-filter over EITHER mode keeping only the matches
+///   whose immediately-adjacent code units are non-word (a letter / digit / `_`) — or the line edge — so the
+///   query hits a standalone token but NOT a substring inside a larger word (`the` matches "the" but not
+///   "theory"). Orthogonal to case / regex; it composes with both.
 /// Matches are ordered top-to-bottom, then left-to-right (by line index, then column), so next/prev walk
 /// the screen the way the eye reads it.
 public struct TerminalSearchController: Equatable, Sendable {
@@ -40,6 +44,10 @@ public struct TerminalSearchController: Equatable, Sendable {
     public private(set) var caseSensitive: Bool = false
     /// Treat ``query`` as an `NSRegularExpression` pattern instead of a literal substring.
     public private(set) var isRegex: Bool = false
+    /// Whole-word matching (the underlined `ab` toggle): keep only matches that stand on word boundaries —
+    /// the code units immediately before and after the match are non-word (letter/digit/`_`) or the line edge
+    /// — so the query hits a standalone token but not a substring of a larger word. Composes with case/regex.
+    public private(set) var wholeWord: Bool = false
     /// The ordered match list for the current `(lines, query, caseSensitive, isRegex)` — recomputed on any change.
     public private(set) var matches: [Match] = []
     /// The index into ``matches`` that is "current" (the one the surface scrolls to / highlights), or `nil`
@@ -89,6 +97,12 @@ public struct TerminalSearchController: Equatable, Sendable {
         recompute()
     }
 
+    /// Toggles whole-word matching and recomputes.
+    public mutating func setWholeWord(_ on: Bool) {
+        wholeWord = on
+        recompute()
+    }
+
     /// Advances the selection to the next match (wrapping past the last back to the first). No-op with no matches.
     public mutating func next() {
         guard !matches.isEmpty else { currentIndex = nil
@@ -120,7 +134,13 @@ public struct TerminalSearchController: Equatable, Sendable {
     /// when still in range, else clamp to the last match, else `nil`). Pure — no I/O.
     private mutating func recompute() {
         let previous = currentIndex
-        matches = Self.computeMatches(lines: lines, query: query, caseSensitive: caseSensitive, isRegex: isRegex)
+        matches = Self.computeMatches(
+            lines: lines,
+            query: query,
+            caseSensitive: caseSensitive,
+            isRegex: isRegex,
+            wholeWord: wholeWord,
+        )
         if matches.isEmpty {
             currentIndex = nil
         } else if let prev = previous {
@@ -132,18 +152,45 @@ public struct TerminalSearchController: Equatable, Sendable {
     }
 
     /// The pure match scanner (static so it can be reused / tested without an instance). Returns matches
-    /// ordered by line then column.
+    /// ordered by line then column. `wholeWord` post-filters EITHER mode to word-boundary matches (defaulted
+    /// off so existing callers — e.g. ``GlobalSearchController`` — are unaffected).
     public static func computeMatches(
         lines: [String],
         query: String,
         caseSensitive: Bool,
         isRegex: Bool,
+        wholeWord: Bool = false,
     ) -> [Match] {
         guard !query.isEmpty else { return [] }
-        if isRegex {
-            return regexMatches(lines: lines, pattern: query, caseSensitive: caseSensitive)
-        }
-        return literalMatches(lines: lines, needle: query, caseSensitive: caseSensitive)
+        let raw = isRegex
+            ? regexMatches(lines: lines, pattern: query, caseSensitive: caseSensitive)
+            : literalMatches(lines: lines, needle: query, caseSensitive: caseSensitive)
+        guard wholeWord else { return raw }
+        return raw.filter { isWholeWordMatch($0, in: lines) }
+    }
+
+    /// Whether `match` stands on word boundaries within its line: the code unit immediately before its start
+    /// and immediately after its end are both non-word characters (a letter / digit / `_`) — or the line edge.
+    /// Tested against single UTF-16 units (matches are UTF-16-column based), so `the` is whole-word inside
+    /// "the dog" but not inside "theory".
+    private static func isWholeWordMatch(_ match: Match, in lines: [String]) -> Bool {
+        guard lines.indices.contains(match.line) else { return false }
+        // swiftlint:disable:next legacy_objc_type
+        let ns = lines[match.line] as NSString
+        let start = match.column
+        let end = match.column + match.length
+        guard start >= 0, end <= ns.length else { return false }
+        if start > 0, isWordCodeUnit(ns.character(at: start - 1)) { return false }
+        if end < ns.length, isWordCodeUnit(ns.character(at: end)) { return false }
+        return true
+    }
+
+    /// A "word" UTF-16 code unit for whole-word boundary detection: a Unicode letter / digit, or `_` (the `\w`
+    /// sense). A lone surrogate half (no scalar) reads as a non-word boundary — safe: it never traps and an
+    /// emoji etc. is treated as a separator, which is the desired whole-word behaviour next to one.
+    private static func isWordCodeUnit(_ unit: unichar) -> Bool {
+        guard let scalar = Unicode.Scalar(UInt32(unit)) else { return false }
+        return CharacterSet.alphanumerics.contains(scalar) || scalar == "_"
     }
 
     /// Every case-(in)sensitive substring occurrence of `needle`, per line, advancing one UTF-16 unit

@@ -25,7 +25,7 @@
 //
 // Anatomy matches `find.png` (top-trailing of the focused pane, floating card, `Otty.*` tokens ONLY — raw
 // font / radius literals fail `scripts/check-ds-leaks.sh`):
-//   [ query field ][ Aa case pill ][ .* regex pill ][ N of M ][ ∧ prev ][ ∨ next ][ × close ]
+//   [ query field ][ Aa case pill ][ ab whole-word pill ][ .* regex pill ][ N of M ][ ∧ prev ][ ∨ next ][ × close ]
 // (ES-E5-2 requires the `N of M` counter; otty places it contextually — `find.png` does not show a separate
 // inline counter for the captured query, so the screenshot is NOT the source for the counter's placement. We
 // keep it before the nav chevrons as a reasonable home for the required count.)
@@ -106,6 +106,22 @@ final class TerminalFindBarModel {
         armSearch()
     }
 
+    /// `ab` (underlined) — flip whole-word matching, refresh the mirror, recompute + re-arm. Like regex, this
+    /// mode is one libghostty's LITERAL in-surface search cannot express (it has no word-boundary filter), so
+    /// the bar drives nav from its own match rows via `scroll_to_row` rather than arming `search:` — otherwise
+    /// libghostty would highlight (and `navigate_search:` would step through) every substring, diverging from
+    /// the whole-word counter. See ``needsRowDrivenNav`` / the header's REGEX-MODE CEILING note.
+    func toggleWholeWord() {
+        controller.setWholeWord(!controller.wholeWord)
+        controller.setLines(model?.searchScrollbackLines() ?? [])
+        armSearch()
+    }
+
+    /// Whether the controller's current mode CANNOT be expressed by libghostty's literal in-surface search
+    /// (no regex engine, no word-boundary filter), so the bar must drive navigation from its OWN match rows via
+    /// `scroll_to_row:` instead of arming `search:` / `navigate_search:`. True for regex OR whole-word mode.
+    private var needsRowDrivenNav: Bool { controller.isRegex || controller.wholeWord }
+
     /// ↩ / ⌘G / vi `n` — step to the next match IN THE SEARCH DIRECTION + move the live grid to it. Opens the
     /// bar first if it is closed (faithful "find next opens find"), PRESERVING the current direction. For a
     /// forward search this advances (down); for a `?`-opened backward search it RETREATS (up) — vim's "`n`
@@ -138,18 +154,19 @@ final class TerminalFindBarModel {
     /// viewport directly to the match's row via `scroll_to_row:<row>`, keeping the chevrons / ⌘G live against a
     /// count libghostty can't itself compute.
     private func navigateToCurrentMatch(forward: Bool) {
-        guard controller.isRegex else {
+        guard needsRowDrivenNav else {
             model?.performSearchSurfaceAction(forward ? "navigate_search:next" : "navigate_search:previous")
             return
         }
-        scrollToCurrentRegexMatch()
+        scrollToCurrentMatchRow()
     }
 
-    /// Scroll the live viewport to the controller's current regex match row (`Match.line` indexes the same
+    /// Scroll the live viewport to the controller's current match row (`Match.line` indexes the same
     /// `scrollbackTextLines()` mirror the controller scanned, matching libghostty's `scroll_to_row:<usize>`
-    /// addressing). No current match (empty / unmatched query) ⇒ nothing to scroll to.
-    private func scrollToCurrentRegexMatch() {
-        guard controller.isRegex, let row = controller.current?.line else { return }
+    /// addressing). Used by the row-driven modes (regex / whole-word) that libghostty's literal search cannot
+    /// itself express. No current match (empty / unmatched query) ⇒ nothing to scroll to.
+    private func scrollToCurrentMatchRow() {
+        guard needsRowDrivenNav, let row = controller.current?.line else { return }
         model?.performSearchSurfaceAction("scroll_to_row:\(row)")
     }
 
@@ -164,19 +181,20 @@ final class TerminalFindBarModel {
     /// Push the current query into libghostty's own in-surface search (it owns the amber highlight + the
     /// scroll-to-match); an empty query ends the search so a stale highlight clears.
     ///
-    /// REGEX mode never arms `search:` — libghostty's matcher is literal, so arming the pattern would paint a
-    /// misleading literal highlight beside the controller's (correct) regex count and leave `navigate_search:`
-    /// dead. Instead it ENDS the literal search (clearing any stale highlight) and scrolls the viewport to the
-    /// current regex match via `scroll_to_row` (see the header's REGEX-MODE CEILING note).
+    /// REGEX (and WHOLE-WORD) mode never arms `search:` — libghostty's matcher is a plain literal substring
+    /// scan with no regex engine and no word-boundary filter, so arming the needle would paint a misleading
+    /// highlight beside the controller's (correct) count and leave `navigate_search:` stepping the wrong set.
+    /// Instead these modes END the literal search (clearing any stale highlight) and scroll the viewport to the
+    /// current match's row via `scroll_to_row` (see the header's REGEX-MODE CEILING note).
     private func armSearch() {
         let query = controller.query
         guard !query.isEmpty else {
             model?.performSearchSurfaceAction("end_search")
             return
         }
-        if controller.isRegex {
+        if needsRowDrivenNav {
             model?.performSearchSurfaceAction("end_search")
-            scrollToCurrentRegexMatch()
+            scrollToCurrentMatchRow()
         } else {
             model?.performSearchSurfaceAction("search:\(query)")
         }
@@ -208,10 +226,8 @@ struct TerminalFindBar: View {
     var body: some View {
         HStack(spacing: Otty.Metric.space1) {
             queryField
-            // KNOWN FIDELITY GAP: find.png shows THREE individually-outlined mode chips (Aa, an underlined
-            // whole-word `ab`, .*); we emit only Aa + .* because ``TerminalSearchController`` has no whole-word
-            // mode. The third chip is deliberately deferred (engine-blocked, not lost) — the two-chip set is
-            // intentional, not an accident. ``FindTogglePillTray`` lays them out identically to global-search.
+            // find.png's THREE individually-outlined mode chips: case (`Aa`), whole-word (underlined `ab`),
+            // and regex (`.*`), in that order. ``FindTogglePillTray`` lays them out identically to global-search.
             FindTogglePillTray {
                 FindTogglePill(
                     label: "Aa",
@@ -220,6 +236,15 @@ struct TerminalFindBar: View {
                     plate: plate,
                 ) {
                     model.toggleCaseSensitive()
+                }
+                FindTogglePill(
+                    label: "ab",
+                    isOn: model.controller.wholeWord,
+                    help: "Whole word",
+                    plate: plate,
+                    underlined: true, // otty draws the whole-word chip's glyph underlined (find.png)
+                ) {
+                    model.toggleWholeWord()
                 }
                 FindTogglePill(label: ".*", isOn: model.controller.isRegex, help: "Regex (ICU)", plate: plate) {
                     model.toggleRegex()
@@ -344,7 +369,7 @@ struct FindTogglePillTray<Content: View>: View {
     }
 }
 
-/// A compact `Aa` / `.*` toggle pill (the two find-bar mode buttons), laid out inside a ``FindTogglePillTray``.
+/// A compact `Aa` / `ab` / `.*` toggle pill (the find-bar mode buttons), laid out inside a ``FindTogglePillTray``.
 /// LOCKED rendering (see the tray's doc comment — screenshot-matched, final): each chip is INDIVIDUALLY
 /// outlined. idle → its OWN `Surface.card` resting plate + a `Line.subtle` hairline border (delineated, never a
 /// bare glyph); hover → a `State.hover` plate (border held); on → accent text on an `accentMuted` wash + an
@@ -356,6 +381,9 @@ struct FindTogglePill: View {
     let isOn: Bool
     var help: String?
     var plate: CGFloat = Otty.Metric.plate
+    /// Underline the glyph (the whole-word `ab` chip in find.png / global-search.png draws underlined). The
+    /// `Aa` / `.*` chips pass `false` so only the whole-word chip wears the underline.
+    var underlined: Bool = false
     let action: () -> Void
 
     @State private var hovering = false
@@ -363,6 +391,7 @@ struct FindTogglePill: View {
     var body: some View {
         Button(action: action) {
             Text(label)
+                .underline(underlined)
                 .font(.system(size: Otty.Typeface.footnote, weight: .semibold, design: .monospaced))
                 .foregroundStyle(isOn ? Otty.State.accent : Otty.Text.secondary)
                 .frame(minWidth: plate, minHeight: plate)

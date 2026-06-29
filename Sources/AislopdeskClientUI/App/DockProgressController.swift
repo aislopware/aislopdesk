@@ -35,7 +35,12 @@ public final class DockProgressController {
     /// owns; see docs/DECISIONS.md). The app wires this to ``WorkspaceStore/revealNextErrorPane()``.
     public var onActivatedWhileErrored: () -> Void = {}
 
-    public init(dockTile: NSDockTile = NSApp.dockTile) {
+    // `NSApplication.shared` (NOT the `NSApp` IUO global) so the default argument is safe even when the
+    // controller is built during `App.init()` — at that point in the SwiftUI macOS lifecycle the `NSApp`
+    // global can still be nil (it is only wired once `.shared` is first touched), so `NSApp.dockTile` would
+    // trap "found nil while implicitly unwrapping". `.shared` is non-optional and creates the app object if
+    // needed, which also wires `NSApp` for the later `requestUserAttention` / `applicationIconImage` uses.
+    public init(dockTile: NSDockTile = NSApplication.shared.dockTile) {
         self.dockTile = dockTile
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main,

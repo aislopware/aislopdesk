@@ -76,6 +76,19 @@ struct HintModeOverlay: View {
                 HintModeBadge(intent: intent, typed: typed, onExit: { model.cancelHintMode() })
                     .padding(Otty.Metric.space2)
             }
+            // Belt-and-suspenders Escape dismiss (C4): the primary cancel is the renderer's `keyDown` →
+            // `cancelHintMode()` once the terminal is first responder (the routing now nudges focus there). This
+            // safety net — if Escape lands in the overlay's responder chain instead of the surface — still cancels
+            // the mode (the same idiom PaletteView / OpenQuicklyView use: macOS `onExitCommand`, which is
+            // unavailable on iOS, so the iOS slice uses the equivalent `.onKeyPress(.escape)`).
+            #if os(macOS)
+            .onExitCommand { model.cancelHintMode() }
+            #else
+            .onKeyPress(.escape, phases: .down) { _ in
+                model.cancelHintMode()
+                return .handled
+            }
+            #endif
             .transition(.opacity)
         }
     }

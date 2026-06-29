@@ -184,11 +184,23 @@ public extension WorkspaceBindingRegistry {
         // for the chosen intent (open / copy / reveal). The mode lives on the pane's `TerminalViewModel`
         // (`beginHint(_:)`) so the renderer's key capture + the overlay read ONE source; a no-op for a
         // non-terminal active pane, an empty shell, a headless surface, or an alt-screen TUI (don't fight it).
-        case .hintToOpen: store.activeTerminalModel?.beginHint(.open)
-        case .hintToCopy: store.activeTerminalModel?.beginHint(.copy)
-        case .hintToReveal: store.activeTerminalModel?.beginHint(.reveal)
-        // Copy Mode (P5b): arm modal keyboard scrollback navigation over the active terminal pane.
-        case .toggleCopyMode: store.requestCopyModeInActivePane()
+        // After arming, NUDGE first-responder to the terminal (`onRequestFocus`) so Escape reaches the
+        // renderer's `keyDown` → `cancelHintMode()` — otherwise, if focus was elsewhere (sidebar / settings)
+        // when the chord fired, Escape never routes to the surface and the badge can't be dismissed (C4).
+        case .hintToOpen:
+            store.activeTerminalModel?.beginHint(.open)
+            store.activeTerminalModel?.onRequestFocus?()
+        case .hintToCopy:
+            store.activeTerminalModel?.beginHint(.copy)
+            store.activeTerminalModel?.onRequestFocus?()
+        case .hintToReveal:
+            store.activeTerminalModel?.beginHint(.reveal)
+            store.activeTerminalModel?.onRequestFocus?()
+        // Copy Mode (P5b): arm modal keyboard scrollback navigation over the active terminal pane. As with hint
+        // mode, focus the terminal after arming so Escape reaches `keyDown` → `exitCopyMode()` (C5).
+        case .toggleCopyMode:
+            store.requestCopyModeInActivePane()
+            store.activeTerminalModel?.onRequestFocus?()
         // Vi Mode Key Hints (E17 ES-E17-2 / WI-5): the DISCOVERABLE palette / menu command toggles the active
         // pane's vi key-hint bar directly (the same seam the contextual `⌘/` fires). A graceful no-op for an
         // empty / non-terminal pane; outside vi mode the bar stays gated off.
@@ -384,12 +396,22 @@ public extension WorkspaceBindingRegistry {
         case .jumpTo: toggles.jumpTo?()
         // Hint Mode (E10 WI-9): the canvas path resolves the active pane via canvas focus, so the same model
         // seam arms hints there too (a no-op for a non-terminal active pane / empty shell / alt-screen TUI).
-        case .hintToOpen: store.activeTerminalModel?.beginHint(.open)
-        case .hintToCopy: store.activeTerminalModel?.beginHint(.copy)
-        case .hintToReveal: store.activeTerminalModel?.beginHint(.reveal)
+        // Focus the terminal after arming so Escape reaches `keyDown` → `cancelHintMode()` (C4) — same fix as tree.
+        case .hintToOpen:
+            store.activeTerminalModel?.beginHint(.open)
+            store.activeTerminalModel?.onRequestFocus?()
+        case .hintToCopy:
+            store.activeTerminalModel?.beginHint(.copy)
+            store.activeTerminalModel?.onRequestFocus?()
+        case .hintToReveal:
+            store.activeTerminalModel?.beginHint(.reveal)
+            store.activeTerminalModel?.onRequestFocus?()
         // Copy Mode (P5b): the canvas path resolves the active pane via canvas focus, so the same store hook
-        // arms copy-mode there too (a no-op for a non-terminal active pane / empty shell).
-        case .toggleCopyMode: store.requestCopyModeInActivePane()
+        // arms copy-mode there too (a no-op for a non-terminal active pane / empty shell). Focus the terminal
+        // after arming so Escape reaches `keyDown` → `exitCopyMode()` (C5).
+        case .toggleCopyMode:
+            store.requestCopyModeInActivePane()
+            store.activeTerminalModel?.onRequestFocus?()
         // Vi Mode Key Hints (E17 ES-E17-2 / WI-5): the canvas path uses the SAME store seam as the tree path to
         // toggle the active pane's vi key-hint bar (a no-op for a non-terminal / empty active pane).
         case .toggleViKeyHints: store.toggleViKeyHintsInActivePane()

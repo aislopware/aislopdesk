@@ -141,6 +141,9 @@ struct PaletteView: View {
                 .font(.system(size: Otty.Typeface.small, weight: .semibold))
                 .tracking(0.8)
                 .foregroundStyle(Otty.State.header)
+                // The section label always wins the layout: a long cwd pill truncates its path, never the
+                // "WORKING DIRECTORY" header it sits on.
+                .layoutPriority(1)
             Spacer(minLength: Otty.Metric.space2)
             // The contextual cwd badge sits flush-right on the WORKING DIRECTORY header it OWNS — matched by
             // the category label, NOT "whichever separator sorts first" (which mislabelled a Recents/Actions
@@ -162,6 +165,9 @@ struct PaletteView: View {
             Text(cwd)
                 .font(.system(size: Otty.Typeface.small))
                 .lineLimit(1)
+                // Head-truncate so the leaf (the directory you're actually in) stays visible when the pill
+                // shrinks — default `.tail` would drop the most meaningful part of the path.
+                .truncationMode(.head)
         }
         .foregroundStyle(Otty.Text.secondary)
         .padding(.horizontal, Otty.Metric.space2)

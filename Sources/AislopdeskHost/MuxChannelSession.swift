@@ -106,6 +106,17 @@ final class MuxChannelSession: @unchecked Sendable {
     private let echoDetectLock = NSLock()
     private var echoDetector = EchoModeDetector()
 
+    /// C3 — connect-time warm-up guard for the echo edge (guarded by `echoDetectLock`). A freshly
+    /// connected PTY master can read `ECHO`-cleared for a sample or two right after attach — before the
+    /// shell's line discipline settles to echo-on — and folding that transient as a real edge would emit
+    /// a spurious `inputEcho(false)` that LATCHES the client's Secure-Input pill on a normal echo-on
+    /// prompt. So the connect/keystroke/poll path (``foldEchoSample(echoOn:)``) HONORS a no-echo edge only
+    /// AFTER it has first observed a confirmed echo-ON sample (a stable read cycle). This is the
+    /// "genuine echo→no-echo transition" the AUTO signal is meant for. The reattach path
+    /// (``reestablishEchoOnReattach(echoOn:)``) is SEPARATE — it deliberately re-asserts the current echo
+    /// truth immediately and is NOT gated by this flag.
+    private var echoWarmedUp = false
+
     // MARK: - Agent-control surface state
 
     /// The last OSC-0/2 title sniffed from the PTY output stream. Updated on the PTY
@@ -616,6 +627,18 @@ final class MuxChannelSession: @unchecked Sendable {
     /// OS probe and the pure fold are separable (the fold is exercised directly by tests via a seam).
     private func foldEchoSample(echoOn: Bool) {
         echoDetectLock.lock()
+        // C3: until a confirmed echo-ON sample has been seen on THIS connection, suppress a no-echo
+        // reading entirely (don't fold it, don't emit) — a transient startup no-echo (the PTY termios
+        // not yet settled to echo-on) must not latch the client's Secure-Input pill. The first echo-on
+        // sample warms the path up; from then on a genuine echo→no-echo transition folds normally and
+        // emits with no added latency. (Reattach has its own un-gated re-assert path.)
+        if !echoWarmedUp {
+            guard echoOn else {
+                echoDetectLock.unlock()
+                return
+            }
+            echoWarmedUp = true
+        }
         let message = echoDetector.sample(echoOn: echoOn)
         echoDetectLock.unlock()
         if let message { enqueueControl([message]) }

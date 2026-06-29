@@ -274,9 +274,13 @@ struct OttyTheme {
         orange: 0xFC9867, purple: 0xAB9DF2, isLight: false,
     ))
 
+    // P5 (Phase-C GUI audit): the navigator `sidebar` was a touch dim/cool vs otty's warm cream/paper. Nudged
+    // 0xEDE7E5 → 0xF1EBE8 — brighter + a hair warmer, HUE-PRESERVING (keeps the seed's rose R>G>B ratio, just
+    // closer to the warm `background`) so the navigator reads as warm paper, not grey. Only `sidebar` moves —
+    // `background`/`elevated` (the flat backdrop + active-tab card) are untouched, so no surface ripples.
     /// Monokai Pro Light (Classic Light) — the warm off-white light filter.
     static let monokaiProClassicLight = monokai(MonokaiSeed(
-        name: "classic-light", background: 0xFAF4F2, sidebar: 0xEDE7E5, elevated: 0xFFFFFF,
+        name: "classic-light", background: 0xFAF4F2, sidebar: 0xF1EBE8, elevated: 0xFFFFFF,
         foreground: 0x29242A, secondary: 0x918C8E, tertiary: 0xA59FA0,
         accent: 0x1C8CA8, ok: 0x269D69, warn: 0xCC7A0A, err: 0xE14775, info: 0x1C8CA8,
         orange: 0xD4572B, purple: 0x7058BE, isLight: true,

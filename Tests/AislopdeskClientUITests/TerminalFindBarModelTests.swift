@@ -230,6 +230,40 @@ final class TerminalFindBarModelTests: XCTestCase {
         }
     }
 
+    /// `ab` whole-word: the toggle flips the controller flag and NARROWS the literal match set to standalone
+    /// words (`the` matches "the"/"the cat" but not "theory"). Because libghostty's literal in-surface search
+    /// has no word-boundary filter, whole-word mode (like regex) must NOT arm `search:`/`navigate_search:` —
+    /// it ends the literal search and drives the viewport from its own match rows via `scroll_to_row` so the
+    /// chevrons step the SAME set the counter reports. Revert-to-confirm-fail: the un-fixed model had no
+    /// `toggleWholeWord()` and armed `search:the` for any literal query, so both assertions below fail on it.
+    func testWholeWordTogglesNarrowMatchesAndDriveRowNav() {
+        // Standalone "the" on rows 0 and 2; "theory" on row 1 holds "the" only as a substring.
+        withBar(lines: ["the", "theory", "the cat"]) { bar, surface in
+            bar.open()
+            bar.toggleWholeWord() // flip BEFORE querying so no literal `search:` is ever armed for it
+            XCTAssertTrue(bar.controller.wholeWord)
+
+            bar.setQuery("the")
+            XCTAssertEqual(bar.controller.matchCount, 2, "whole-word drops the 'the' buried in 'theory'")
+            XCTAssertFalse(
+                surface.actions.contains("search:the"),
+                "whole-word mode must not arm libghostty's literal (no-boundary) search",
+            )
+            XCTAssertTrue(
+                surface.actions.contains("scroll_to_row:0"),
+                "open scrolls to the first whole-word match row",
+            )
+
+            surface.resetActions()
+            bar.next() // second match → row 2
+            XCTAssertEqual(surface.actions, ["scroll_to_row:2"], "whole-word next steps the viewport by row")
+            XCTAssertFalse(
+                surface.actions.contains(where: { $0.hasPrefix("navigate_search:") }),
+                "whole-word mode never fires libghostty's literal navigate_search",
+            )
+        }
+    }
+
     /// Companion guard: LITERAL mode is UNCHANGED by the regex fix — it still arms `search:` and steps
     /// libghostty's own `navigate_search:next`/`previous` (the ac2c7a8 fix), and never falls back to scroll_to_row.
     func testLiteralModeStillArmsSearchAndNavigateSearch() {
