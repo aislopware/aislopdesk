@@ -75,6 +75,35 @@ final class EchoModeWatcherTests: XCTestCase {
         )
     }
 
+    // MARK: PTYEchoProbe.echoOn — ECHO-vs-line-editor discrimination (the live "pill on a normal
+
+    // prompt" fix). REVERT-TO-FAIL: an ECHO-only probe (`return echoBitSet`) fails
+    // `testLineEditorRawPromptReadsEchoOn` — at a zsh/starship `zle` prompt ECHO is cleared, so the
+    // old probe reported no-echo and latched the Secure-Input pill on an ordinary prompt.
+
+    func testLineEditorRawPromptReadsEchoOn() {
+        // zsh `zle` / bash readline / a full-screen TUI: ECHO cleared AND ICANON cleared (raw editing,
+        // the editor does its own echo). This is the NORMAL interactive steady state — it must read
+        // echo-ON so the pill does NOT light on a plain prompt.
+        XCTAssertTrue(PTYEchoProbe.echoOn(echoBitSet: false, canonicalBitSet: false))
+    }
+
+    func testHiddenPasswordPromptReadsNoEcho() {
+        // sudo / ssh / getpass / `read -s`: ECHO cleared but the line stays CANONICAL (ICANON set) —
+        // a genuine hidden-password prompt. This is the ONLY case that reports no-echo (→ pill on).
+        XCTAssertFalse(PTYEchoProbe.echoOn(echoBitSet: false, canonicalBitSet: true))
+    }
+
+    func testCookedChildReadsEchoOn() {
+        // A normal cooked foreground child (`cat`): ECHO set, canonical — plainly echo-on, no pill.
+        XCTAssertTrue(PTYEchoProbe.echoOn(echoBitSet: true, canonicalBitSet: true))
+    }
+
+    func testRawEchoSetReadsEchoOn() {
+        // ECHO set but raw (ICANON cleared) — not a hidden-password prompt; echo-on, no pill.
+        XCTAssertTrue(PTYEchoProbe.echoOn(echoBitSet: true, canonicalBitSet: false))
+    }
+
     // MARK: explicit initial anchor
 
     func testInitialEchoOffAnchorIsSilentOnEchoOff() {
