@@ -165,7 +165,7 @@ The Details Panel is a right-side panel that gives context about the focused pan
   - `▼ skills` (expanded):
     - `update-alacritty`
     - (more items cut off)
-- **Tree styling:** Each row is ~22px tall, disclosure triangle is ~8px, file icons are absent (plain text filenames only in this screenshot). Indentation ~16px per level. Active/selected rows would show a subtle blue highlight. Text ~12–13pt dark.
+- **Tree styling:** Each row is ~22px tall, disclosure triangle is ~8px. Each row carries a leading **type glyph** — an accent/green outline **folder** icon for directories and a muted **doc** icon for files (visible in `file-panel.png`; an earlier draft of this note mis-read them as absent). Indentation ~16px per level. Active/selected rows would show a subtle blue highlight. Text ~12–13pt dark.
 - **No "Open" button** — clicking a file presumably opens it or reveals it.
 
 ## Screenshots

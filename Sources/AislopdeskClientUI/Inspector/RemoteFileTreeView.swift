@@ -123,6 +123,13 @@ struct RemoteFileTreeView: View {
                 } else {
                     Color.clear.frame(width: 10)
                 }
+                // otty's Files tree tags every row with a leading type glyph (see file-panel.png — the
+                // authoritative reference): an accent-tinted folder for directories, a muted doc for files.
+                // (The spec prose mis-transcribed this as "icons absent"; the screenshot is source-of-truth.)
+                Image(systemName: row.isDir ? "folder" : "doc")
+                    .font(.system(size: Otty.Typeface.small))
+                    .foregroundStyle(row.isDir ? Otty.State.accent : Otty.Text.icon)
+                    .frame(width: 14, alignment: .center)
                 Text(row.name)
                     .foregroundStyle(Otty.Text.primary)
                     .lineLimit(1)
