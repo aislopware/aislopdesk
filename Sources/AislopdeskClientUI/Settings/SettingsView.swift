@@ -442,7 +442,7 @@ private struct GeneralSettingsTab: View {
 
     var body: some View {
         Form {
-            Section(GeneralSettingsLayout.general) {
+            ottyFormSection(GeneralSettingsLayout.general) {
                 Picker("On Launch", selection: $onLaunch) {
                     Text("Restore Last Session").tag(OnLaunchBehavior.restoreLastSession)
                     Text("New Window").tag(OnLaunchBehavior.newWindow)
@@ -450,13 +450,13 @@ private struct GeneralSettingsTab: View {
                 timingFooter(.live)
             }
 
-            Section(GeneralSettingsLayout.closeConfirmation) {
+            ottyFormSection(GeneralSettingsLayout.closeConfirmation) {
                 Picker("Closing Tab", selection: $closeConfirmTab) { closeConfirmOptions }
                 Picker("Closing Window", selection: $closeConfirmWindow) { closeConfirmOptions }
                 timingFooter(.live)
             }
 
-            Section(GeneralSettingsLayout.privacyAndNewPanes) {
+            ottyFormSection(GeneralSettingsLayout.privacyAndNewPanes) {
                 Toggle("Redact likely secrets from titles", isOn: $redactSecrets)
                 Picker("Default pane kind", selection: $defaultPaneKind) {
                     Text("Terminal").tag(PaneKind.terminal)
@@ -491,7 +491,7 @@ private struct GeneralSettingsTab: View {
     /// exclusion §4 / no dead button). macOS-only; iOS never compiles this.
     #if os(macOS)
     private var osIntegrationSection: some View {
-        Section(GeneralSettingsLayout.osIntegration) {
+        ottyFormSection(GeneralSettingsLayout.osIntegration) {
             osIntegrationRow(
                 "Default Terminal",
                 "Handle `ssh://` links and shell scripts opened from Finder or `open`.",
@@ -621,7 +621,7 @@ private struct ShellSettingsTab: View {
             // Working Directory's Shell home is confirmed by otty's docs (NOT unconfirmed-by-screenshot):
             // `spec/user-interface__window-tab-split.md` ("Settings → Shell → Working Directory" + the
             // `open-option.png` reference) places this group on the Shell page.
-            Section("Working Directory") {
+            ottyFormSection("Working Directory") {
                 Picker("New window", selection: workingDirBinding($workingDirNewWindow)) { workingDirOptions }
                 Picker("New tab", selection: workingDirBinding($workingDirNewTab)) { workingDirOptions }
                 Picker("New split", selection: workingDirBinding($workingDirNewSplit)) { workingDirOptions }
@@ -632,7 +632,7 @@ private struct ShellSettingsTab: View {
             // symlink + admin escalation are `#if os(macOS)`, so iOS omits the section rather than ship a dead
             // toggle. Shares `CLIInstallCardBody` with the first-launch Install-CLI step (one source).
             #if os(macOS)
-            Section("Aislopdesk CLI") {
+            ottyFormSection("Aislopdesk CLI") {
                 CLIInstallCardBody(installer: cliInstaller)
                 timingFooter(.live)
             }
@@ -649,7 +649,7 @@ private struct ShellSettingsTab: View {
     /// tri-state picker + Bounce Dock Icon (macOS-only — no Dock on iOS). Extracted so the `Form` closure
     /// stays under the `closure_body_length` ceiling.
     private var notificationSection: some View {
-        Section("Notification") {
+        ottyFormSection("Notification") {
             NotificationPermissionRow()
             toggleRow(
                 "Allow App Notifications",
@@ -705,7 +705,7 @@ private struct ShellSettingsTab: View {
     /// Awaits Input" gates a plain-command awaiting-input hand; the host detector that DRIVES that badge is a
     /// deferred ceiling (DECISIONS.md), so the toggle ships ahead of the signal it will gate.
     private var tabBadgeSection: some View {
-        Section("Tab Badge") {
+        ottyFormSection("Tab Badge") {
             toggleRow(
                 "When Command Finishes",
                 "Badge the tab when a command exits successfully.",
@@ -727,7 +727,7 @@ private struct ShellSettingsTab: View {
 
     /// The otty SOUND group (Shell): the BEL → system-beep gate + the error-exit beep (E14/K10).
     private var soundSection: some View {
-        Section("Sound") {
+        ottyFormSection("Sound") {
             toggleRow(
                 "Sound — Shell Controlled",
                 "Let shell apps ring the terminal bell (BEL) as the system alert sound.",
@@ -744,7 +744,7 @@ private struct ShellSettingsTab: View {
 
     /// The otty CODE AGENT group (Claude-only — E14 scope exclusion). IPC-driven, no shell integration needed.
     private var codeAgentSection: some View {
-        Section("Code Agent") {
+        ottyFormSection("Code Agent") {
             toggleRow(
                 "Notify When Task Completes",
                 "Notify when a coding agent finishes a task and goes idle.",
@@ -925,7 +925,7 @@ private struct ControlsSettingsTab: View {
 
     var body: some View {
         Form {
-            Section("Selection") {
+            ottyFormSection("Selection") {
                 toggleRow(
                     "Shift+Arrow Select",
                     "Use Shift+arrows to drive a native selection instead of forwarding the arrow escapes.",
@@ -950,7 +950,7 @@ private struct ControlsSettingsTab: View {
                 timingFooter(.live)
             }
 
-            Section("Copy & Paste") {
+            ottyFormSection("Copy & Paste") {
                 toggleRow(
                     "Copy on Select",
                     "Copy the selection to the pasteboard as soon as it is made.",
@@ -982,7 +982,7 @@ private struct ControlsSettingsTab: View {
 
             linkSchemesSection
 
-            Section("Keyboard") {
+            ottyFormSection("Keyboard") {
                 toggleRow(
                     "Undo at Prompt",
                     "Press Cmd-Z at the shell prompt to emit the readline undo sequence.",
@@ -1005,7 +1005,7 @@ private struct ControlsSettingsTab: View {
             // Secure Input (E17 ES-E17-4 / WI-7) — macOS-only (process-global `EnableSecureEventInput`). The
             // whole Section is `#if os(macOS)`, so the iOS sheet hides it; the `SettingsKey` keys still compile.
             #if os(macOS)
-            Section("Secure Input") {
+            ottyFormSection("Secure Input") {
                 toggleRow(
                     "Auto Secure Input",
                     "Automatically engage macOS Secure Keyboard Entry when the remote shell shows a hidden "
@@ -1021,7 +1021,7 @@ private struct ControlsSettingsTab: View {
             }
             #endif
 
-            Section("System") {
+            ottyFormSection("System") {
                 Toggle("Auto-spawn panes for system password dialogs", isOn: $systemDialogPanes)
                 timingFooter(.live)
             }
@@ -1032,7 +1032,7 @@ private struct ControlsSettingsTab: View {
     /// otty Settings → Controls → Scroll. Extracted from `body` so the `Form` closure stays under the
     /// `closure_body_length` ceiling; the rows are unchanged.
     private var scrollSection: some View {
-        Section("Scroll") {
+        ottyFormSection("Scroll") {
             toggleRow(
                 "Scroll to Bottom on Output",
                 "Snap the viewport to the bottom when new output arrives.",
@@ -1085,7 +1085,7 @@ private struct ControlsSettingsTab: View {
     /// otty `mouse-option.png` order. Extracted from `body` so the `Form` closure stays under the
     /// `closure_body_length` ceiling; the rows are unchanged.
     private var mouseSection: some View {
-        Section("Mouse") {
+        ottyFormSection("Mouse") {
             toggleRow(
                 "Mouse Over to Focus",
                 "Focus the pane under the mouse cursor automatically.",
@@ -1146,7 +1146,7 @@ private struct ControlsSettingsTab: View {
     /// target pickers, the actionable otty config keys (`link-cmd-click` / `link-cmd-shift-click`) are
     /// surfaced and the reduced target set is documented as a footnote, not a control.
     private var openWithSection: some View {
-        Section("Open With") {
+        ottyFormSection("Open With") {
             Toggle(isOn: $linkDetection) {
                 rowLabel(
                     "Detect Links & Paths",
@@ -1185,7 +1185,7 @@ private struct ControlsSettingsTab: View {
     /// otty Settings → Controls → Link Schemes (E10 WI-3). The custom-scheme list is editable only when the
     /// mode is Custom; `http(s)` / `file` / `mailto` are always detected regardless of this mode.
     private var linkSchemesSection: some View {
-        Section("Link Schemes") {
+        ottyFormSection("Link Schemes") {
             linkPickerRow(
                 "Auto-Detect Link Schemes",
                 "Which URL schemes get underlined on Cmd-hover and made clickable. All detects any "
@@ -1304,7 +1304,7 @@ private struct ControlsSettingsTab: View {
 private struct EditorSettingsTab: View {
     var body: some View {
         Form {
-            Section("Editor") {
+            ottyFormSection("Editor") {
                 LabeledContent("File editor") {
                     Text("Not available")
                         .foregroundStyle(Otty.Text.tertiary)
@@ -1381,7 +1381,7 @@ private struct RecipesSettingsTab: View {
     // MARK: Snippets list + Add
 
     private var snippetsSection: some View {
-        Section("Snippets") {
+        ottyFormSection("Snippets") {
             if let store = workspaceStore {
                 let snippets = store.snippets
                 if snippets.isEmpty {
@@ -1444,7 +1444,7 @@ private struct RecipesSettingsTab: View {
     // MARK: Command Replay + at-prompt auto-expand
 
     private var commandReplaySection: some View {
-        Section("Command Replay") {
+        ottyFormSection("Command Replay") {
             Picker("Saved Recipes", selection: $replayModeSaved) {
                 ForEach(RecipeReplayMode.allCases, id: \.self) { mode in
                     Text(mode.displayName).tag(mode)
@@ -1554,7 +1554,7 @@ private struct AppearanceSettingsTab: View {
             // and BACKED — the Auto Hide picker drives `SidebarAutoHidePolicy` (E19/A18, WI-2/WI-7) and the
             // Window Size picker + steppers feed `WindowSizeMath` through the macOS `NSWindow` glue (E19/A29,
             // WI-1/WI-4); neither is dead UI.
-            Section("Tabs") {
+            ottyFormSection("Tabs") {
                 Picker("New tab position", selection: $newTabPosition) {
                     Text("Automatic").tag(NewTabPosition.auto)
                     Text("End").tag(NewTabPosition.end)
@@ -1587,7 +1587,7 @@ private struct AppearanceSettingsTab: View {
             // slot's custom slug), picking a custom writes `customLightSlug`/`customDarkSlug` so the slot points
             // at the scanned document. With "Use separated theme for dark mode" ON the OS appearance selects the
             // slot, so a Dark Theme picker appears below the toggle (`dark-mode-theme.png`).
-            Section("Theme") {
+            ottyFormSection("Theme") {
                 Picker("Theme", selection: themeSelectionBinding(forDarkSlot: false)) {
                     themeOptions
                 }
@@ -1622,7 +1622,7 @@ private struct AppearanceSettingsTab: View {
             }
 
             if store.appearance.useSeparateDarkTheme ?? false {
-                Section("Dark Theme") {
+                ottyFormSection("Dark Theme") {
                     Picker("Dark Theme", selection: themeSelectionBinding(forDarkSlot: true)) {
                         themeOptions
                     }
@@ -1643,7 +1643,7 @@ private struct AppearanceSettingsTab: View {
             #if os(macOS)
             CursorPreviewView(store: store)
             #else
-            Section("Cursor") {
+            ottyFormSection("Cursor") {
                 Picker("Style", selection: $store.terminal.cursorStyle) {
                     ForEach(TerminalPreferences.CursorStyle.allCases, id: \.self) { style in
                         Text(style.displayName).tag(style)
@@ -1657,7 +1657,7 @@ private struct AppearanceSettingsTab: View {
             }
             #endif
 
-            Section("Chrome") {
+            ottyFormSection("Chrome") {
                 Toggle("Show command dividers", isOn: $showBlockDividers)
                 Toggle("Hide status bar", isOn: $hideStatusBar)
             }
@@ -1667,7 +1667,7 @@ private struct AppearanceSettingsTab: View {
             // `#if os(macOS)`, absent on iOS). Both toggles actuate ``DockProgressController`` via the pure
             // ``DockTintPolicy`` (read fire-time through `WorkspaceStore.dockTileModel`), so neither is dead UI.
             #if os(macOS)
-            Section("Dock Icon") {
+            ottyFormSection("Dock Icon") {
                 Toggle("Animate Icon on Progress", isOn: $dockIconAnimateProgress)
                 Toggle("Red Icon on Error", isOn: $dockIconErrorBadge)
             }
@@ -1765,7 +1765,7 @@ private struct AppearanceSettingsTab: View {
     /// the footer note says so. macOS-only (no resizable window on iOS).
     #if os(macOS)
     private var windowSection: some View {
-        Section("Window") {
+        ottyFormSection("Window") {
             pickerRow(
                 "Window Size",
                 "How new windows decide their initial dimensions.",
@@ -1867,7 +1867,7 @@ private struct AgentsSettingsTab: View {
         Form {
             claudeCodeSection
 
-            Section("Agent detection (host)") {
+            ottyFormSection("Agent detection (host)") {
                 optionalBoolToggle("Foreground-process watch", $store.agent.agentDetect)
                 optionalBoolToggle("Claude Code hooks", $store.agent.agentHooks)
                 timingFooter(.reconnect)
@@ -1876,7 +1876,7 @@ private struct AgentsSettingsTab: View {
             agentBehaviorSection
             agentBehaviorHostSection
 
-            Section("Behaviour") {
+            ottyFormSection("Behaviour") {
                 Toggle("Auto-switch layouts on trigger app", isOn: $autoSwitchLayouts)
                 Toggle("Record clipboard history", isOn: $recordClipboardHistory)
                 timingFooter(.live)
@@ -1894,7 +1894,7 @@ private struct AgentsSettingsTab: View {
     /// integration is installed (``behaviorEnabled``); Claude-only. The badge toggles drive the GLOBAL
     /// ``AgentBadgeGates`` default the sidebar applies (a per-pane override lives on the tab context-menu).
     private var agentBehaviorSection: some View {
-        Section("Agent Behaviour") {
+        ottyFormSection("Agent Behaviour") {
             Toggle("Badge While Processing", isOn: $agentBadgeWhileProcessing)
             Toggle("Badge When Task Completes", isOn: $agentBadgeWhenComplete)
             Toggle("Badge When Awaiting Input", isOn: $agentBadgeWhenAwaitingInput)
@@ -1913,7 +1913,7 @@ private struct AgentsSettingsTab: View {
     /// The host-side Agent-Behaviour flags (apply on RECONNECT) — Prevent Sleep + Resume on Recovery, riding
     /// the ``AgentPreferences`` sidecar (`$store.agent`). Greyed alongside the live section; Claude-only.
     private var agentBehaviorHostSection: some View {
-        Section("Agent Behaviour (host)") {
+        ottyFormSection("Agent Behaviour (host)") {
             optionalBoolToggle("Prevent Sleep While Processing", $store.agent.preventSleep)
             optionalBoolToggle("Resume on Recovery", $store.agent.resumeOnRecovery)
             timingFooter(.reconnect)
@@ -1930,7 +1930,7 @@ private struct AgentsSettingsTab: View {
     @ViewBuilder
     private var claudeCodeSection: some View {
         let state = AgentSettingsCard.installState(agentHooks)
-        Section("Claude Code") {
+        ottyFormSection("Claude Code") {
             LabeledContent {
                 installButtons(state)
             } label: {
@@ -2096,7 +2096,7 @@ private struct AdvancedSettingsTab: View {
             // iOS settings sheet (WI-5) omits them; the cross-platform All-Settings list + Workspace transfer
             // below still reach iOS.
             #if os(macOS)
-            Section("Raw overrides") {
+            ottyFormSection("Raw overrides") {
                 Text(
                     "One AISLOPDESK_KEY=value per line. Folded last, so a key here overrides the matching typed setting.",
                 )
@@ -2142,7 +2142,7 @@ private struct AdvancedSettingsTab: View {
     /// master is off (the whole OSC-52 path resolves to Deny then). Title Report is a documented ceiling — it
     /// persists/surfaces but does not yet actuate (the libghostty fork owns XTWINOPS; see docs/DECISIONS.md).
     private var privilegesSection: some View {
-        Section("Privileges") {
+        ottyFormSection("Privileges") {
             Toggle(isOn: $titleShellControlled) {
                 privilegeLabel(
                     "Title — Shell Controlled",
@@ -2255,13 +2255,13 @@ private struct VideoHostSettingsView: View {
 
     var body: some View {
         Group {
-            Section("Video · Quality (host)") {
+            ottyFormSection("Video · Quality (host)") {
                 optionalIntStepper("Sharp QP", $store.video.qpSharp, range: 1...51, default: 26)
                 optionalIntStepper("Coarse QP", $store.video.qpCoarse, range: 1...51, default: 40)
                 timingFooter(.reconnect)
             }
 
-            Section {
+            ottyFormSection("Video · Forward Error Correction (symmetric)") {
                 optionalIntStepper("Parity (m)", $store.video.fecM, range: 1...8, default: 1)
                 optionalIntStepper("Group size (k)", $store.video.fecK, range: 1...32, default: 8)
                 HStack(spacing: Otty.Metric.space1) {
@@ -2271,11 +2271,9 @@ private struct VideoHostSettingsView: View {
                 .font(.system(size: Otty.Typeface.small))
                 .foregroundStyle(Otty.Status.warn)
                 timingFooter(.reconnect)
-            } header: {
-                Text("Video · Forward Error Correction (symmetric)")
             }
 
-            Section("Video · Pacer (host)") {
+            ottyFormSection("Video · Pacer (host)") {
                 Picker("Mode", selection: pacerBinding) {
                     Text("Default (deadline)").tag(VideoPreferences.Pacer?.none)
                     Text("Deadline").tag(Optional(VideoPreferences.Pacer.deadline))
@@ -2284,7 +2282,7 @@ private struct VideoHostSettingsView: View {
                 timingFooter(.reconnect)
             }
 
-            Section("Video · Client render") {
+            ottyFormSection("Video · Client render") {
                 optionalDoubleSlider("Sharpen", $store.video.sharpen, range: 0...2, default: 0)
                 timingFooter(.live)
             }

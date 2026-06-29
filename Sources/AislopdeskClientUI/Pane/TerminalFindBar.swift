@@ -25,7 +25,10 @@
 //
 // Anatomy matches `find.png` (top-trailing of the focused pane, floating card, `Otty.*` tokens ONLY — raw
 // font / radius literals fail `scripts/check-ds-leaks.sh`):
-//   [ query field ][ Aa case pill ][ ab whole-word pill ][ .* regex pill ][ N of M ][ ∧ prev ][ ∨ next ][ × close ]
+//   [ query field ][ Aa case pill ][ ab whole-word pill ][ .* regex pill ][ N of M ][ ∧ prev ][ ∨ next ]
+//   [ ▣ search-all-tabs ][ × close ]
+// (the `rectangle.stack` "search all tabs" button escalates to cross-tab Global Search ⇧⌘F — see
+// ``TerminalFindBarModel/searchAllTabs()``)
 // (ES-E5-2 requires the `N of M` counter; otty places it contextually — `find.png` does not show a separate
 // inline counter for the captured query, so the screenshot is NOT the source for the counter's placement. We
 // keep it before the nav chevrons as a reasonable home for the required count.)
@@ -67,6 +70,12 @@ final class TerminalFindBarModel {
     /// The pane's terminal model — the scrollback mirror + the libghostty `search:` / `navigate_search:` /
     /// `end_search` passthrough. Weak (owned by the live session); `@ObservationIgnored` — pure wiring.
     @ObservationIgnored private weak var model: TerminalViewModel?
+
+    /// E5 "search all tabs" escalation — the `rectangle.stack` button between the next-match chevron and the
+    /// close × (`find.png`). Opens cross-tab Global Search (⇧⌘F) seeded with the live find query. Wired by
+    /// ``TerminalLeafView`` to ``OverlayCoordinator/openGlobalSearch(seed:)``; `nil` in previews / tests ⇒ the
+    /// button still dismisses the bar but the escalation no-ops. Pure wiring, so `@ObservationIgnored`.
+    @ObservationIgnored var onSearchAllTabs: ((String) -> Void)?
 
     init() {}
 
@@ -170,6 +179,17 @@ final class TerminalFindBarModel {
         model?.performSearchSurfaceAction("scroll_to_row:\(row)")
     }
 
+    /// `rectangle.stack` "search all tabs" — escalate the in-pane find to cross-tab Global Search (otty's
+    /// `⇧⌘F`), SEEDED with the current query, then dismiss this bar. The button's function is pinned by
+    /// otty-reversed's `ReplicaSearch.swift` (`SearchIconButton(systemName: "rectangle.stack") {} // search all
+    /// tabs`); find.png places it between the next-match chevron and the close ×. The seed is read BEFORE
+    /// ``close()`` clears the controller (the closure captures the string by value), so Global Search opens
+    /// pre-filled with whatever the user was finding.
+    func searchAllTabs() {
+        onSearchAllTabs?(controller.query)
+        close()
+    }
+
     /// × / Esc — clear the query + matches, end libghostty's search (drops every highlight), hide the bar. The
     /// buffer mirror is kept (in the controller) so a re-open is cheap.
     func close() {
@@ -257,9 +277,13 @@ struct TerminalFindBar: View {
             OttyPlateButton(symbol: .chevronDown, help: "Next match (⌘G)", size: iconSize, plate: plate) {
                 model.next()
             }
-            // DELIBERATE OMISSION: find.png shows a control between the next-chevron and the close × (reads as a
-            // results-list / collapse toggle; its exact otty function is screenshot-unconfirmed). It is left out
-            // on purpose pending confirmation — a known, intentional omission, not an oversight.
+            // find.png shows a `rectangle.stack` button between the next-chevron and the close ×. Its function is
+            // confirmed by otty-reversed (`ReplicaSearch.swift`: `SearchIconButton("rectangle.stack") // search
+            // all tabs`): it ESCALATES the in-pane find to cross-tab Global Search (⇧⌘F), seeded with the current
+            // query. Wired through ``TerminalFindBarModel/searchAllTabs()`` → ``OverlayCoordinator/openGlobalSearch``.
+            OttyPlateButton(symbol: .rectangleStack, help: "Search all tabs (⇧⌘F)", size: iconSize, plate: plate) {
+                model.searchAllTabs()
+            }
             OttyPlateButton(symbol: .xmark, help: "Close (Esc)", size: iconSize, plate: plate) {
                 model.close()
             }
@@ -309,7 +333,13 @@ struct TerminalFindBar: View {
             .frame(width: fieldWidth)
             .padding(.horizontal, Otty.Metric.space2)
             .padding(.vertical, Otty.Metric.space1)
-            .background(Otty.Surface.card, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall))
+            // find.png: the query text sits in its OWN delineated inset — a distinct FILLED gray rounded field
+            // INSIDE the find-bar card (NOT flush on it). The card itself is `Surface.element` (≈ white/elevated
+            // in light themes), so a flush `Surface.card` field reads as near-invisible there; instead the field
+            // wears `State.selected` — a translucent neutral gray that composites over the card to a sunken inset
+            // (darker in light = find.png, lighter in dark), keeping it delineated on every theme. This is the
+            // INNER field's fill only — the card's no-border/fill+shadow chrome (Batch-4) is untouched.
+            .background(Otty.State.selected, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall))
             .onSubmit { model.next() } // plain ↩ → next match
     }
 

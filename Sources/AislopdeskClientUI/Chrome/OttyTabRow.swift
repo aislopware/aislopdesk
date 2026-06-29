@@ -12,14 +12,14 @@ import SwiftUI
 /// One sidebar tab row. ACTIVE = white card (otty's active-tab treatment); hover = flat plate + close `×`.
 ///
 /// E6 WI-4 grew the row from a name-only plate to otty's full chrome: an optional second-line cwd subtitle
-/// and a trailing cluster of the fused status `badge`, the monospaced light-gray `#N` shortcut number, and —
-/// on the ACTIVE row — the foreground-process label ("zsh"). Name-only rows stay ~34pt; a subtitle grows the
-/// row to ~44pt (`docs/otty-clone/screenshots/tab-badge.png`). The trailing cluster fades under the hover `×`.
+/// and a trailing cluster of the fused status `badge`, the monospaced light-gray `⌘N` SWITCH-SHORTCUT badge,
+/// and — on the ACTIVE row — the foreground-process label ("zsh"). Name-only rows stay ~34pt; a subtitle grows
+/// the row to ~44pt (`docs/otty-clone/screenshots/tab-badge.png`). The trailing cluster fades under hover `×`.
 struct OttyTabRow: View {
     let title: String
     let active: Bool
-    /// The 1-based tab shortcut number (`⌘N`). `0` ⇒ render no `#N` (the default keeps existing call sites
-    /// source-compatible until the navigator wires the real number in WI-5).
+    /// The 1-based tab shortcut number — the live ⌘1…⌘9 select-tab target = tab index + 1. Rendered as the
+    /// trailing `⌘N` badge for the first nine tabs (see ``shortcutBadge(for:)``); `0` / overflow ⇒ no badge.
     var number: Int = 0
     /// The pane's last-known cwd, shown as a muted truncating-middle second line. `nil`/empty ⇒ single-line.
     var subtitle: String?
@@ -38,6 +38,17 @@ struct OttyTabRow: View {
     @State private var closeHover = false
 
     private var hasSubtitle: Bool { !(subtitle ?? "").isEmpty }
+
+    /// The trailing SWITCH-SHORTCUT badge text for a tab's 1-based `number`: `⌘N` for the first nine tabs (the
+    /// live ⌘1…⌘9 select-tab chords), `nil` for overflow (10+) which has NO ⌘-shortcut — so the row shows no
+    /// misleading number there. otty renders this exact `⌘N` badge as the persistent trailing chip in the
+    /// sidebar (ground truth: `find.png`, `workspace-tabs.png` — `otty ⌘1` / `OC | Reviewing todos ⌘2` / …).
+    /// The clone shows it PERSISTENTLY rather than under otty's ⌘-hold reveal gate (the hold-to-hint keycaps
+    /// were tried and rejected — see DECISIONS Batch-5). Pure + static so the badge string is unit-pinnable
+    /// without rendering a SwiftUI view.
+    static func shortcutBadge(for number: Int) -> String? {
+        (1...9).contains(number) ? "⌘\(number)" : nil
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -79,8 +90,8 @@ struct OttyTabRow: View {
     }
 
     /// The trailing status cluster: the read-only lock (if locked), the fused `badge` (if any), then the
-    /// monospaced light-gray `#N`, then the foreground-process label on the ACTIVE row — all muted,
-    /// right-aligned (`tab-badge.png` / `workspace-tabs.png`). Fades out under the hover close `×`.
+    /// monospaced light-gray `⌘N` switch-shortcut badge, then the foreground-process label on the ACTIVE row —
+    /// all muted, right-aligned (`find.png` / `workspace-tabs.png` / `tab-badge.png`). Fades under the hover `×`.
     private var trailingMeta: some View {
         HStack(spacing: 6) {
             if readOnly {
@@ -93,8 +104,8 @@ struct OttyTabRow: View {
             if let badge {
                 TabBadgeView(kind: badge)
             }
-            if number > 0 {
-                Text("#\(number)")
+            if let shortcut = Self.shortcutBadge(for: number) {
+                Text(shortcut)
                     .font(.system(size: Otty.Typeface.small, design: .monospaced))
                     .foregroundStyle(Otty.Text.secondary)
             }

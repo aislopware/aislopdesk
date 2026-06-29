@@ -10,7 +10,7 @@
 //   • the rendered SECTIONS are ``WorkspaceStore/orderedTabGroups(now:)`` (a pure derivation of the store's
 //     ``WorkspaceStore/tabGrouping`` / ``WorkspaceStore/tabSort`` / recency), so the hamburger's choice — and
 //     a manual drag — mutate the STORE, never local `@State` (the E6-carryover binding constraint);
-//   • each row carries the new ``RailRow`` chrome (`#N` / cwd subtitle / fused badge / process label);
+//   • each row carries the new ``RailRow`` chrome (`⌘N` badge / cwd subtitle / fused badge / process label);
 //   • dragging a row reorders the session's tabs via ``WorkspaceStore/moveTabRendered(from:to:)`` — a WYSIWYG
 //     move by RENDERED position (so only the dragged row moves, even under `.updated`), which flips Sort to
 //     Manual; the leaf set is unchanged, so reconcile is a registry no-op (no surface teardown). Manual order
@@ -18,7 +18,7 @@
 //
 // iOS: a `List(selection:)` so NavigationSplitView pushes to the content column on a compact iPhone (a custom
 // button list does not drive column navigation). otty-styled but keeps the system list's navigation wiring;
-// it gains the same search field, grouped `Section`s, badge + `#N`, and drag reorder under `#if os(iOS)`.
+// it gains the same search field, grouped `Section`s, badge + `⌘N`, and drag reorder under `#if os(iOS)`.
 
 #if canImport(SwiftUI)
 import AislopdeskVideoProtocol // AgentPreferences — the `preventSleep` flag the tab context menu toggles (B4)
@@ -225,7 +225,7 @@ struct NavigatorColumn: View {
         .background(Otty.Surface.sidebar)
     }
 
-    /// One macOS tab row: the full otty chrome (badge / `#N` / cwd subtitle / process label) plus the
+    /// One macOS tab row: the full otty chrome (badge / `⌘N` / cwd subtitle / process label) plus the
     /// drag-reorder source + drop target. The drop routes `reorderable` → `handleTabDrop` →
     /// ``WorkspaceStore/moveTabRendered(from:to:)`` (the WYSIWYG, rendered-position entry the row uses); the
     /// non-rendered ``WorkspaceStore/moveTab(from:to:)`` is only exercised by tests now.
@@ -257,7 +257,7 @@ struct NavigatorColumn: View {
     #else
     /// iOS: a system `List(selection:)` so NavigationSplitView pushes to content on compact; otty-styled. Gains
     /// the system `.searchable` field (keeps the `List` as the column root so the navigation push is unchanged),
-    /// grouped `Section`s, badge + `#N`, and drag reorder (E6 WI-5).
+    /// grouped `Section`s, badge + `⌘N`, and drag reorder (E6 WI-5).
     private var iosSidebar: some View {
         let allRows = RailRowsBuilder.rows(for: store)
         let sections = buildSections(allRows, query: query)
@@ -299,7 +299,7 @@ struct NavigatorColumn: View {
     }
 
     /// One iOS list row: the system `Label` (navigation wiring via `.tag`) plus the trailing fused badge and
-    /// monospaced `#N`, and the same drag-reorder source/target as macOS.
+    /// monospaced `⌘N`, and the same drag-reorder source/target as macOS.
     private func iosRow(_ row: RailRow) -> some View {
         reorderable(
             HStack(spacing: 8) {
@@ -319,8 +319,8 @@ struct NavigatorColumn: View {
                 if let badge = row.badge {
                     TabBadgeView(kind: badge)
                 }
-                if row.tabNumber > 0 {
-                    Text("#\(row.tabNumber)")
+                if let shortcut = OttyTabRow.shortcutBadge(for: row.tabNumber) {
+                    Text(shortcut)
                         .font(.system(size: Otty.Typeface.small, design: .monospaced))
                         .foregroundStyle(Otty.Text.secondary)
                 }

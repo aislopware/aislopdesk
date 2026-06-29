@@ -88,7 +88,7 @@ struct CursorPreviewView: View {
     @State private var blinkVisible = true
 
     var body: some View {
-        Section("Cursor") {
+        ottyFormSection("Cursor") {
             Text("Live preview of your cursor color, style, opacity and blink behavior.")
                 .font(.system(size: Otty.Typeface.footnote))
                 .foregroundStyle(Otty.Text.secondary)

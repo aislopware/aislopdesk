@@ -543,11 +543,18 @@ struct TerminalLeafView: View {
         model.onRequestFindBackward = { bar.open(backward: true) }
         model.onRequestFindNext = { bar.next() }
         model.onRequestFindPrev = { bar.previous() }
+        // E5 "search all tabs" (find.png's `rectangle.stack` button): escalate the in-pane find to cross-tab
+        // Global Search (⇧⌘F), seeded with the live query. The coordinator is captured by value (a long-lived
+        // scene object); `nil` outside the app scene (tests/previews) ⇒ the button just dismisses the bar.
+        bar.onSearchAllTabs = { [overlayCoordinator] seed in
+            overlayCoordinator?.openGlobalSearch(seed: seed)
+        }
     }
 
     /// Detach the holder + nil the callbacks so the model stops referencing a torn-down leaf's `@State`.
     private func clearFindCallbacks() {
         findBar.attach(nil)
+        findBar.onSearchAllTabs = nil
         guard let model = live?.terminalModel else { return }
         model.onRequestFind = nil
         model.onRequestFindBackward = nil

@@ -75,7 +75,7 @@ enum RailRowsBuilder {
                 let subtitle = spec?.railSubtitle
                 let status = store.paneAgentStatus[paneID] ?? .none
                 let isSelected = tabIsActive && tab.activePane == paneID
-                // E6 WI-2: the `#N` is the TAB shortcut number (1-based), the trailing label is the host's
+                // E6 WI-2: the `⌘N` is the TAB shortcut number (1-based), the trailing label is the host's
                 // coarse foreground process, and the row carries ONE fused badge from the pure resolver.
                 let processLabel = store.paneForegroundProcess[paneID]
                 // E13 WI-3 + Progress cluster: the SOURCE-AWARE gating masks the resolver inputs by source so

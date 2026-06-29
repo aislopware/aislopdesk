@@ -67,7 +67,7 @@ struct FontSettingsView: View {
     // MARK: - Font Family section (scope tabs + combobox)
 
     private var fontFamilySection: some View {
-        Section("Font Family") {
+        ottyFormSection("Font Family") {
             scopeTabs
             scopeNote
             scopeBody
@@ -179,7 +179,7 @@ struct FontSettingsView: View {
     // MARK: - Text section (size + line height)
 
     private var textSection: some View {
-        Section("Text") {
+        ottyFormSection("Text") {
             Stepper(
                 "Size: \(Int(store.terminal.fontSize))",
                 value: $store.terminal.fontSize, in: 8...32, step: 1,
@@ -212,7 +212,7 @@ struct FontSettingsView: View {
     // MARK: - Ligatures section
 
     private var ligaturesSection: some View {
-        Section("Ligatures") {
+        ottyFormSection("Ligatures") {
             Picker("Ligatures", selection: $store.terminal.fontLigatures) {
                 Text("Off").tag(FontLigatures.off)
                 Text("Standard (calt)").tag(FontLigatures.calt)
@@ -227,7 +227,7 @@ struct FontSettingsView: View {
     // MARK: - Style & Rendering section (bold / italic / underline / blink / blending + deferral notes)
 
     private var styleSection: some View {
-        Section("Style & Rendering") {
+        ottyFormSection("Style & Rendering") {
             Picker("Bold", selection: $store.terminal.fontBold) { styleModeOptions }
             Picker("Italic", selection: $store.terminal.fontItalic) { styleModeOptions }
 

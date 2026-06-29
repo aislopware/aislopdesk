@@ -101,7 +101,7 @@ struct WorkspaceTransferSettingsView: View {
 
     var body: some View {
         Group {
-            Section("Workspace") {
+            ottyFormSection("Workspace") {
                 Text(
                     "Export your layout, groups, snippets, and bookmarks to a file, or import one back. The "
                         + "host connection is never written into the file or adopted on import.",

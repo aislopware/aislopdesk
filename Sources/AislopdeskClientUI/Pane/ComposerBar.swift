@@ -5,7 +5,7 @@
 // Anatomy matches `composer.png`:
 //   [ multi-line draft field (grows, then internal scroll) ]
 //   ────────────────────────────────────────────── (thin top rule)
-//   [ ⌘↩ Send   ⌥⌘↩ Queue   ⎋ Cancel ]············[ ① pin  ② float  ③ queue ]
+//   [ ⌘↩ Send · ⌥⌘↩ Queue · ⎋ Cancel ]············[ ① pin  ② float  ③ queue ]
 // In Prompt-Queue input mode (`⌘⇧M`, `chrome.queueMode`) the field placeholder becomes
 // "Add to Prompt Queue…", bare `↩` enqueues a line (never a newline), and the toolbar collapses to the
 // queue.png "Close" + queue affordance.
@@ -276,9 +276,12 @@ struct ComposerBar: View {
                     composer.enqueueDraft()
                 }
             } else {
-                // composer.png: ⌘↩ Send / ⌥⌘↩ Queue / ⎋ Cancel low-weight labels, then pin / float / queue.
+                // composer.png: ⌘↩ Send · ⌥⌘↩ Queue · ⎋ Cancel low-weight labels, divided by a muted interpunct
+                // "·" separator between each action group (otty parity), then pin / float / queue.
                 hintButton(chord: "⌘↩", label: "Send") { composer.sendDraft() }
+                actionSeparator
                 hintButton(chord: "⌥⌘↩", label: "Queue") { composer.enqueueDraft() }
+                actionSeparator
                 hintButton(chord: "⎋", label: "Cancel") { composer.cancel() }
                 Spacer(minLength: 0)
                 OttyPlateButton(
@@ -315,6 +318,14 @@ struct ComposerBar: View {
     private let plate: CGFloat = Otty.Metric.plate
     private let iconSize: CGFloat = Otty.Metric.iconSize
     #endif
+
+    /// composer.png divides the three action hints with a muted interpunct "·" (the SAME separator the block
+    /// caption uses — ``BlockRowView``): a tertiary-toned dot so it reads as a divider, never an action.
+    private var actionSeparator: some View {
+        Text("·")
+            .font(.system(size: Otty.Typeface.footnote))
+            .foregroundStyle(Otty.Text.tertiary)
+    }
 
     /// A low-weight chord+label hint that is also clickable (composer.png renders these as plain text, not
     /// pills). The chord segment is omitted for the bare "Close" label.

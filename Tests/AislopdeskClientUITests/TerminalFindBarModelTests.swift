@@ -282,5 +282,25 @@ final class TerminalFindBarModelTests: XCTestCase {
             )
         }
     }
+
+    /// Batch-5: the find bar's `rectangle.stack` "search all tabs" button escalates to cross-tab Global Search
+    /// SEEDED with the current query, then dismisses the in-pane bar. otty-reversed pins the button's function
+    /// (`SearchIconButton("rectangle.stack") // search all tabs`); find.png places it between the next-match
+    /// chevron and the close ×.
+    ///
+    /// Revert-to-confirm-fail: before this batch the model had NO `searchAllTabs()` / `onSearchAllTabs` seam
+    /// (the button was a deliberate omission), so neither the seeded escalation nor the auto-dismiss existed.
+    func testSearchAllTabsEscalatesWithSeededQueryThenCloses() {
+        withBar(lines: ["read the docs", "more docs"]) { bar, _ in
+            var seeded: String?
+            bar.onSearchAllTabs = { seeded = $0 }
+            bar.open()
+            bar.setQuery("docs")
+
+            bar.searchAllTabs()
+            XCTAssertEqual(seeded, "docs", "escalation seeds Global Search with the live find query")
+            XCTAssertFalse(bar.visible, "escalating to Global Search dismisses the in-pane find bar")
+        }
+    }
 }
 #endif
