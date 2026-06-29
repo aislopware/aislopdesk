@@ -337,6 +337,29 @@ public struct WorkspaceRootView: View {
         overlay.selectDetailsTab = { [chrome, details] tab in
             Self.revealDetailsTab(tab, chrome: chrome, details: details)
         }
+        wireOverlayCwdResolver()
+    }
+
+    /// Batch-5b (A): bind the overlay coordinator's `resolveActiveCwd` to the focused pane's live
+    /// ``MetadataClient`` so opening the command palette EAGERLY resolves its working directory (host `cwd()`
+    /// RPC) and mirrors it into ``PaneSpec/lastKnownCwd`` — which the WORKING DIRECTORY header's cwd pill (and
+    /// the titlebar / rail) read reactively. Without this the pill stayed blank on a freshly-connected pane at a
+    /// prompt: the only `lastKnownCwd` writers (a command completing via OSC 133;D, and the Details/Info tab
+    /// fetching — and the inspector is frequently collapsed) had not fired. Reuses the EXACT live-metadata path
+    /// the inspector + Open-Quickly use (`store.handle(for:) as? LivePaneSession → activeMetadataClient`), so it
+    /// spends NO new wire message. `[store]` captures the live store; a disconnected pane / nil client / empty
+    /// cwd is a silent no-op (validate-then-drop). Cross-platform — `wireOverlaySelectDetailsTab()` is called on
+    /// both platforms (macOS via `wireChromeToggles()`, iOS via the `.onAppear`).
+    private func wireOverlayCwdResolver() {
+        overlay.resolveActiveCwd = { [store] in
+            guard let id = store.tree.activeSession?.activeTab?.activePane,
+                  let client = (store.handle(for: id) as? LivePaneSession)?.connection?.activeMetadataClient
+            else { return }
+            Task { @MainActor in
+                guard let cwd = await client.cwd(), !cwd.isEmpty else { return }
+                store.setLastKnownCwd(cwd, for: id)
+            }
+        }
     }
 
     /// Hand the live store the overlay-toggle closures the per-pane hardware-keyboard ``TerminalKeyInterceptor``

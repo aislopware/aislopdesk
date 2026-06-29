@@ -47,6 +47,29 @@ final class OverlayCoordinatorMountTests: XCTestCase {
         XCTAssertEqual(overlay.paletteSelection, 0, "close resets the keyboard selection")
     }
 
+    // MARK: - Batch-5b (A): opening the palette resolves the focused pane's cwd (populates the WD pill)
+
+    /// THE Batch-5b (A) fix: opening the command palette EAGERLY resolves the focused pane's working directory
+    /// so the WORKING DIRECTORY header's cwd pill is populated even on a fresh prompt where no command has
+    /// completed (OSC 133;D) and the Details/Info tab is closed — the two lazy `lastKnownCwd` writers that left
+    /// the pill blank in the live capture. The app binds `overlay.resolveActiveCwd` (in `WorkspaceRootView`) to
+    /// the live metadata `cwd()` RPC → `store.setLastKnownCwd`. Pin that `openPalette()` AND the ⌘⇧P toggle's
+    /// open path BOTH fire that injected closure. REVERT-TO-CONFIRM-FAIL: drop the `resolveActiveCwd()` call from
+    /// `openPalette()` and `fired` stays 0.
+    func testOpenPaletteFiresActiveCwdResolution() {
+        let (overlay, _) = makeCoordinator()
+        var fired = 0
+        overlay.resolveActiveCwd = { fired += 1 }
+
+        overlay.openPalette()
+        XCTAssertEqual(fired, 1, "openPalette kicks the focused pane's cwd resolution (populates the WD pill)")
+
+        // The ⌘⇧P toggle routes through openPalette, so its open path resolves the cwd too.
+        overlay.closePalette()
+        overlay.togglePalette()
+        XCTAssertEqual(fired, 2, "the ⌘⇧P toggle's open path also resolves the cwd")
+    }
+
     // MARK: - ES-E2-2 / WI-2a: `rankedResults` carries the fzf highlight ranges the view needs
 
     /// The PaletteView highlights the matched code points from ``RankedRow/titleRanges``; that wiring only

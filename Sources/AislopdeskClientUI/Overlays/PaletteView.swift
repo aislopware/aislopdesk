@@ -138,6 +138,11 @@ struct PaletteView: View {
 
     private func sectionHeader(_ item: PaletteItem) -> some View {
         HStack(spacing: Otty.Metric.space2) {
+            // Batch-5b (B): mirror the action-row's 20pt leading ✓/icon gutter so the uppercase header text
+            // shares the row LABELS' left margin (command-palette.png: the headers are FLUSH with the row
+            // labels, the ✓/icon gutter sitting to their LEFT). A section header carries no glyph, so this is an
+            // empty placeholder — only its width matters.
+            Color.clear.frame(width: 20)
             Text(item.title.uppercased())
                 .font(.system(size: Otty.Typeface.small, weight: .semibold))
                 .tracking(0.8)
@@ -153,7 +158,12 @@ struct PaletteView: View {
                 cwdBadge(cwd)
             }
         }
+        // `.padding(.horizontal, space3)` is the action-row's INNER padding; `.padding(.leading, space2)` adds
+        // its OUTER inset. Together with the 20pt gutter + the `space2` HStack spacing the header text lands at
+        // the EXACT x of a row label (space2 + space3 + 20 + space2), so headers + labels are flush (the row's
+        // Batch-4 inset highlight + ✓-gutter are left untouched).
         .padding(.horizontal, Otty.Metric.space3)
+        .padding(.leading, Otty.Metric.space2)
         .padding(.top, Otty.Metric.space3)
         .padding(.bottom, Otty.Metric.space1)
         .id(item.id)

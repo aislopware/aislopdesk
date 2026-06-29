@@ -336,10 +336,21 @@ struct TerminalFindBar: View {
             // find.png: the query text sits in its OWN delineated inset — a distinct FILLED gray rounded field
             // INSIDE the find-bar card (NOT flush on it). The card itself is `Surface.element` (≈ white/elevated
             // in light themes), so a flush `Surface.card` field reads as near-invisible there; instead the field
-            // wears `State.selected` — a translucent neutral gray that composites over the card to a sunken inset
-            // (darker in light = find.png, lighter in dark), keeping it delineated on every theme. This is the
-            // INNER field's fill only — the card's no-border/fill+shadow chrome (Batch-4) is untouched.
+            // wears `State.selected` — a translucent neutral wash that composites over the `element` card to a
+            // gray inset. CROSS-THEME caveat (Batch-5b): `State.selected` is a BLACK wash in light themes (so the
+            // field composites DARKER than the card → a recessed inset, matching find.png) but a WHITE wash in
+            // dark themes (so it composites LIGHTER than the card — which on its OWN reads RAISED, not recessed).
+            // No single solid/wash token is reliably recessed-AND-visible on both themes (the only darker-than-
+            // card token in dark — `Surface.card`/the backdrop — is near-invisible in light). So rather than
+            // chase a darker fill, we DELINEATE the field with its own inner `Line.subtle` hairline: a hard field
+            // boundary that reads as a distinct inset REGARDLESS of which way the fill contrasts, keeping the
+            // query field clearly delineated on every theme. This is the INNER field only — the card's
+            // no-border / fill+shadow chrome (Batch-4) is NOT re-stroked (the outer card stays borderless).
             .background(Otty.State.selected, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall))
+            .overlay(
+                RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
+                    .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+            )
             .onSubmit { model.next() } // plain ↩ → next match
     }
 

@@ -93,13 +93,14 @@ struct GlobalSearchView: View {
                 .foregroundStyle(Otty.Text.primary)
                 .tint(Otty.State.accent) // the active caret is the accent colour (otty parity)
                 .focused($queryFocused)
-                // The query text sits inside a FILLED, hairline-bordered rounded plate (global-search.png): the
-                // same `Surface.card` fill + `radiusSmall` as `TerminalFindBar.queryField`, but PLUS its own
-                // `Line.subtle` hairline. That extra ring is INTENTIONALLY context-different, NOT an asymmetry to
-                // "fix": this overlay's field sits on bare `Surface.window`, so it needs its own border to read as a
-                // field plate; the find bar's field sits inside an already `Line.subtle`-bordered `Surface.element`
-                // card (TerminalFindBar.swift:227-230), so a second ring there would double the border and risk
-                // find.png fidelity. Do NOT add a border to `queryField` to "match" this. Both readings are
+                // The query text sits inside a FILLED, hairline-bordered rounded plate (global-search.png): a
+                // `Surface.card` fill + `radiusSmall` + its own `Line.subtle` hairline, because this overlay's
+                // field sits on bare `Surface.window` and needs the ring to read as a field plate. The find bar's
+                // sibling field (`TerminalFindBar.queryField`) ALSO wears a `Line.subtle` hairline now (Batch-5b),
+                // but its FILL is `State.selected`, not `Surface.card` — that fill difference is the INTENTIONAL
+                // context delta (the find-bar field sits on the elevated, borderless `Surface.element` card whose
+                // `State.selected` wash inverts contrast by theme, so the hairline delineates it regardless of
+                // direction). The two fills stay context-specific; both fields are hairline-delineated and
                 // screenshot-faithful. The `Aa` / `.*` pills stay OUTSIDE this plate (siblings in the HStack).
                 .padding(.horizontal, Otty.Metric.space2)
                 .padding(.vertical, Otty.Metric.space1)

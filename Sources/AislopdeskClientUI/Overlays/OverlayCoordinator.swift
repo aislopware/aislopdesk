@@ -192,6 +192,16 @@ public final class OverlayCoordinator {
     /// Bound app-side (macOS `NSWorkspace`); iOS has no `~/.config`, so it is a documented no-op there. No-op by
     /// default.
     @ObservationIgnored public var openThemeFile: @MainActor () -> Void = {}
+    /// Batch-5b (A): EAGERLY resolve the focused pane's working directory (the host `cwd()` metadata RPC →
+    /// ``WorkspaceStore/setLastKnownCwd(_:for:)``) so the WORKING DIRECTORY palette header's cwd pill is
+    /// populated the moment the palette opens. Bound by ``WorkspaceRootView`` to the live ``MetadataClient``.
+    /// WITHOUT this the pill stayed blank on a freshly-connected pane sitting at a prompt: the only two
+    /// `lastKnownCwd` writers — a command completing (OSC 133;D) and the Details/Info tab fetching — had not
+    /// fired (and the Details panel is frequently collapsed). Fired from ``openPalette(mode:query:)``; the
+    /// resolution lands reactively (`@Observable` spec write) within ~1 RTT, so the pill pops in without
+    /// blocking the open. No-op by default (tests / previews / a disconnected pane), so opening the palette is
+    /// never gated on it — and it spends NO new wire message (the `cwd()` RPC already exists).
+    @ObservationIgnored public var resolveActiveCwd: @MainActor () -> Void = {}
 
     // MARK: Modal gate
 
@@ -263,6 +273,10 @@ public final class OverlayCoordinator {
         paletteQuery = query
         paletteSelection = 0
         paletteVisible = true
+        // Batch-5b (A): kick the focused pane's cwd resolution so the WORKING DIRECTORY header's cwd pill is
+        // populated (within ~1 RTT, reactively) even on a fresh prompt where no command has completed and the
+        // Details/Info tab is closed — the two lazy `lastKnownCwd` writers that otherwise left the pill blank.
+        resolveActiveCwd()
     }
 
     /// Toggle the palette (the ⌘⇧P binding).
