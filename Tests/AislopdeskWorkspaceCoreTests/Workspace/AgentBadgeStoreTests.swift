@@ -113,6 +113,40 @@ final class AgentBadgeStoreTests: XCTestCase {
         XCTAssertEqual(store.agentStatus(for: id), .working, "a working agent is untouched by Clear Badge")
     }
 
+    // MARK: Command-start stale-badge clear (progress cluster)
+
+    /// A new command STARTING (OSC 133;C → `handleCommandStarted`) clears a STALE `.failure` completion badge
+    /// so a busy background pane resolves to the running spinner, not the prior run's error triangle. The
+    /// resolver ranks a `.failure` completion ABOVE the running spinner, so WITHOUT the clear a busy pane with a
+    /// stale failure shows `.error`; the first assertion proves that hazard, the clear fixes it.
+    /// Revert-to-confirm-fail: drop the `setCompletionBadge(nil,…)` in `handleCommandStarted` and the badge
+    /// persists, so the post-clear assertions fail.
+    func testCommandStartClearsStaleCompletionBadgeSoSpinnerShows() throws {
+        let store = makeStore()
+        let id = try firstPane(store)
+
+        store.setCompletionBadge(.failure, for: id)
+        // The hazard: a stale failure outranks the running spinner in the resolver (error > running), so a busy
+        // pane would keep showing the error triangle instead of the spinner.
+        XCTAssertEqual(
+            TabBadgeResolver.badge(
+                agent: .none, completion: store.pendingCompletion(for: id), isBusy: true, foregroundProcess: nil,
+            ),
+            .error,
+            "a stale failure badge would hide the running spinner on a busy pane",
+        )
+
+        store.handleCommandStarted(id: id)
+        XCTAssertNil(store.pendingCompletion(for: id), "the command-start edge clears the stale failure badge")
+        XCTAssertEqual(
+            TabBadgeResolver.badge(
+                agent: .none, completion: store.pendingCompletion(for: id), isBusy: true, foregroundProcess: nil,
+            ),
+            .running,
+            "with the stale badge cleared, the busy pane now shows the running spinner",
+        )
+    }
+
     // MARK: E20 ES-E20-3 — manual per-tab badge override (the `tab badge --kind` CLI seam)
 
     private func firstTab(_ store: WorkspaceStore) throws -> TabID {

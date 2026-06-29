@@ -229,4 +229,33 @@ final class TerminalViewModelHintTests: XCTestCase {
         XCTAssertEqual(model.hintTyped, "", "a key while not armed does not accumulate")
         XCTAssertEqual(confirmed, 0, "a key while not armed never confirms")
     }
+
+    // MARK: vi-mode `f` enters Hint Mode (the spec's keyboard-driven link clicking)
+
+    /// The vi-mode spec lists `f` → Enter Hint Mode (keyboard-driven link clicking). Pressing `f` in copy-mode
+    /// must arm Hint Mode over the live viewport via the SAME `beginHint(.open)` seam the ⌘⇧J chord uses — Hint
+    /// Mode is a separate E10 overlay, NOT blocked by the libghostty cursor-move ceiling. Revert-to-confirm-fail:
+    /// before the `f` case was added to `handleCopyModeKey`, `f` hit `default: break` and was swallowed, so
+    /// `hintMode` stayed `nil` and the targets/labels were never populated — every assert below fails.
+    func testCopyModeFKeyEntersHintMode() {
+        let model = makeModel()
+        XCTAssertNil(model.hintMode, "fresh pane is not in hint mode")
+
+        model.handleCopyModeKey(.char("f", control: false, shift: false))
+
+        XCTAssertEqual(model.hintMode, .open, "vi `f` arms Hint Mode with the open intent")
+        XCTAssertEqual(model.hintTargets.count, 2, "both viewport link targets are detected")
+        XCTAssertEqual(model.hintLabels.count, 2, "each target gets a label")
+    }
+
+    /// Belt-and-braces: `f` over a pane on the ALT screen (a TUI) is a clean no-op — `beginHint` guards on the
+    /// alt screen so `f` never fights a full-screen app. Confirms the `f` case routes through the SAME guarded
+    /// seam (not a bypass that would arm an empty mode).
+    func testCopyModeFKeyIsNoOpOnAltScreen() {
+        let model = makeModel()
+        model.ingestOutput(Data("\u{1B}[?1049h".utf8)) // DECSET 1049 → enter the alternate screen
+        XCTAssertTrue(model.isAlternateScreen, "the DECSET sequence parks the pane on the alt screen")
+        model.handleCopyModeKey(.char("f", control: false, shift: false))
+        XCTAssertNil(model.hintMode, "`f` does not arm Hint Mode while on the alt screen")
+    }
 }

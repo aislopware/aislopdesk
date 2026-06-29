@@ -74,22 +74,24 @@ public struct RecipeRuntimeState: Sendable {
     public var pendingRecipeReplay: RecipeReplayRequest?
     /// The LIVE per-pane replay state machines WI-9 drives against the PTY (one ``RecipeReplayMachine`` per
     /// restored pane with commands). A pane is present only while its replay is mid-flight — ``beginRecipeReplay(launchGrace:)``
-    /// installs it, and ``recipeReplayCommandCompleted(for:)`` / ``continueRecipeReplay(for:)`` remove it once
+    /// installs it, and ``recipeReplayPromptReturned(for:)`` / ``continueRecipeReplay(for:)`` remove it once
     /// the machine finishes. The UI reads ``WorkspaceStore/recipeReplayState(for:)`` off it for the replay HUD.
     public var replayMachines: [PaneID: RecipeReplayMachine] = [:]
-    /// Per-pane count of typed-ahead command completions to ABSORB before the shell-handoff resume edge fires.
+    /// Per-pane count of typed-ahead OSC-133;A prompt marks to ABSORB before the shell-handoff resume fires.
     /// An Auto / Ask-Once burst types every SAFE command up to AND INCLUDING the interactive one (the machine's
-    /// drain), so the local shell returns to a prompt once per typed-ahead command; only the INTERACTIVE
-    /// command's return-to-prompt should resume the queue. This counter skips the earlier completions so the
-    /// post-handoff command is never injected into the inner (ssh / docker / …) session. Keyed by pane.
+    /// drain), so the LOCAL shell returns to a prompt once per typed-ahead command; only the INTERACTIVE
+    /// command's INNER-session prompt-return should resume the queue. This counter skips the earlier prompt
+    /// marks so the post-handoff command is never injected into the local shell. Keyed by pane.
     public var replayHandoffAbsorb: [PaneID: Int] = [:]
-    /// Per-pane count of restored-cwd `cd`s typed-ahead into a pane BEFORE its replay burst (the parallel
-    /// ``WorkspaceStore/mountRestorePlan(_:name:launchGrace:)`` `deferInheritedCwd` stream). Each such `cd` runs
-    /// at the SAME local prompt and emits its own OSC-133;D, so the handoff-absorb counter must skip those
-    /// completions too — otherwise the absorb hits zero one edge early and the post-handoff command injects into
-    /// the inner (ssh / docker / …) session. ``beginRecipeReplay(launchGrace:)`` consumes + clears this when it
-    /// arms each pane's machine. Keyed by pane.
-    public var replayPreInjectedCwds: [PaneID: Int] = [:]
+    /// Per-pane count of PRE-BURST local prompt-START (OSC-133;A) marks a freshly-restored pane emits BEFORE its
+    /// replay burst's commands run — folded into the handoff-absorb so the resume keys off the INNER session's
+    /// prompt, not an earlier local one. For each restored terminal pane that is `1` (the fresh shell's own
+    /// first idle prompt) plus `1` more for a typed-ahead restored-cwd `cd` (the parallel
+    /// ``WorkspaceStore/mountRestorePlan(_:name:launchGrace:)`` `deferInheritedCwd` stream — it runs at that same
+    /// local prompt and emits its own OSC-133;A). Without folding these in, the absorb hits zero one edge early
+    /// and the post-handoff command injects into the inner (ssh / docker / …) session — on the wrong host.
+    /// ``beginRecipeReplay(launchGrace:)`` consumes + clears this when it arms each pane's machine. Keyed by pane.
+    public var replayPreBurstPromptAbsorb: [PaneID: Int] = [:]
 
     public init() {}
 }
@@ -357,29 +359,44 @@ public extension WorkspaceStore {
     /// synchronously (tests). The machine STATE is advanced synchronously regardless, so the handoff-absorb
     /// counter is armed before any completion edge can arrive.
     func beginRecipeReplay(launchGrace: Duration = .milliseconds(1400)) {
-        // Snapshot + clear the restored-cwd `cd` pre-injects (set by `mountRestorePlan` for THIS restore) so each
-        // pane's machine folds its own `cd` completion(s) into the handoff-absorb count, and no entry survives
-        // the restore (a Layout-Only / Skip restore that queues no replay still clears them here).
-        let preInjected = recipes.replayPreInjectedCwds
-        recipes.replayPreInjectedCwds = [:]
+        // Snapshot + clear the pre-burst prompt absorb (set by `mountRestorePlan` for THIS restore — the fresh
+        // shell's first prompt + any restored-cwd `cd`) so each pane's machine folds those early OSC-133;A marks
+        // into the handoff-absorb count, and no entry survives the restore (a Layout-Only / Skip restore that
+        // queues no replay still clears them here).
+        let preBurstPrompts = recipes.replayPreBurstPromptAbsorb
+        recipes.replayPreBurstPromptAbsorb = [:]
         guard let request = recipes.pendingRecipeReplay else { return }
         recipes.pendingRecipeReplay = nil
         for (pane, commands) in request.commandsByPane {
             var machine = RecipeReplayMachine(mode: request.mode, commands: commands)
             let burst = machine.start()
-            recordReplayProgress(machine, burst: burst, for: pane, extraAbsorb: preInjected[pane] ?? 0)
+            recordReplayProgress(machine, burst: burst, for: pane, extraAbsorb: preBurstPrompts[pane] ?? 0)
             deliverReplayBurst(burst, into: pane, launchGrace: launchGrace)
         }
     }
 
-    /// The shell-handoff resume edge — call on each OSC-133;D command-completion (the local-prompt-return
-    /// signal) for pane `id`. A typed-ahead non-interactive command's completion is ABSORBED (the burst types
-    /// several commands ahead — only the INTERACTIVE command's return resumes); once the absorb counter
-    /// reaches zero the machine's ``RecipeReplayMachine/noteReturnedToPrompt()`` resumes the queue and the next
-    /// burst is injected. A no-op for a pane with no live replay. Returns the commands this edge injected
-    /// (for tests / a HUD).
+    /// Wire pane `id`'s terminal so its OSC-133;A prompt-START edge (`terminal.onPromptReturn`) drives the
+    /// recipe-replay shell-handoff resume. Factored out of ``WorkspaceStore`` `wireMaterializedLeaf` so that
+    /// body stays under the SwiftLint type-body ceiling (same idiom as `wireSnippetExpander`). Resolved through
+    /// the ``TerminalModelProviding`` seam so ANY terminal-bearing handle (incl. a headless test recorder) wires
+    /// it — a no-op unless a replay is mid-flight there. 100% client-side — no wire / golden touch.
+    func wireRecipeReplayResume(handle: any PaneSessionHandle, id: PaneID) {
+        (handle as? TerminalModelProviding)?.terminalModel?.onPromptReturn = { [weak self] in
+            self?.recipeReplayPromptReturned(for: id)
+        }
+    }
+
+    /// The shell-handoff resume edge — call on each OSC-133;A prompt-START mark (the prompt-return signal,
+    /// `terminal.onPromptReturn`) for pane `id`. This is the INNER shell's fresh prompt: after an interactive
+    /// command (`ssh`/`docker exec -it`/`tmux attach`) the queue resumes INTO that inner session here, NEVER on
+    /// the outer command's OSC-133;D completion (which for `ssh` fires only on EXIT — injecting the held queue
+    /// back into the LOCAL shell, on the wrong host). A typed-ahead PRE-BURST prompt mark is ABSORBED (the fresh
+    /// shell's own first prompt + each typed-ahead restored-cwd `cd` + each typed-ahead non-interactive command;
+    /// only the INTERACTIVE command's inner-prompt resumes); once the absorb counter reaches zero the machine's
+    /// ``RecipeReplayMachine/noteReturnedToPrompt()`` resumes the queue and the next burst is injected. A no-op
+    /// for a pane with no live replay. Returns the commands this edge injected (for tests / a HUD).
     @discardableResult
-    func recipeReplayCommandCompleted(for id: PaneID) -> [String] {
+    func recipeReplayPromptReturned(for id: PaneID) -> [String] {
         guard var machine = recipes.replayMachines[id] else { return [] }
         if let absorb = recipes.replayHandoffAbsorb[id], absorb > 0 {
             recipes.replayHandoffAbsorb[id] = absorb - 1
@@ -585,16 +602,22 @@ public extension WorkspaceStore {
         // ES-E16-2 "restores working directories": a recipe captures each pane's cwd in `lastKnownCwd`, but a
         // freshly-mounted PTY starts at $HOME — type the safe-literal `cd` into each restored terminal pane so
         // it lands in its captured directory. Independent of replay mode (a Skip / Layout-Only restore still
-        // restores cwd); `deferInheritedCwd` no-ops a non-terminal pane or an empty cwd. A `cd` that DID type
-        // (returns `true`) runs at the local prompt and emits its own OSC-133;D — record it so the replay
-        // machine's handoff-absorb skips that completion too (else the post-`ssh` command injects into the inner
-        // session; see `replayPreInjectedCwds`). `beginRecipeReplay` consumes + clears these.
+        // restores cwd); `deferInheritedCwd` no-ops a non-terminal pane or an empty cwd.
+        //
+        // PRE-BURST PROMPT ABSORB (see `replayPreBurstPromptAbsorb`): the replay's shell-handoff resume now keys
+        // off OSC-133;A prompt marks. A freshly-restored pane emits LOCAL prompt marks BEFORE its replay burst's
+        // commands run — its fresh shell's own FIRST idle prompt, plus one more per typed-ahead restored-cwd `cd`
+        // (which runs at that same local prompt). The handoff-absorb must skip those so the post-`ssh` command
+        // resumes only on the INNER session's prompt — else it injects into the local shell, on the wrong host.
+        // `beginRecipeReplay` consumes + clears these. (Every restored pane is a `.terminal` — see
+        // `sessionFromRestoreTabs` — so each emits exactly one fresh-shell prompt.)
         for (paneID, spec) in restored.specs {
+            recipes.replayPreBurstPromptAbsorb[paneID, default: 0] += 1 // the fresh shell's own first prompt
             let typedCd = deferInheritedCwd(
                 spec.lastKnownCwd, into: paneID, kind: spec.kind, launchGrace: launchGrace,
             )
             guard typedCd else { continue }
-            recipes.replayPreInjectedCwds[paneID, default: 0] += 1
+            recipes.replayPreBurstPromptAbsorb[paneID, default: 0] += 1 // + the typed-ahead restored-cwd `cd`
         }
     }
 

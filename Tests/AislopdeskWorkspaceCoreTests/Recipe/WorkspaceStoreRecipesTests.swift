@@ -164,15 +164,16 @@ final class WorkspaceStoreRecipesTests: XCTestCase {
         )
     }
 
-    /// E16 handoff hazard: a `.window`/`.tab` recipe restore types each pane's captured cwd `cd` AHEAD of the
-    /// replay burst (the parallel `deferInheritedCwd` stream), and that `cd` ALSO runs at the LOCAL prompt and
-    /// emits its OWN OSC-133;D → `recipeReplayCommandCompleted`. The handoff-absorb counter must skip that extra
-    /// completion, else it hits zero one edge EARLY and the post-`ssh` command injects into the inner session.
-    /// With commands `[echo a, ssh host, echo b]` + a restored cwd the local-prompt completions are cd → echo a
-    /// before `ssh host` exits — `echo b` must stay HELD until the THIRD completion (the ssh-exit edge).
-    /// REVERT-TO-CONFIRM-FAIL: without folding the cwd `cd` into the absorb count, the absorb arms to 1 (not 2)
-    /// and `echo b` injects on the SECOND completion (the `echo a` edge) — straight into the still-open `ssh`.
-    func testRestoredCwdCdIsAbsorbedSoPostHandoffCommandWaitsForSshExit() async throws {
+    /// E16 handoff hazard: a `.window`/`.tab` recipe restore mounts a FRESH shell (one initial OSC-133;A prompt)
+    /// and types the captured cwd `cd` AHEAD of the replay burst (the parallel `deferInheritedCwd` stream — it
+    /// runs at that same local prompt and emits its OWN OSC-133;A). The handoff-absorb counter must skip those
+    /// PRE-BURST local prompt marks, else it hits zero one edge EARLY and the post-`ssh` command injects into the
+    /// local shell instead of the inner session. With commands `[echo a, ssh host, echo b]` + a restored cwd the
+    /// pre-resume local prompt marks are: fresh-shell prompt → cwd `cd` → `echo a` — `echo b` must stay HELD until
+    /// the FOURTH prompt mark (the INNER ssh shell's prompt), so it resumes INTO ssh.
+    /// REVERT-TO-CONFIRM-FAIL: without folding the fresh-shell prompt + cwd `cd` into the absorb count, it arms to
+    /// 1 (the burst's `echo a` only) and `echo b` injects on the SECOND prompt mark — long before ssh connects.
+    func testRestoredCwdAndFreshShellPromptsAbsorbedSoPostHandoffResumesIntoInnerSession() async throws {
         let store = makeStore()
         let active = try activePane(store)
         store.setLastKnownCwd("/Users/me/proj", for: active)
@@ -194,30 +195,37 @@ final class WorkspaceStoreRecipesTests: XCTestCase {
             XCTFail("the restored pane's queue pauses on the ssh handoff")
             return
         }
-        // The absorb folds in BOTH the restored cwd `cd` AND the typed-ahead `echo a` (two local-prompt returns
-        // before the ssh-exit edge). Pre-fix this armed to 1 (the burst's `echo a` only) and leaked `echo b`.
+        // The absorb folds in THREE pre-resume local prompt marks: the fresh shell's own first prompt, the
+        // restored cwd `cd`, and the typed-ahead `echo a`. Pre-fix this armed to 1 (the burst's `echo a` only).
         XCTAssertEqual(
-            store.recipes.replayHandoffAbsorb[restored], 2,
-            "the restored cwd `cd` completion is folded into the handoff-absorb count alongside `echo a`",
+            store.recipes.replayHandoffAbsorb[restored], 3,
+            "the fresh-shell prompt + restored cwd `cd` are folded into the handoff-absorb alongside `echo a`",
         )
         XCTAssertFalse(try injected(store, restored).contains("echo b\n"), "echo b is held while paused on ssh")
 
-        // 1st completion = the restored cwd `cd`'s OSC-133;D — ABSORBED (it ran at the local prompt, pre-ssh).
-        store.recipeReplayCommandCompleted(for: restored)
-        XCTAssertTrue(store.isReplayingRecipe(for: restored), "the cwd `cd` completion is absorbed — still paused")
+        // 1st prompt mark = the fresh shell's own first idle prompt — ABSORBED (it preceded any replay command).
+        store.recipeReplayPromptReturned(for: restored)
+        XCTAssertTrue(store.isReplayingRecipe(for: restored), "the fresh-shell prompt is absorbed — still paused")
+        XCTAssertFalse(try injected(store, restored).contains("echo b\n"), "echo b held after the fresh prompt")
+
+        // 2nd prompt mark = the restored cwd `cd`'s OSC-133;A — ALSO absorbed (it ran at the local prompt).
+        store.recipeReplayPromptReturned(for: restored)
+        XCTAssertTrue(store.isReplayingRecipe(for: restored), "the cwd `cd` prompt is absorbed — still paused")
         XCTAssertFalse(try injected(store, restored).contains("echo b\n"), "echo b still held after the `cd`")
 
-        // 2nd completion = the typed-ahead `echo a`'s D — ALSO absorbed (it too ran at the local prompt).
-        store.recipeReplayCommandCompleted(for: restored)
-        XCTAssertTrue(store.isReplayingRecipe(for: restored), "echo a completion is absorbed — still behind ssh")
+        // 3rd prompt mark = the typed-ahead `echo a`'s OSC-133;A — ALSO absorbed (also a local prompt).
+        store.recipeReplayPromptReturned(for: restored)
+        XCTAssertTrue(store.isReplayingRecipe(for: restored), "echo a prompt is absorbed — still behind ssh")
         XCTAssertFalse(
             try injected(store, restored).contains("echo b\n"),
-            "echo b must NOT inject until ssh exits — folding the cwd `cd` into the absorb count holds it",
+            "echo b must NOT inject until ssh's inner prompt — folding the pre-burst prompts into the count holds it",
         )
 
-        // 3rd completion = ssh exited → the local prompt returns → the queue resumes and injects the held one.
-        store.recipeReplayCommandCompleted(for: restored)
-        XCTAssertTrue(try injected(store, restored).contains("echo b\n"), "echo b injects only after ssh exits")
+        // 4th prompt mark = ssh connected → the INNER shell draws its prompt → the queue resumes INTO ssh.
+        store.recipeReplayPromptReturned(for: restored)
+        XCTAssertTrue(
+            try injected(store, restored).contains("echo b\n"), "echo b injects into the inner ssh session",
+        )
         XCTAssertFalse(store.isReplayingRecipe(for: restored), "replay finished after the post-handoff command")
 
         // The full typed-ahead stream eventually lands (the cwd `cd` is deferred via a Task even at .zero grace,

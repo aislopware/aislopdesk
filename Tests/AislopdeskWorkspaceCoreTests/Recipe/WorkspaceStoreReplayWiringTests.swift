@@ -4,8 +4,8 @@ import XCTest
 
 /// E16 / WI-9 — the recipe REPLAY-EXECUTION wiring: ``WorkspaceStore`` drives one ``RecipeReplayMachine`` per
 /// restored pane against the live PTY, injecting each captured command VERBATIM (``BlockReRunEncoder`` →
-/// ``TerminalViewModel/sendInput(_:)``, never ``SendKeysParser``), advancing on the OSC-133;D / prompt-return
-/// edge, and PAUSING after a shell-handoff command (`ssh`/…) until the inner session returns to a local prompt.
+/// ``TerminalViewModel/sendInput(_:)``, never ``SendKeysParser``), advancing on the OSC-133;A prompt-START
+/// edge, and PAUSING after a shell-handoff command (`ssh`/…) until the INNER session draws its first prompt.
 ///
 /// Headless: a `.tree`-live store backed by ``RecordingTerminalPaneSession`` (a REAL ``TerminalViewModel`` per
 /// `.terminal` pane whose `sendInput` is recorded — no socket, no renderer, no NSWindow). The replay QUEUE
@@ -172,11 +172,12 @@ final class WorkspaceStoreReplayWiringTests: XCTestCase {
 
     // MARK: - Shell-handoff pause: an `ssh` command holds the queue
 
-    /// After an interactive command (`ssh`) Auto PAUSES: the typed-ahead `echo a` completion is absorbed and the
-    /// post-handoff `echo b` is NOT injected until the local prompt returns (the second completion edge).
-    /// REVERT-TO-CONFIRM-FAIL: without the WI-5 pause wiring (or the absorb counter), `echo b` injects on the
-    /// FIRST completion — straight into the inner ssh session.
-    func testInteractiveCommandPausesUntilPromptReturns() throws {
+    /// After an interactive command (`ssh`) Auto PAUSES: the typed-ahead `echo a`'s prompt mark is absorbed and
+    /// the post-handoff `echo b` is NOT injected until the INNER session draws its prompt (the second OSC-133;A
+    /// edge) — so `echo b` resumes INTO the ssh session, never the local shell.
+    /// REVERT-TO-CONFIRM-FAIL: without the pause wiring (or the absorb counter), `echo b` injects on the FIRST
+    /// prompt mark — before ssh has even connected.
+    func testInteractiveCommandPausesUntilInnerPromptReturns() throws {
         let store = makeStore()
         let active = try activePane(store)
         let session = try recordingSession(store, active)
@@ -191,14 +192,50 @@ final class WorkspaceStoreReplayWiringTests: XCTestCase {
             return
         }
 
-        // The typed-ahead `echo a` completion is ABSORBED — the held command must NOT inject yet.
-        store.recipeReplayCommandCompleted(for: active)
+        // The typed-ahead `echo a`'s LOCAL prompt mark is ABSORBED — the held command must NOT inject yet.
+        store.recipeReplayPromptReturned(for: active)
         XCTAssertEqual(sentStrings(session), ["echo a\n", "ssh host\n"], "echo b stays held during the handoff")
 
-        // ssh exits → the local prompt returns → the queue resumes and injects the held command.
-        store.recipeReplayCommandCompleted(for: active)
-        XCTAssertEqual(sentStrings(session), ["echo a\n", "ssh host\n", "echo b\n"], "the prompt-return resumes")
+        // ssh connects → the INNER shell draws its prompt (OSC-133;A) → the queue resumes INTO that session.
+        store.recipeReplayPromptReturned(for: active)
+        XCTAssertEqual(
+            sentStrings(session), ["echo a\n", "ssh host\n", "echo b\n"], "the inner-prompt mark resumes",
+        )
         XCTAssertFalse(store.isReplayingRecipe(for: active), "replay finished after the post-handoff command")
+    }
+
+    // MARK: - Shell-handoff resume keys off OSC-133;A bytes (end-to-end), NOT the outer OSC-133;D completion
+
+    /// The shell-handoff resume is driven through the live `terminal.onPromptReturn` wiring the store installs in
+    /// `wireMaterializedLeaf` — feeding the pane's REAL ``TerminalViewModel`` an OSC-133;A prompt mark resumes the
+    /// held queue, and the held `echo b` lands INTO the inner session (the second prompt mark, after `ssh`).
+    /// REVERT-TO-CONFIRM-FAIL: wiring the resume to the outer OSC-133;D command-completion (the pre-fix code) means
+    /// the OSC-133;A prompt-START byte never resumes — `echo b` stays held forever here; and in production the real
+    /// `ssh` OSC-133;D fires only on EXIT, injecting `echo b` back into the LOCAL shell (the wrong host). A
+    /// command-completion event is a SEPARATE wire signal, not an OSC-133;A byte, so it does not fire this edge.
+    func testHandoffResumesOnPromptStartByteEdgeIntoInnerSession() throws {
+        let store = makeStore()
+        let active = try activePane(store)
+        let session = try recordingSession(store, active)
+        let model = try XCTUnwrap(session.terminalModel, "the recording pane carries a real terminal model")
+
+        seedReplay(store, .auto, ["echo a", "ssh host", "echo b"], into: active)
+        store.beginRecipeReplay(launchGrace: .zero)
+        XCTAssertEqual(sentStrings(session), ["echo a\n", "ssh host\n"], "paused on the ssh handoff, echo b held")
+
+        // An OSC-133;A prompt mark on the main screen (`ESC]133;A` + BEL) — the SAME byte sequence the host shell
+        // emits when a prompt is drawn. The first is the typed-ahead `echo a`'s LOCAL prompt — ABSORBED.
+        let promptStartA = Data([0x1B, 0x5D, 0x31, 0x33, 0x33, 0x3B, 0x41, 0x07])
+        model.ingestOutput(promptStartA)
+        XCTAssertEqual(sentStrings(session), ["echo a\n", "ssh host\n"], "the first prompt mark is absorbed")
+
+        // The second prompt mark is the INNER ssh shell's prompt — the queue resumes INTO that session.
+        model.ingestOutput(promptStartA)
+        XCTAssertEqual(
+            sentStrings(session), ["echo a\n", "ssh host\n", "echo b\n"],
+            "the inner shell's OSC-133;A prompt mark resumes the held command into the ssh session",
+        )
+        XCTAssertFalse(store.isReplayingRecipe(for: active), "replay finished once resumed into the inner session")
     }
 
     // MARK: - Verbatim injection (never SendKeysParser)
@@ -280,14 +317,14 @@ final class WorkspaceStoreReplayWiringTests: XCTestCase {
 
     // MARK: - No replay → the edges are inert
 
-    /// The replay edges are no-ops for a pane with no in-flight replay (a stray OSC-133;D / continue can't
-    /// inject anything).
+    /// The replay edges are no-ops for a pane with no in-flight replay (a stray OSC-133;A prompt mark / continue
+    /// can't inject anything).
     func testReplayEdgesAreNoOpWithoutAnActiveReplay() throws {
         let store = makeStore()
         let active = try activePane(store)
         let session = try recordingSession(store, active)
 
-        XCTAssertEqual(store.recipeReplayCommandCompleted(for: active), [], "a stray completion injects nothing")
+        XCTAssertEqual(store.recipeReplayPromptReturned(for: active), [], "a stray prompt mark injects nothing")
         XCTAssertEqual(store.continueRecipeReplay(for: active), [], "a stray continue injects nothing")
         XCTAssertEqual(sentStrings(session), [])
         XCTAssertNil(store.recipeReplayState(for: active))

@@ -105,25 +105,50 @@ public extension WorkspaceStore {
 
     // MARK: - E13 WI-5: Send to Chat (capture the active pane's quote)
 
-    /// Captures the active pane's Send-to-Chat quote (ES-E13-5, `⌘⌃↩`): the libghostty SELECTION when one
-    /// exists (the primary otty path — select text, then ⌘⌃↩). Returns `nil` — so the caller does NOT open the
-    /// dialog — when the active pane is not a terminal or has no selection. PURE-ish read (resolves through
-    /// ``activeTerminalModel``); never mutates the tree.
+    /// Captures the active pane's Send-to-Chat quote (ES-E13-5, `⌘⌃↩`) SYNCHRONOUSLY: the libghostty SELECTION
+    /// when one exists (the primary otty path — select text, then ⌘⌃↩). Returns `nil` — so the caller does NOT
+    /// open the dialog on this synchronous pass — when the active pane is not a terminal or has no selection.
+    /// PURE-ish read (resolves through ``activeTerminalModel``); never mutates the tree.
     ///
-    /// FIDELITY NOTE: the send-to-chat spec's no-selection fallback is "the last command's OUTPUT (the OSC-133
-    /// `D` block's output body from shell integration)". That body is NOT available synchronously here — it
-    /// needs an async wire round-trip (wire type 15 → 29, ``TerminalViewModel/copyBlockOutput(index:onResult:)``,
-    /// live-host-only). The block model carries only the command LINE (`blocks.latest?.commandText`), and
-    /// quoting THAT would mislead — it sends the command you typed, not its output. So the no-selection fallback
-    /// is DISABLED (quote nothing, the honest no-op) rather than quoting the wrong text; the selection path —
-    /// the common case — stays fully faithful. (Quoting the real OSC-133 output body is a Phase-3 target.)
+    /// The spec's no-selection fallback ("the last command's OUTPUT — the OSC-133 `D` block's output body from
+    /// shell integration") is NOT available synchronously: it needs a wire round-trip (type 15 → 29,
+    /// ``TerminalViewModel/copyBlockOutput(index:onResult:)``, live-host-only). So this synchronous capture is
+    /// SELECTION-ONLY; the caller falls through to the async companion ``captureSendToChatLastOutput(onResult:)``
+    /// when this returns `nil`. (Quoting the command LINE would mislead — it sends the command you typed, not
+    /// its output — so only the real OUTPUT body is ever quoted, never the line.)
     func captureSendToChatContext() -> SendToChatContext? {
         guard let activeID = activePaneID, let spec = tree.spec(for: activeID) else { return nil }
         let title = PanePresentation.displayTitle(handle(for: activeID), spec: spec)
         let selection = activeTerminalModel?.currentSelectionText()
-        // `lastOutput: nil` — see the FIDELITY NOTE: the synchronous command LINE is the wrong text, and the
-        // real output body is async/headless-unprovable, so there is no faithful no-selection fallback here.
+        // `lastOutput: nil` — the output-body fallback is async (see `captureSendToChatLastOutput`); this
+        // synchronous capture only ever quotes a live selection.
         return SendToChatModel.capture(title: title, selection: selection, lastOutput: nil)
+    }
+
+    /// E13 WI-5 (ES-E13-5) — the ASYNC no-selection fallback: with NO live selection the spec quotes "the last
+    /// command's OUTPUT" (the OSC-133 `D` block's output body from shell integration). That body needs a wire
+    /// round-trip (type 15 → 29, ``TerminalViewModel/copyBlockOutput(index:onResult:)``, live-host-only), so it
+    /// is fetched here and handed back through `onResult`. Resolves `onResult(nil)` when the active pane is not
+    /// a terminal, its NEWEST block holds no output (`outputLen == 0` — the same "has output" gate the
+    /// block-output copy affordance uses), or the host reply comes back empty/unavailable (evicted /
+    /// disconnected) — the caller then surfaces a toast rather than presenting an empty dialog. The SELECTION
+    /// path is resolved first + synchronously by ``captureSendToChatContext()``; this is ONLY the no-selection
+    /// branch, so the caller invokes it after that returned `nil`. A pure read of the tree (the wire request is
+    /// the model's own); never mutates the tree.
+    func captureSendToChatLastOutput(onResult: @escaping (SendToChatContext?) -> Void) {
+        guard let activeID = activePaneID, let spec = tree.spec(for: activeID),
+              let model = activeTerminalModel, let latest = model.blocks.latest,
+              latest.outputLen > 0
+        else {
+            onResult(nil)
+            return
+        }
+        let title = PanePresentation.displayTitle(handle(for: activeID), spec: spec)
+        model.copyBlockOutput(index: latest.index) { output in
+            // `output` is the VT-stripped plain text (nil when evicted / no live connection); `capture`
+            // returns nil for a blank/absent body, so an unavailable fetch stays an honest no-op.
+            onResult(SendToChatModel.capture(title: title, selection: nil, lastOutput: output))
+        }
     }
 
     // MARK: - E13 WI-5: Send to Chat (route a composed message to a CHOSEN agent pane)
@@ -285,5 +310,21 @@ public extension WorkspaceStore {
             return ResolvedComposer(composer: composer, agentActive: provider.composerAgentActive)
         }
         return nil
+    }
+
+    /// Enforce otty's SINGLE window-level pin: a pinned composer is a window-level singleton ("rides along
+    /// regardless of which tab is active"), so pinning `pinnedID`'s composer must clear EVERY OTHER pane's
+    /// pin. Without this, pinning pane A then pane B left both pinned — and ``pinnedComposer`` (first-match)
+    /// surfaces only one, so the other (and its unpin toggle) became unreachable. Wired into every composer's
+    /// ``ComposerModel/onPinnedExclusive`` at materialization (so it fires on a runtime toggle) AND re-run
+    /// after a persisted-pin restore (so a legacy multi-pin relaunch collapses to one, last-restored winning).
+    /// Clearing a sibling routes through ``ComposerModel/setPinned(_:)`` → its ``ComposerModel/onPinnedChange``
+    /// → un-persists it, keeping the persisted pin set a singleton too; a pin-OFF edge fires no
+    /// `onPinnedExclusive`, so the sweep cannot recurse.
+    func enforceSingleComposerPin(keeping pinnedID: PaneID) {
+        for session in allSessions where session.id != pinnedID {
+            guard let composer = (session as? ComposerProviding)?.composerModel, composer.isPinned else { continue }
+            composer.setPinned(false)
+        }
     }
 }

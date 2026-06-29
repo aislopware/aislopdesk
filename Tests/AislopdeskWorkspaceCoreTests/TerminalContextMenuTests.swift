@@ -13,6 +13,15 @@ final class TerminalContextMenuTests: XCTestCase {
         XCTAssertFalse(TerminalContextMenu.isEnabled(.copy, context: noSel))
     }
 
+    /// Cut (⌘X) — like Copy — needs a selection: it always copies the run and (only at an editable prompt)
+    /// deletes it, so it greys out with nothing selected.
+    func testCutRequiresSelection() {
+        let withSel = TerminalContextMenu.Context(hasSelection: true, clipboardHasText: false)
+        let noSel = TerminalContextMenu.Context(hasSelection: false, clipboardHasText: false)
+        XCTAssertTrue(TerminalContextMenu.isEnabled(.cut, context: withSel))
+        XCTAssertFalse(TerminalContextMenu.isEnabled(.cut, context: noSel))
+    }
+
     func testPasteRequiresClipboardText() {
         let hasClip = TerminalContextMenu.Context(hasSelection: false, clipboardHasText: true)
         let noClip = TerminalContextMenu.Context(hasSelection: false, clipboardHasText: false)
@@ -33,7 +42,7 @@ final class TerminalContextMenuTests: XCTestCase {
         XCTAssertEqual(
             TerminalContextMenu.items,
             [
-                .copy, .paste, .pasteAsKeystrokes, .selectAll, .clear, .copyOutput,
+                .copy, .cut, .paste, .pasteAsKeystrokes, .selectAll, .clear, .copyOutput,
                 // E13 WI-5: "Send to Chat" sits in the blocks/agent group (after Copy Command Output).
                 .sendToChat, .splitRight, .splitDown, .find,
             ],

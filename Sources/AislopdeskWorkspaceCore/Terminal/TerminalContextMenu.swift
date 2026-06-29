@@ -14,6 +14,7 @@ public enum TerminalContextMenu {
     /// without a parallel switch, and so the cheat-sheet/tests reference stable ids.
     public enum Item: String, CaseIterable, Sendable, Equatable {
         case copy
+        case cut // ⌘X — copies the selection and (at an editable prompt) deletes it; read-only → copy only
         case paste
         case pasteAsKeystrokes
         // E8 / ES-E8-4 — the "Paste as…" submenu variants (otty parity). These are NOT in the top-level
@@ -35,6 +36,7 @@ public enum TerminalContextMenu {
         public var title: String {
             switch self {
             case .copy: "Copy"
+            case .cut: "Cut"
             case .paste: "Paste"
             case .pasteAsKeystrokes: "Paste as Keystrokes"
             case .pasteSelection: "Paste Selection"
@@ -56,6 +58,7 @@ public enum TerminalContextMenu {
         public var symbol: String {
             switch self {
             case .copy: "doc.on.doc"
+            case .cut: "scissors"
             case .paste: "clipboard"
             case .pasteAsKeystrokes: "keyboard"
             case .pasteSelection: "text.cursor"
@@ -133,7 +136,7 @@ public enum TerminalContextMenu {
     /// `Item.separatorBefore`. The "Paste as…" variants are deliberately EXCLUDED — they hang off the
     /// ``pasteAsItems`` submenu (the view inserts it directly below `paste`), so `items != Item.allCases`.
     public static let items: [Item] = [
-        .copy, .paste, .pasteAsKeystrokes, .selectAll, .clear, .copyOutput, .sendToChat,
+        .copy, .cut, .paste, .pasteAsKeystrokes, .selectAll, .clear, .copyOutput, .sendToChat,
         .splitRight, .splitDown, .find,
     ]
 
@@ -204,7 +207,7 @@ public enum TerminalContextMenu {
     }
 
     /// Whether `item` is enabled for `context` — the testable enablement rule:
-    /// - **Copy** needs a live selection.
+    /// - **Copy / Cut** need a live selection.
     /// - **Paste / Paste as Keystrokes** need non-empty clipboard text.
     /// - **Paste as…** (ES-E8-4): *Paste Selection* needs a selection; *Paste File Base64* is always live
     ///   (it picks its own file); *Paste Escaping* / *Bracketed Paste* need clipboard text; *Paste to
@@ -214,7 +217,10 @@ public enum TerminalContextMenu {
     ///   act on the surface regardless of selection; splits + find act on the workspace).
     public static func isEnabled(_ item: Item, context: Context) -> Bool {
         switch item {
-        case .copy:
+        case .copy,
+             // Cut needs a selection too: it always copies the run, and (only at an editable prompt) deletes
+             // it — on read-only scrollback it degrades to a plain copy, so a selection is the precondition.
+             .cut:
             context.hasSelection
         case .paste,
              .pasteAsKeystrokes:

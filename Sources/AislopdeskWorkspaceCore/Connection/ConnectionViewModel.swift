@@ -96,6 +96,12 @@ public final class ConnectionViewModel {
     /// dropped). Cross-platform (the store owns the macOS-only poster behind its `onLongCommandNotify` sink).
     public var onCommandCompleted: ((_ exitCode: Int32?, _ durationMS: UInt32) -> Void)?
 
+    /// A command-START edge (OSC 133;C / `.commandStatus(.running)`). The store wires this to
+    /// ``WorkspaceStore/handleCommandStarted(id:)`` so a new run CLEARS the pane's stale completion badge before
+    /// its running spinner resolves (a busy background pane must not show the previous run's ✓/✗). `nil` ⇒ no
+    /// observer. The running/idle indicator itself is still folded by the terminal model via `terminal.handle`.
+    public var onCommandStarted: (() -> Void)?
+
     /// An OSC 9;4 taskbar-style PROGRESS update (E14/K1, wire type 32). The store wires this to
     /// ``WorkspaceStore/handleProgress(_:for:)`` so the validated state lands in the per-pane `paneProgress`
     /// mirror (→ the sidebar tab badge + the macOS Dock aggregate). A ``ProgressState/clear`` arrives as `nil`
@@ -593,8 +599,13 @@ public final class ConnectionViewModel {
             // GATE (badge an unfocused pane; notify only for a backgrounded long command). Moving the
             // notify decision off this VM is what lets a foreground long command stay silent — the VM
             // does not know which leaf is active. The running/idle indicator itself is folded by the
-            // terminal model below — this branch only drives the completion side-effect.
-            if case let .idle(exitCode, durationMS) = commandStatus {
+            // terminal model below — this branch only drives the start/completion side-effects.
+            switch commandStatus {
+            case .running:
+                // The command-START edge clears a STALE completion badge in the store (a new run resets the
+                // prior exit ✓/✗ before the spinner resolves). The terminal model still sets `.running` below.
+                onCommandStarted?()
+            case let .idle(exitCode, durationMS):
                 onCommandCompleted?(exitCode, durationMS)
             }
         case let .notification(title, body):

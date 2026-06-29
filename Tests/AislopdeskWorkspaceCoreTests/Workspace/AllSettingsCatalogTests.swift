@@ -323,6 +323,23 @@ final class AllSettingsCatalogTests: XCTestCase {
         XCTAssertTrue(SettingsKey.copyOnSelectEnabled, "Controls toggle survives Reset Advanced")
     }
 
+    /// "Reset All Settings" also restores the progress-cluster command-badge toggles (Settings → Shell "TAB
+    /// BADGE") — a flipped-OFF "When Command Finishes / Fails / Awaits Input" returns to its default ON. These
+    /// keys are tab-reachable (the Shell tab), so they ride ``tabReachableDefaultsKeys``. Revert-to-confirm-fail:
+    /// omit them from the reset set and the asserts below fail.
+    func testResetAllRestoresTabBadgeCommandToggles() {
+        let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil, applyOnInit: false)
+        Defaults[.tabBadgeOnCommandFinish] = false // default true
+        Defaults[.tabBadgeOnCommandFail] = false // default true
+        Defaults[.tabBadgeOnCommandAwaitInput] = false // default true
+
+        store.resetAll()
+
+        XCTAssertTrue(Defaults[.tabBadgeOnCommandFinish], "When Command Finishes restored by Reset All")
+        XCTAssertTrue(Defaults[.tabBadgeOnCommandFail], "When Command Fails restored by Reset All")
+        XCTAssertTrue(Defaults[.tabBadgeOnCommandAwaitInput], "When Command Awaits Input restored by Reset All")
+    }
+
     // MARK: - Reset coverage vs the catalog (anti-drift)
 
     /// Every key the Advanced → All Settings catalog advertises as `.advancedOnly` (i.e. a real, editable

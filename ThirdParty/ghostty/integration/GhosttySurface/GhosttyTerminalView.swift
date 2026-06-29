@@ -1520,10 +1520,28 @@ final class GhosttyLayerBackedView: NSView {
 
     override func otherMouseDown(with event: NSEvent) {
         let mods = Self.ghosttyMods(event.modifierFlags)
+        // AUDIT FIX `rightclick-paste-protection-hole`: a MIDDLE-click (button 2) pastes the SELECTION clipboard
+        // via libghostty, which bypasses otty's broad paste-protection gate exactly like the right-click path.
+        // When the pointer is NOT captured by a mouse-reporting program, intercept and route the selection
+        // content through the SAME pre-check (`requestPasteFromSelection`). A CAPTURED middle-click (a TUI's own
+        // mouse mode) belongs to the program — forward it untouched.
+        if event.buttonNumber == 2, surface?.mouseCaptured == false {
+            // PRESS consumed locally → withhold the paired RELEASE forward too (press/release balance).
+            suppressedMiddleButtonPress = true
+            requestPasteFromSelection()
+            return
+        }
         surface?.sendMouseButton(state: GHOSTTY_MOUSE_PRESS, button: Self.mouseButton(event.buttonNumber), mods: mods)
     }
 
     override func otherMouseUp(with event: NSEvent) {
+        // If the matching middle PRESS was handled locally (the paste-protection interception) it was never
+        // forwarded, so do NOT forward this RELEASE either — an unpaired middle release would inject a stray
+        // report into a mouse-reporting TUI. Consume the one-shot flag.
+        if event.buttonNumber == 2, suppressedMiddleButtonPress {
+            suppressedMiddleButtonPress = false
+            return
+        }
         let mods = Self.ghosttyMods(event.modifierFlags)
         surface?.sendMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: Self.mouseButton(event.buttonNumber), mods: mods)
     }
@@ -1534,6 +1552,12 @@ final class GhosttyLayerBackedView: NSView {
     /// release report (the press it would pair with was swallowed locally). One-shot: consumed on the next
     /// `rightMouseUp`.
     private var suppressedRightButtonPress = false
+
+    /// Set when a middle-button `otherMouseDown` was handled LOCALLY (the audit-fix paste-protection
+    /// interception) and so was NOT forwarded to libghostty as a middle-button PRESS. The matching
+    /// `otherMouseUp` then suppresses the middle-button RELEASE forward too, so a mouse-reporting TUI never
+    /// sees an UNPAIRED release. One-shot: consumed on the next middle `otherMouseUp`.
+    private var suppressedMiddleButtonPress = false
 
     override func rightMouseDown(with event: NSEvent) {
         let mods = Self.ghosttyMods(event.modifierFlags)
@@ -1563,9 +1587,30 @@ final class GhosttyLayerBackedView: NSView {
         //
         // This deletes the old client-side effect switch (which read `hasSelection()` AFTER libghostty had
         // already word-selected at the click point, so Copy-or-Paste always saw a selection → always copied,
-        // and Ignore/Paste left a stray highlight — the WI-7 right-click-action review finding). A right-click
-        // Paste still hits otty's paste-protection sheet via libghostty's own `confirm_read_clipboard_cb`
-        // backstop (WI-4), so the protection gate is preserved.
+        // and Ignore/Paste left a stray highlight — the WI-7 right-click-action review finding).
+        //
+        // AUDIT FIX `rightclick-paste-protection-hole`: if the configured action resolves to a PASTE, intercept
+        // it HERE (before forwarding) and route through `requestPaste()` so it runs otty's full four-danger
+        // pre-check — libghostty's own `confirm_read_clipboard_cb` backstop only trips for a `\n` / bracketed-end
+        // payload, so a single-line `sudo`, an ESC-laced control-char paste, or a bare-`\r` paste would otherwise
+        // reach the shell with NO protection sheet. The PURE ``RightClickPasteInterceptPolicy`` gates on
+        // `mouseCaptured` so a mouse-reporting TUI keeps its right-click (we never steal the program's input).
+        if RightClickPasteInterceptPolicy.interceptsAsPaste(
+            action: SettingsKey.rightClickAction,
+            hasSelection: surface?.hasSelection() ?? false,
+            mouseCaptured: surface?.mouseCaptured ?? false,
+        ) {
+            // The PRESS is consumed locally (never forwarded). Record it so the paired `rightMouseUp` withholds
+            // the RELEASE forward too — press/release must stay balanced under mouse-reporting capture.
+            suppressedRightButtonPress = true
+            requestPaste()
+            return
+        }
+
+        // A right-click Copy / Context-Menu / Ignore stays owned END-TO-END by libghostty. `sendMouseButton`
+        // returns true when the surface CONSUMED the press (a mouse-reporting program turned it into an SGR
+        // report, OR libghostty performed Copy/Ignore which consume); Context Menu returns false → fall through
+        // to AppKit's native `menu(for:)`.
         if surface?.sendMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT, mods: mods) == true { return }
         super.rightMouseDown(with: event)
     }
@@ -1829,20 +1874,61 @@ final class GhosttyLayerBackedView: NSView {
         }
     }
 
-    // MARK: Clipboard responder selectors (Cmd-C / Cmd-V / Cmd-A)
+    // MARK: Clipboard responder selectors (Cmd-C / Cmd-X / Cmd-V / Cmd-A)
     //
     // The terminal keyDown deliberately does NOT intercept Cmd-combos (they are app shortcuts). The
     // standard Edit menu / Cmd-key path lands on these responder selectors; we route each to the
     // matching libghostty binding action so copy uses the selection, paste applies bracketed-paste
     // (DECSET 2004) itself — do NOT hand-roll paste bytes — and select-all spans the screen+scrollback.
-    // The workspace command table (Cmd-T/W/D/1-9/R/]/[ + Opt-Cmd-arrows + Cmd-K) does NOT bind C/V/A,
-    // so these never collide.
+    // Cut copies the selection and (at an editable prompt only) deletes it. The workspace command table
+    // (Cmd-T/W/D/1-9/R/]/[ + Opt-Cmd-arrows + Cmd-K) does NOT bind C/X/V/A, so these never collide.
 
-    // `copy`/`paste` are responder-chain selectors NOT declared on NSResponder itself, so they are
+    // `copy`/`cut`/`paste` are responder-chain selectors NOT declared on NSResponder itself, so they are
     // plain `@objc` (no `override`); `selectAll(_:)` IS declared on NSResponder, so it MUST be
     // `override` — matching upstream `SurfaceView_AppKit.swift:1507/1515/1539`.
     @objc func copy(_ sender: Any?) {
         surface?.performBindingAction("copy_to_clipboard")
+    }
+
+    /// CUT (⌘X / Edit ▸ Cut, audit fix `cut-cmdx-not-wired`). otty's Cut "always copies the selection to the
+    /// clipboard; if editable prompt text, also deletes it; on read-only, falls back to a plain copy". The
+    /// PURE, headless-tested ``CutSelectionPolicy`` makes the 3-way decision; this view is the thin actuator.
+    /// The copy half is the universally-correct `copy_to_clipboard` binding action; the delete half is subject
+    /// to the SAME geometry ceiling as backspace-deletes-selection — against the pinned libghostty fork we
+    /// cannot prove the selection ends at the cursor, so the DEL count degrades to 0 (copy-only) rather than
+    /// risk deleting the WRONG characters (data loss). The seam lights up when a future libghostty geometry
+    /// API can prove the trailing run.
+    @objc func cut(_ sender: Any?) {
+        performCut()
+    }
+
+    /// Shared Cut actuation for the ⌘X responder + the context-menu Cut item (audit fix `cut-cmdx-not-wired`).
+    private func performCut() {
+        guard let surface else { return }
+        let action = CutSelectionPolicy.action(
+            hasSelection: surface.hasSelection(),
+            // REAL alt-screen flag (DECSET 1049/47/1047 via the client `TerminalModeTracker`) — a full-screen
+            // program owns the screen ⇒ copy only, never inject deletes (the program's input).
+            isAlternateScreen: model?.isAlternateScreen ?? false,
+            // Editable prompt zone: connected AND OSC-133 `.idle` AND NOT on the alternate screen — the only
+            // place DEL bytes faithfully erase the selected run (identical gate to the backspace block).
+            isPromptZone: (model?.connectionStatus.isLive ?? false)
+                && model?.shellActivity == .idle
+                && !(model?.isAlternateScreen ?? false),
+        )
+        guard action != .none else { return }
+        // Always copy the selection (the universally-correct half).
+        surface.performBindingAction("copy_to_clipboard")
+        guard action == .copyAndDelete else { return }
+        // Delete half — GEOMETRY CEILING (same as backspace-deletes-selection): `selectionEndsAtCursor: false`
+        // against the pinned fork ⇒ `deleteCount` returns 0, so we pre-send NOTHING and the cut degrades to
+        // copy-only. Sending DEL bytes for a run that does NOT end at the cursor (a word selected mid-command)
+        // would delete the wrong characters and silently corrupt the line.
+        let count = CutSelectionPolicy.deleteCount(
+            selection: surface.readSelection() ?? "",
+            selectionEndsAtCursor: false,
+        )
+        if count > 0 { model?.sendInput(Data(repeating: 0x7F, count: count)) }
     }
 
     @objc func paste(_ sender: Any?) {
@@ -1861,8 +1947,28 @@ final class GhosttyLayerBackedView: NSView {
     /// a SECOND dialog. A safe payload (or protection off) pastes straight through libghostty, which still
     /// applies bracketed-paste framing.
     private func requestPaste() {
+        requestPaste(clipboard: NSPasteboard.general.string(forType: .string) ?? "", bindingAction: "paste_from_clipboard")
+    }
+
+    /// E8 / audit fix `rightclick-paste-protection-hole`: a MIDDLE-CLICK paste (X11 primary-selection) reads
+    /// the SELECTION clipboard, not the system one. Run the SAME pre-check over the selection content, then
+    /// (on approve / safe) hand it to libghostty's `paste_from_selection` so it applies bracketed-paste
+    /// framing. Empty selection → no-op.
+    private func requestPasteFromSelection() {
+        let selection = aislopdeskPasteboard(for: GHOSTTY_CLIPBOARD_SELECTION).string(forType: .string) ?? ""
+        guard !selection.isEmpty else { return }
+        requestPaste(clipboard: selection, bindingAction: "paste_from_selection")
+    }
+
+    /// The shared paste entry point: run otty's ``PastePrecheck`` over `clipboard` BEFORE handing it to
+    /// libghostty's `bindingAction` (`paste_from_clipboard` for ⌘V / right-click / context-menu Paste,
+    /// `paste_from_selection` for a middle-click). libghostty's own `isSafe` gate is narrower than otty's four
+    /// dangers, so a single-line `sudo`, an ESC-laced control-char paste, or a bare-`\r` paste would otherwise
+    /// reach the shell SILENTLY for ANY libghostty-initiated paste path. On a danger we present
+    /// ``PasteProtectionSheet`` and paste with `allow_unsafe` only on approve; a safe payload (or protection
+    /// off) pastes straight through, which still applies bracketed-paste framing.
+    private func requestPaste(clipboard: String, bindingAction: String) {
         guard let surface else { return }
-        let clipboard = NSPasteboard.general.string(forType: .string) ?? ""
         let decision = PastePrecheck.decide(
             clipboard: clipboard,
             protectionOn: SettingsKey.pasteProtectionEnabled,
@@ -1872,7 +1978,7 @@ final class GhosttyLayerBackedView: NSView {
         )
         switch decision {
         case .pasteDirect:
-            surface.performBindingAction("paste_from_clipboard")   // libghostty applies bracketed-paste
+            surface.performBindingAction(bindingAction)   // libghostty applies bracketed-paste
         case let .confirm(dangers):
             PasteProtectionSheet.present(
                 kind: .unsafePaste,
@@ -1884,7 +1990,7 @@ final class GhosttyLayerBackedView: NSView {
                 // Approved → paste with allow_unsafe (one-shot), consumed by `read_clipboard_cb`. Cleared right
                 // after the SYNCHRONOUS binding-action read so it can never leak into a later read.
                 surface.pasteApprovedOnce = true
-                surface.performBindingAction("paste_from_clipboard")
+                surface.performBindingAction(bindingAction)
                 surface.pasteApprovedOnce = false
             }
         }
@@ -2000,6 +2106,7 @@ final class GhosttyLayerBackedView: NSView {
               let item = TerminalContextMenu.Item(rawValue: raw) else { return }
         switch item {
         case .copy: surface?.performBindingAction("copy_to_clipboard")
+        case .cut: performCut()   // audit fix: copy the selection + (editable prompt only) delete it
         case .paste: requestPaste()   // ES-E8-3: paste-protection pre-check, then libghostty's bracketed paste
         case .pasteAsKeystrokes:
             // Type the pasteboard string as raw keystrokes (no bracketed-paste) — the "paste literally"
@@ -2063,7 +2170,7 @@ final class GhosttyLayerBackedView: NSView {
         if !encoded.isEmpty { surface?.text(encoded) }
     }
 
-    /// Catch Cmd-C / Cmd-V / Cmd-A DIRECTLY, regardless of whether an Edit menu is installed. Returning
+    /// Catch Cmd-C / Cmd-X / Cmd-V / Cmd-A DIRECTLY, regardless of whether an Edit menu is installed. Returning
     /// `true` marks the equivalent handled so it does not propagate to the menu / beep. Other Cmd-combos
     /// (the workspace shortcuts) are left to `super` so the command table still sees them.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -2079,6 +2186,7 @@ final class GhosttyLayerBackedView: NSView {
         }
         switch chars {
         case "c": copy(nil); return true
+        case "x": cut(nil); return true   // audit fix `cut-cmdx-not-wired`: ⌘X copies (+prompt-zone delete)
         case "v": paste(nil); return true
         case "a": selectAll(nil); return true
         // Font sizing — the universal terminal chords (Terminal.app/iTerm/Ghostty): ⌘= grows, ⌘-

@@ -80,11 +80,16 @@ public extension WorkspaceStore {
     // MARK: E13 WI-3 — agent-badge gating (per-pane override + Clear-Badge)
 
     /// The effective ``AgentBadgeGates`` for pane `id`: the per-pane OVERRIDE if one is set (the tab
-    /// context-menu badge toggles), else the GLOBAL default from ``SettingsKey/agentBadgeGates``. The ONE
-    /// seam ``RailRowsBuilder`` reads before running ``AgentBadgeGates/gated(_:by:)`` on the resolver output.
+    /// context-menu badge toggles), else the GLOBAL default from ``SettingsKey/agentBadgeGates``. One of the
+    /// two gate sets ``RailRowsBuilder`` feeds to ``TabBadgeGating/resolve(...)``.
     func agentBadgeGates(for id: PaneID) -> AgentBadgeGates {
         paneAgentBadgeOverrides[id] ?? SettingsKey.agentBadgeGates
     }
+
+    /// The GLOBAL ``CommandBadgeGates`` (the otty Settings → Shell "TAB BADGE" toggles). Command badges have no
+    /// per-pane override (unlike the agent gates' tab-context-menu override), so this reads the global default
+    /// directly — the second gate set ``RailRowsBuilder`` / the control backend feed to ``TabBadgeGating``.
+    var commandBadgeGates: CommandBadgeGates { SettingsKey.commandBadgeGates }
 
     /// Sets (or clears, on `nil`) pane `id`'s per-pane badge override. Idempotent (a no-op when unchanged so
     /// it never churns the rail). Passing `nil` drops the override so the pane follows the global default again.

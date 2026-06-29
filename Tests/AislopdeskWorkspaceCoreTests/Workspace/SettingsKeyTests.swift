@@ -24,6 +24,10 @@ final class SettingsKeyTests: XCTestCase {
             SettingsKey.agentBadgeWhileProcessing,
             SettingsKey.agentBadgeWhenComplete,
             SettingsKey.agentBadgeWhenAwaitingInput,
+            // Progress cluster: command-driven TAB BADGE toggles.
+            SettingsKey.tabBadgeOnCommandFinish,
+            SettingsKey.tabBadgeOnCommandFail,
+            SettingsKey.tabBadgeOnCommandAwaitInput,
             SettingsKey.systemDialogPanes,
             SettingsKey.defaultPaneKindKey,
             SettingsKey.snapPanes,
@@ -176,11 +180,21 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertFalse(SettingsKey.soundOnErrorExitEnabled, "Sound on Error Exit defaults OFF")
         XCTAssertTrue(SettingsKey.agentNotifyTaskCompleteEnabled, "Agent task-complete defaults ON")
         XCTAssertTrue(SettingsKey.agentNotifyAwaitInputEnabled, "Agent await-input defaults ON")
-        // E13/WI-3 agent badge gates default ON (every agent badge shows), resolving to an all-on bundle.
-        XCTAssertTrue(SettingsKey.agentBadgeWhileProcessingEnabled, "Badge while processing defaults ON")
+        // E13/WI-3 agent badge gates: "while processing" defaults OFF (progress-state.md "off by default"),
+        // the other two ON.
+        XCTAssertFalse(SettingsKey.agentBadgeWhileProcessingEnabled, "Badge while processing defaults OFF (spec)")
         XCTAssertTrue(SettingsKey.agentBadgeWhenCompleteEnabled, "Badge when complete defaults ON")
         XCTAssertTrue(SettingsKey.agentBadgeWhenAwaitingInputEnabled, "Badge when awaiting input defaults ON")
-        XCTAssertEqual(SettingsKey.agentBadgeGates, .allOn, "the resolved global gates default all-on")
+        XCTAssertEqual(
+            SettingsKey.agentBadgeGates,
+            AgentBadgeGates(badgeWhileProcessing: false, badgeWhenComplete: true, badgeWhenAwaitingInput: true),
+            "the resolved global gates default with while-processing OFF",
+        )
+        // Progress cluster: the three COMMAND-driven "TAB BADGE" toggles all default ON (distinct keys).
+        XCTAssertTrue(SettingsKey.tabBadgeOnCommandFinishEnabled, "Tab Badge When Command Finishes defaults ON")
+        XCTAssertTrue(SettingsKey.tabBadgeOnCommandFailEnabled, "Tab Badge When Command Fails defaults ON")
+        XCTAssertTrue(SettingsKey.tabBadgeOnCommandAwaitInputEnabled, "Tab Badge When Command Awaits Input defaults ON")
+        XCTAssertEqual(SettingsKey.commandBadgeGates, .allOn, "the resolved global command gates default all-on")
         // The resolved bundle the notifier reads equals the spec baseline (the two default sources agree).
         XCTAssertEqual(SettingsKey.notificationSettings, NotificationSettings())
         // Round-trip the enum from its persisted otty raw value + repair a stale value.
@@ -209,6 +223,9 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertEqual(SettingsKey.agentBadgeWhileProcessing, "agents.badgeWhileProcessing")
         XCTAssertEqual(SettingsKey.agentBadgeWhenComplete, "agents.badgeWhenComplete")
         XCTAssertEqual(SettingsKey.agentBadgeWhenAwaitingInput, "agents.badgeWhenAwaitingInput")
+        XCTAssertEqual(SettingsKey.tabBadgeOnCommandFinish, "tabBadge.onCommandFinish")
+        XCTAssertEqual(SettingsKey.tabBadgeOnCommandFail, "tabBadge.onCommandFail")
+        XCTAssertEqual(SettingsKey.tabBadgeOnCommandAwaitInput, "tabBadge.onCommandAwaitInput")
         XCTAssertEqual(NotifyWhileForeground.off.rawValue, "off")
         XCTAssertEqual(NotifyWhileForeground.always.rawValue, "always")
         XCTAssertEqual(NotifyWhileForeground.tabUnfocused.rawValue, "tab-unfocused")

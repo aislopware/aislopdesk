@@ -127,9 +127,9 @@ final class RailRowBuilderTests: XCTestCase {
     }
 
     /// The manual override BYPASSES the per-pane agent-badge gates (it is an explicit CLI affordance, not an
-    /// agent signal): with the pane's `whileProcessing` gate OFF — which would suppress a DERIVED `.running`
-    /// spinner — a manual `.running` override still renders. Fails if the override were routed through
-    /// `AgentBadgeGates.gated`.
+    /// agent signal): with the pane's `whileProcessing` gate OFF — which would suppress an AGENT-derived
+    /// `.running` spinner — a manual `.running` override still renders. Fails if the override were routed through
+    /// `TabBadgeGating.resolve`.
     func testManualTabBadgeOverrideBypassesAgentBadgeGates() {
         let store = makeStore()
         let pane = paneID(store, row: 0)

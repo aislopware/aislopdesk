@@ -394,6 +394,8 @@ public final class PreferencesStore {
         .notifyOnFinish, .notifyOnError, .notifyOnWatchFinish, .notifyWhileForeground,
         .bounceDockIcon, .soundShellControlled, .soundOnErrorExit,
         .agentNotifyTaskComplete, .agentNotifyAwaitInput,
+        // Shell — TAB BADGE command-badge toggles (progress-state.md)
+        .tabBadgeOnCommandFinish, .tabBadgeOnCommandFail, .tabBadgeOnCommandAwaitInput,
         // Shell — working directory + CLI prefix toggles
         .workingDirectoryNewWindow, .workingDirectoryNewTab, .workingDirectoryNewSplit,
         .omitCLIPrefix, .allowPrefixOverwrite,

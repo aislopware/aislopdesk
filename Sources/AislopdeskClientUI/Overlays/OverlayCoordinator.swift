@@ -594,15 +594,41 @@ public final class OverlayCoordinator {
 
     // MARK: Send to Chat (⌘⌃↩ — quote the active pane → a chosen agent · E13 WI-5 / ES-E13-5)
 
-    /// Present the Send-to-Chat dialog over the active pane's captured quote. HONEST no-op when there is
-    /// nothing to quote (no selection + no command block) — mirroring ``openPeekReply()`` — so ⌘⌃↩ on an empty
-    /// pane does nothing rather than flashing an empty card. Builds the Claude-only session picker off the
-    /// store and pre-selects the last-used (or first live) agent pane.
+    /// Present the Send-to-Chat dialog over the active pane's captured quote (ES-E13-5's "selection OR last
+    /// command output"). Two passes: the SYNCHRONOUS selection capture wins (the injected closure — the app
+    /// wires it to the live store, a test overrides it — else the attached store); failing that, the ASYNC
+    /// no-selection fallback fetches the LAST command's OUTPUT body (the OSC-133 `D` block, wire 15→29). The
+    /// dialog opens with whichever quote materializes; when NEITHER does (no terminal / nothing selected /
+    /// nothing run / output evicted), a toast is surfaced rather than a silent no-op so ⌘⌃↩ always gives
+    /// feedback. Builds the Claude-only session picker off the store and pre-selects the last-used (or first
+    /// live) agent pane.
     public func openSendToChat() {
         guard let store else { return }
-        // The injected capture wins (the app wires it to the live store; a test overrides it); falling back to
-        // the attached store keeps the default working even if the app forgot to inject one.
-        guard let context = captureSendToChat?() ?? store.captureSendToChatContext() else { return }
+        // Pass 1 — the SYNCHRONOUS selection path (the injected override wins; default reads the store).
+        if let context = captureSendToChat?() ?? store.captureSendToChatContext() {
+            presentSendToChat(context, store: store)
+            return
+        }
+        // Pass 2 — NO selection → the ASYNC last-command-OUTPUT fallback (OSC-133 `D` block, wire 15→29).
+        store.captureSendToChatLastOutput { [weak self] context in
+            guard let self, let store = self.store else { return }
+            if let context {
+                presentSendToChat(context, store: store)
+            } else {
+                // Nothing to quote (no terminal / no captured output / evicted / disconnected) — surface a
+                // toast instead of a silent no-op so ⌘⌃↩ always gives feedback.
+                pushToast(Toast(
+                    id: "send-to-chat.nothing",
+                    title: "Nothing to send to chat",
+                    body: "Select some text, or run a command first.",
+                ))
+            }
+        }
+    }
+
+    /// Open the Send-to-Chat dialog over a resolved `context`: build the Claude-only session picker off the
+    /// store, pre-select the last-used (or first live) agent pane, then show the scrimmed modal.
+    private func presentSendToChat(_ context: SendToChatContext, store: WorkspaceStore) {
         sendToChatContext = context
         sendToChatSessions = store.agentChatSessions()
         sendToChatInitialSelection = SendToChatModel.defaultSession(

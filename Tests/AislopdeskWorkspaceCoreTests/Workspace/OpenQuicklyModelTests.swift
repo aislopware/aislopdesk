@@ -266,6 +266,80 @@ final class OpenQuicklyModelTests: XCTestCase {
         XCTAssertNil(OpenQuicklyModel.quickPickIndex(10, in: rows), "only ⌘1–9 are quick-pick chords")
     }
 
+    // MARK: - clampedSelection: arrow / page / Home / End navigation
+
+    func testClampedSelectionMovesAndClampsToBounds() {
+        // Arrow (±1) within range.
+        XCTAssertEqual(OpenQuicklyModel.clampedSelection(current: 2, delta: 1, count: 10), 3)
+        XCTAssertEqual(OpenQuicklyModel.clampedSelection(current: 2, delta: -1, count: 10), 1)
+        // Clamp at the top/bottom edges (no wrap, no underflow/overflow).
+        XCTAssertEqual(OpenQuicklyModel.clampedSelection(current: 0, delta: -1, count: 10), 0)
+        XCTAssertEqual(OpenQuicklyModel.clampedSelection(current: 9, delta: 1, count: 10), 9)
+    }
+
+    func testClampedSelectionPagesAndHomeEndClampWithinList() {
+        // PageDown by a page (e.g. step 9) from the top lands mid-list; a second page clamps to the last row.
+        XCTAssertEqual(OpenQuicklyModel.clampedSelection(current: 0, delta: 9, count: 30), 9)
+        XCTAssertEqual(OpenQuicklyModel.clampedSelection(current: 9, delta: 9, count: 30), 18)
+        XCTAssertEqual(
+            OpenQuicklyModel.clampedSelection(current: 25, delta: 9, count: 30),
+            29,
+            "PageDown clamps to last",
+        )
+        // PageUp by a page from below the page step clamps to the first row, never negative.
+        XCTAssertEqual(OpenQuicklyModel.clampedSelection(current: 4, delta: -9, count: 30), 0, "PageUp clamps to first")
+        // Home = delta 0 from index 0; End = delta count-1 from index 0 → the last row.
+        XCTAssertEqual(OpenQuicklyModel.clampedSelection(current: 0, delta: 0, count: 30), 0, "Home → first row")
+        XCTAssertEqual(OpenQuicklyModel.clampedSelection(current: 0, delta: 30 - 1, count: 30), 29, "End → last row")
+    }
+
+    func testClampedSelectionEmptyListPinsToZero() {
+        XCTAssertEqual(OpenQuicklyModel.clampedSelection(current: 5, delta: -9, count: 0), 0)
+        XCTAssertEqual(
+            OpenQuicklyModel.clampedSelection(current: 0, delta: 0, count: 0),
+            0,
+            "Home on an empty list is 0",
+        )
+        XCTAssertEqual(
+            OpenQuicklyModel.clampedSelection(current: 0, delta: -1, count: 0),
+            0,
+            "End on an empty list is 0",
+        )
+    }
+
+    // MARK: - rankActions: the ⌘K Actions popover fuzzy filter
+
+    /// A titled stand-in for `LinkActionActuator.RowAction` (which lives in the view module): rankActions is
+    /// generic over the action type via the injected `title` projection, so it ranks any titled value.
+    private struct FakeAction: Equatable { let title: String }
+
+    func testRankActionsEmptyQueryReturnsAllInOrder() {
+        let actions = [FakeAction(title: "Reopen Tab"), FakeAction(title: "Copy CWD Path")]
+        let out = OpenQuicklyModel.rankActions(actions, query: "  ", title: { $0.title }, score: subsequenceScore)
+        XCTAssertEqual(out, actions, "a blank query is the zero-state — every action, table order preserved")
+    }
+
+    func testRankActionsFiltersAndRanksByTitle() {
+        let actions = [
+            FakeAction(title: "Reveal in Finder"), // "cp": no 'c' before a 'p' subsequence → dropped
+            FakeAction(title: "Copy Path"), // "cp": c@0 (front) → high
+            FakeAction(title: "Reopen Closed Pane"), // "cp": c@7 → lower than Copy Path
+        ]
+        let out = OpenQuicklyModel.rankActions(actions, query: "cp", title: { $0.title }, score: subsequenceScore)
+        XCTAssertEqual(
+            out.map(\.title),
+            ["Copy Path", "Reopen Closed Pane"],
+            "non-matches dropped; a front-anchored match outranks a later one",
+        )
+    }
+
+    func testRankActionsStableTieBreakKeepsOriginalOrder() {
+        // Two equal-scoring titles (both 'x' at index 0) keep their original relative order (stable sort).
+        let actions = [FakeAction(title: "x-alpha"), FakeAction(title: "x-beta")]
+        let out = OpenQuicklyModel.rankActions(actions, query: "x", title: { $0.title }, score: subsequenceScore)
+        XCTAssertEqual(out.map(\.title), ["x-alpha", "x-beta"])
+    }
+
     // MARK: - Agents builder: Claude-only (ES-E11-4)
 
     func testAgentItemsDropNonClaudeKinds() {

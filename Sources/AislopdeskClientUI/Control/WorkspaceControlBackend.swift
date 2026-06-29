@@ -578,8 +578,8 @@ final class WorkspaceControlBackend: ClientControlBackend {
     }
 
     /// The tab's single fused badge TOKEN: a MANUAL `tab badge --kind` override (E20 ES-E20-3) if one is set,
-    /// else the badge resolved for its representative (active) pane via the SAME pure ``TabBadgeResolver`` +
-    /// ``AgentBadgeGates`` path the sidebar rail uses (E6), or `nil` when all-clear.
+    /// else the badge resolved for its representative (active) pane via the SAME ``TabBadgeGating/resolve(...)``
+    /// path the sidebar rail uses (E6), or `nil` when all-clear.
     private func tabBadgeToken(session _: Session, tab: Tab) -> String? {
         guard let store else { return nil }
         // E20 ES-E20-3: an explicit manual override wins over the derived per-pane badge (and the gates).
@@ -588,15 +588,16 @@ final class WorkspaceControlBackend: ClientControlBackend {
         }
         guard let paneID = tab.activePane ?? tab.allPaneIDs().first else { return nil }
         let status = store.paneAgentStatus[paneID] ?? .none
-        let resolved = TabBadgeResolver.badge(
+        let gated = TabBadgeGating.resolve(
             agent: status,
             completion: store.panePendingCompletion[paneID],
             isBusy: store.paneIsBusy(paneID),
             foregroundProcess: store.paneForegroundProcess[paneID],
             completionFreshness: store.completionFreshness(forPane: paneID),
             progress: store.progress(for: paneID),
+            agentGates: store.agentBadgeGates(for: paneID),
+            commandGates: store.commandBadgeGates,
         )
-        let gated = AgentBadgeGates.gated(resolved, by: store.agentBadgeGates(for: paneID))
         return gated.map { ClientControlProtocol.badgeToken(for: $0) }
     }
 

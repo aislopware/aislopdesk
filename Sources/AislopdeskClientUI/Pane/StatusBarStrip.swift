@@ -98,9 +98,12 @@ struct StatusBarStrip: View {
         }
     }
 
-    /// RIGHT: the last-exit badge, then the pane-kind label, then the host — all in the muted text tones.
+    /// RIGHT: the OSC 9;4 progress readout, then the last-exit badge, then the pane-kind label, then the host —
+    /// all in the muted text tones. Reading ``TerminalViewModel/progress`` here (inside `body`'s evaluation)
+    /// registers observation, so a `9;4` update re-renders the readout.
     private func rightField(_ c: StatusBarContent) -> some View {
         HStack(spacing: Otty.Metric.space2) {
+            progressReadout(model?.progress)
             exitBadge(c.exit)
             if !c.paneKind.isEmpty {
                 Text(c.paneKind)
@@ -110,6 +113,33 @@ struct StatusBarStrip: View {
             }
             if !c.host.isEmpty {
                 Text(c.host)
+                    .font(.system(size: Otty.Typeface.small, design: .monospaced))
+                    .foregroundStyle(Otty.Text.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    /// The taskbar-style OSC 9;4 progress readout (E14/K1 — `progress-state.md` Behaviors). Renders the built +
+    /// tested ``StatusPresentation/progressPresentation(_:)`` so a DETERMINATE `9;4;1;NN` state shows its bar +
+    /// "NN%" number CROSS-PLATFORM (not only on the macOS Dock — iOS has no Dock). An indeterminate state shows
+    /// a compact spinner; an error / none render nothing here (the tab badge + exit badge carry those). A pure
+    /// SwiftUI view — never a capture/video session (CLAUDE.md hang-safety rule #6).
+    @ViewBuilder
+    private func progressReadout(_ progress: PaneProgress?) -> some View {
+        switch StatusPresentation.progressPresentation(progress) {
+        case .none,
+             .error:
+            EmptyView()
+        case .spinner:
+            ProgressView()
+                .controlSize(.mini)
+        case let .determinate(fraction, label):
+            HStack(spacing: Otty.Metric.space1) {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                    .frame(width: 44)
+                Text(label)
                     .font(.system(size: Otty.Typeface.small, design: .monospaced))
                     .foregroundStyle(Otty.Text.secondary)
                     .lineLimit(1)

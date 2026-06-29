@@ -78,24 +78,21 @@ enum RailRowsBuilder {
                 // E6 WI-2: the `#N` is the TAB shortcut number (1-based), the trailing label is the host's
                 // coarse foreground process, and the row carries ONE fused badge from the pure resolver.
                 let processLabel = store.paneForegroundProcess[paneID]
-                let resolvedBadge = TabBadgeResolver.badge(
+                // E13 WI-3 + Progress cluster: the SOURCE-AWARE gating masks the resolver inputs by source so
+                // the agent toggles (per-pane override beats the global default) and the command "TAB BADGE"
+                // toggles gate their OWN badge families independently — a program's busy / OSC 9;4 progress
+                // spinner and an OSC 9;4;2 progress error are never silenced by an agent toggle. Freshness
+                // decays the clean-completion badge (store owns the clock); the resolver stays pure.
+                let gatedBadge = TabBadgeGating.resolve(
                     agent: status,
                     completion: store.panePendingCompletion[paneID],
                     isBusy: store.paneIsBusy(paneID),
                     foregroundProcess: processLabel,
-                    // Freshness decays the clean-completion badge from the brief `.completed` checkmark
-                    // flash to the persistent `.finished` accent dot — the store owns the clock (ephemeral
-                    // `completedAt` vs now), the resolver stays pure.
                     completionFreshness: store.completionFreshness(forPane: paneID),
-                    // E14/K1: a live OSC 9;4 progress resolves to the `.running` spinner (in-progress /
-                    // indeterminate) or `.error` (held-red `9;4;2`) via the EXISTING precedence — no new badge.
                     progress: store.progress(for: paneID),
+                    agentGates: store.agentBadgeGates(for: paneID),
+                    commandGates: store.commandBadgeGates,
                 )
-                // E13 WI-3: apply the otty "Agent Behaviour" badge toggles AFTER the pure resolver — a per-pane
-                // override (the tab context-menu) beats the global default. `error`/`sudo`/`caffeinate` survive
-                // the gate (never an agent-badge opt-out); `running`/`completed`/`finished`/`awaitingInput` drop
-                // when their toggle is OFF.
-                let gatedBadge = AgentBadgeGates.gated(resolvedBadge, by: store.agentBadgeGates(for: paneID))
                 // E20 ES-E20-3: an explicit `tab badge --kind` override wins for the representative row,
                 // bypassing the agent-badge gates (it is an explicit CLI affordance, not an agent signal).
                 let badge = (paneID == representativePane ? manualBadge : nil) ?? gatedBadge

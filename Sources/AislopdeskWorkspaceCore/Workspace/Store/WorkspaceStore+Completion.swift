@@ -152,6 +152,17 @@ public extension WorkspaceStore {
         }
     }
 
+    /// Folds a command-START edge (OSC 133;C / `shellActivity`→`.running`, wire type 23 `.running`) for pane
+    /// `id`: CLEARS any STALE completion badge so a new run resets the prior exit ✓/✗ before the spinner
+    /// resolves. Without this, an unfocused pane that ran a failing command (→ red error triangle) and then
+    /// starts a NEW command keeps showing the stale error triangle while the new command is actively running,
+    /// instead of the running spinner (`progress-state.md` "current progress state"). Mirrors the focus/progress
+    /// clear paths; idempotent (a no-op when there is no badge). Deliberately does NOT touch `paneProgress` — a
+    /// fresh command re-emits its own OSC 9;4 if any.
+    func handleCommandStarted(id: PaneID) {
+        setCompletionBadge(nil, for: id)
+    }
+
     /// Whether `id` is the focused leaf RIGHT NOW: the app is active AND `id` is the active session's
     /// active tab's active pane. Cross-platform (reads `tree.activePane`, NOT the iOS focus coordinator).
     internal func isPaneFocused(_ id: PaneID) -> Bool {

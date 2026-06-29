@@ -18,11 +18,13 @@
 //
 // HONESTY (the "nothing is a dead key" rule + the documented libghostty ceiling): the ``ViKeyHintBar`` lists
 // ONLY the keys ``TerminalViewModel/handleCopyModeKey(_:)`` actually wires in aislopdesk's copy-mode — a faithful
-// SUBSET of full vi. Column / word / screen motions (`h`/`l`, `w`/`b`/`e`, `0`/`$`/`^`, `H`/`M`/`L`), Hint
-// Mode (`f`) AND the visual anchor-swap (`o`) are NOT wired — the pinned fork exposes no programmatic
-// cursor-move / set-selection / swap-ends action (Binding.zig has `adjust_selection` + `select_all` but no
-// swap-ends; see DECISIONS.md E17, which pins `o` as a documented NO-OP) — so they are deliberately omitted
-// rather than advertised as dead keys.
+// SUBSET of full vi. Column / word / screen motions (`h`/`l`, `w`/`b`/`e`, `0`/`$`/`^`, `H`/`M`/`L`) AND the
+// visual anchor-swap (`o`) are NOT wired — the pinned fork exposes no programmatic cursor-move / set-selection /
+// swap-ends action (Binding.zig has `adjust_selection` + `select_all` but no swap-ends; see DECISIONS.md E17,
+// which pins `o` as a documented NO-OP) — so they are deliberately omitted rather than advertised as dead keys.
+// Hint Mode (`f`), by contrast, IS wired and IS listed: it does NOT depend on that cursor-move ceiling — it is a
+// separate visible-viewport label overlay (E10) armed via ``TerminalViewModel/beginHint(_:)``, the same seam the
+// ⌘⇧J chord uses — so `f` is an honest entry, not a faked motion.
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -164,11 +166,14 @@ struct ViKeyHintBar: View {
     // `o` (swap selection ends) is DELIBERATELY ABSENT: it is a documented NO-OP (the pinned libghostty fork
     // exposes no swap-ends / set-selection action — see the file header + DECISIONS.md E17), so listing it would
     // advertise a dead key, exactly the omission this bar makes for the other unwired vi motions (h/l/w/b/e/…).
+    // `f` (Enter Hint Mode) IS listed — unlike the cursor motions it is wired (it rides the E10 Hint Mode
+    // overlay via `beginHint`, NOT the blocked cursor-move action), so advertising it is honest, not a dead key.
     private static let selection: [Hint] = [
         Hint(keys: ["v"], label: "Visual"),
         Hint(keys: ["V"], label: "Visual line"),
         Hint(keys: ["⌃v"], label: "Visual block"),
         Hint(keys: ["y", "↩"], label: "Yank + exit"),
+        Hint(keys: ["f"], label: "Hint links"),
     ]
 
     private static let search: [Hint] = [

@@ -324,6 +324,38 @@ public enum OpenQuicklyModel {
         return index
     }
 
+    /// Move a selection index by `delta`, clamped to `[0, count-1]` — the SHARED contract for the picker's
+    /// arrow (`±1`), page (`±pageStep`) and Home/End (`±count`) navigation. An empty list (`count <= 0`)
+    /// clamps to `0`. Pure so PageUp/PageDown/Home/End paging is headlessly testable (the view passes
+    /// `selectableRows.count` and the page step). The `max`/`min` are ordered integer comparisons (no float).
+    public static func clampedSelection(current: Int, delta: Int, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        return max(0, min(count - 1, current + delta))
+    }
+
+    /// Fuzzy-filter + rank a list of titled actions by `query` — the `⌘K` Actions popover search. Generic
+    /// over the action type via a `title` projection so the view can reuse the SAME injected `score` contract
+    /// (and ordering) the row ranker uses. An EMPTY query returns `actions` unchanged; a non-empty query drops
+    /// every action the scorer rejects (`nil`), orders survivors by score DESCENDING, breaking ties by original
+    /// order (a STABLE sort). Integer scores only — the `>`/`<` are ordered + total (CLAUDE.md §2).
+    public static func rankActions<Action>(
+        _ actions: [Action],
+        query: String,
+        title: (Action) -> String,
+        score: (_ query: String, _ haystack: String) -> Int?,
+    ) -> [Action] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return actions }
+        let scored: [(score: Int, order: Int, action: Action)] = actions.enumerated().compactMap { offset, action in
+            guard let s = score(trimmed, title(action)) else { return nil }
+            return (s, offset, action)
+        }
+        return scored.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.order < rhs.order
+        }.map(\.action)
+    }
+
     // MARK: - Filter cycling (Tab / ⇧Tab)
 
     /// The next pill in the ring (Tab), WRAPPING from the last pill back to the first.

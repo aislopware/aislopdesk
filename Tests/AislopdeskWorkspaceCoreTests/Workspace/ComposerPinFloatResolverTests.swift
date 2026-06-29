@@ -55,6 +55,35 @@ final class ComposerPinFloatResolverTests: XCTestCase {
         XCTAssertNil(store.pinnedComposer, "unpinning drops the window-level mount")
     }
 
+    /// otty's pin is a SINGLE window-level composer — pinning a second pane's composer must auto-unpin the
+    /// first so exactly one is pinned (and reachable via ``WorkspaceStore/pinnedComposer``). REVERT-TO-CONFIRM-
+    /// FAIL: without the `onPinnedExclusive` sweep, pinning B leaves A pinned too — A's composer (and its unpin
+    /// toggle) become unreachable because `pinnedComposer` (first-match across the unordered registry) surfaces
+    /// only one of the two — so `XCTAssertFalse(firstTabComposer.isPinned)` fails on the unfixed code.
+    func testPinningASecondComposerAutoUnpinsTheFirst() throws {
+        let store = makeStore()
+        let firstTabComposer = try activeComposer(store) // pane in tab 1
+        store.newTab(kind: .terminal) // tab 2 — now the active tab
+        let secondTabComposer = try activeComposer(store)
+        XCTAssertNotIdentical(firstTabComposer, secondTabComposer, "precondition: two distinct live panes")
+
+        firstTabComposer.setPinned(true)
+        XCTAssertIdentical(
+            try XCTUnwrap(store.pinnedComposer).composer, firstTabComposer,
+            "precondition: pane A is the single pinned composer",
+        )
+
+        // Pin pane B's composer: otty's single window-level pin means A must auto-unpin.
+        secondTabComposer.setPinned(true)
+        XCTAssertFalse(firstTabComposer.isPinned, "pinning B auto-unpins A (one global pinned composer)")
+        XCTAssertTrue(secondTabComposer.isPinned, "B stays pinned")
+        let resolved = try XCTUnwrap(store.pinnedComposer)
+        XCTAssertIdentical(
+            resolved.composer, secondTabComposer,
+            "B is the single resolved window-level pinned composer (reachable, with its unpin toggle)",
+        )
+    }
+
     func testFloatingComposerResolvesAndClears() throws {
         let store = makeStore()
         let composer = try activeComposer(store)

@@ -581,6 +581,11 @@ private struct ShellSettingsTab: View {
     #if os(macOS)
     @Default(.bounceDockIcon) private var bounceDockIcon
     #endif
+    // TAB BADGE group (Shell — progress-state.md "TAB BADGE" section, notification-setting.png). The three
+    // COMMAND-driven badge toggles, DISTINCT from the Agents-tab "Agent Behaviour" badge gates.
+    @Default(.tabBadgeOnCommandFinish) private var tabBadgeOnCommandFinish
+    @Default(.tabBadgeOnCommandFail) private var tabBadgeOnCommandFail
+    @Default(.tabBadgeOnCommandAwaitInput) private var tabBadgeOnCommandAwaitInput
     // SOUND group (Shell). BEL → NSSound.beep() gate + error-exit beep (E14/K10).
     @Default(.soundShellControlled) private var soundShellControlled
     @Default(.soundOnErrorExit) private var soundOnErrorExit
@@ -607,6 +612,7 @@ private struct ShellSettingsTab: View {
     var body: some View {
         Form {
             notificationSection
+            tabBadgeSection
             soundSection
             codeAgentSection
 
@@ -687,6 +693,32 @@ private struct ShellSettingsTab: View {
                 isOn: $bounceDockIcon,
             )
             #endif
+            timingFooter(.live)
+        }
+    }
+
+    /// The otty TAB BADGE group (Shell — progress-state.md lines 32-35, rendered directly under NOTIFICATION in
+    /// notification-setting.png): the three COMMAND-driven sidebar-badge toggles. DISTINCT from the Agents-tab
+    /// "Agent Behaviour" badge gates, so command vs agent badges are controlled independently. "When Command
+    /// Awaits Input" gates a plain-command awaiting-input hand; the host detector that DRIVES that badge is a
+    /// deferred ceiling (DECISIONS.md), so the toggle ships ahead of the signal it will gate.
+    private var tabBadgeSection: some View {
+        Section("Tab Badge") {
+            toggleRow(
+                "When Command Finishes",
+                "Badge the tab when a command exits successfully.",
+                isOn: $tabBadgeOnCommandFinish,
+            )
+            toggleRow(
+                "When Command Fails",
+                "Badge the tab when a command exits non-zero.",
+                isOn: $tabBadgeOnCommandFail,
+            )
+            toggleRow(
+                "When Command Awaits Input",
+                "Badge the tab when a command stops at an interactive prompt.",
+                isOn: $tabBadgeOnCommandAwaitInput,
+            )
             timingFooter(.live)
         }
     }

@@ -305,6 +305,17 @@ public final class TerminalViewModel {
     /// change while nil (headless/preview). `@ObservationIgnored`: wiring, not view state.
     @ObservationIgnored public var onPromptIdle: (() -> Void)?
 
+    /// E16 recipe-replay shell-handoff RESUME edge. Fired on the SAME OSC-133;A prompt mark as ``onPromptIdle``
+    /// (`ESC]133;A` WHILE on the main screen, `.shellPrompt`) — i.e. a shell, LOCAL **or** the inner session a
+    /// handoff command opened (`ssh`/`docker exec -it`/`tmux attach`), has drawn a fresh idle prompt. The pane's
+    /// ``WorkspaceStore`` wires it to ``WorkspaceStore/recipeReplayPromptReturned(for:)`` so a replay paused after
+    /// an interactive command resumes INTO that inner session (the prompt that comes up once `ssh` connects), NOT
+    /// on the OUTER command's completion: OSC-133;D (``ConnectionViewModel/onCommandCompleted``) fires for `ssh`
+    /// only when it EXITS, which would inject the held commands back into the LOCAL shell — on the wrong host.
+    /// Gated on `.shellPrompt` exactly like ``onPromptIdle`` (an alt-screen TUI's own marks never fire it). No
+    /// behaviour change while nil (headless/preview). `@ObservationIgnored`: wiring, not view state.
+    @ObservationIgnored public var onPromptReturn: (() -> Void)?
+
     /// E5 (find + global search) surface seams over the active ``TerminalSurfaceActions`` conformer (production
     /// ``GhosttySurface``): the flat scrollback text mirror the find bar / global search scan, and the
     /// passthrough to libghostty's own in-surface search bindings (`search:`/`navigate_search:`/`end_search`/
@@ -629,6 +640,15 @@ public final class TerminalViewModel {
             // documented no-op (the char-range ceiling, see DECISIONS.md) — never a faked cursor move. The
             // pending count is dropped (a count on a non-motion is meaningless).
             copyModeState.pendingCount = nil
+        // Hint Mode (vi-mode spec §Action list: `f` enters Hint Mode for keyboard-driven link clicking). UNLIKE
+        // the cursor / set-selection motions, Hint Mode is NOT blocked by the libghostty char-range ceiling — it
+        // is a separate visible-viewport label overlay (E10), driven by the same ``beginHint(_:)`` seam the
+        // ⌘⇧J chord uses. A count on a non-motion is meaningless, so it is dropped first; `beginHint(.open)` is
+        // itself a clean no-op when there is no live surface / no hintable target (so `f` never enters an empty
+        // mode). The renderer routes subsequent keys to ``handleHintKey(_:)`` while `hintMode` is armed.
+        case .char("f", control: false, _):
+            copyModeState.pendingCount = nil
+            beginHint(.open)
         // Search (reuse the find bar / TerminalSearchController — no second search impl).
         case .char("/", control: false, _):
             _ = copyModeState.consumeCount()
@@ -873,6 +893,17 @@ public final class TerminalViewModel {
         let value = false
         #endif
         if secureInputActive != value { secureInputActive = value }
+    }
+
+    /// Re-evaluates the `🛡 SECURE INPUT` pill mirror after a LIVE "Auto Secure Input" settings change (E17
+    /// ES-E17-4 / WI-7). ``refreshSecureInput()`` already reads the setting live, but it is only re-invoked from
+    /// the `hostNoEcho` / `manualSecureInput` `didSet`s — never on a settings-toggle edge — so an engaged pill
+    /// would otherwise linger (auto on + host no-echo) until the next echo edge even after the user turned the
+    /// setting OFF. The leaf observes the `autoSecureInput` default and calls this (alongside the controller's
+    /// ``SecureKeyboardEntryController/setAutoSecureInput(_:)``) so the pill and the OS lock reconcile together
+    /// and immediately — the exact "toggle is live" contract the Settings footer claims.
+    public func reconcileSecureInputSetting() {
+        refreshSecureInput()
     }
 
     /// Toggles MANUAL secure keyboard entry over this pane (the `.secureKeyboardEntry` action / Edit-menu item
@@ -1554,6 +1585,14 @@ public final class TerminalViewModel {
             // expand. GATED on `.shellPrompt` (not the alt-screen) for the same reason as the idle dispatch.
             if snippetExpander != nil, modeTracker.mode == .shellPrompt, modeEvents.contains(.promptStart) {
                 snippetExpander?.notePromptMark()
+            }
+            // E16 WI-9 recipe-replay shell-handoff RESUME: the SAME OSC-133;A prompt mark is the signal that a
+            // shell — local OR the inner session an `ssh`/`docker`/`tmux` handoff opened — is back at an idle
+            // prompt. A replay paused after such a command resumes HERE (into the inner session), never on the
+            // outer command's OSC-133;D completion (which for `ssh` fires only on EXIT — the wrong host). Gated
+            // on `.shellPrompt` for the same reason as the dispatches above.
+            if onPromptReturn != nil, modeTracker.mode == .shellPrompt, modeEvents.contains(.promptStart) {
+                onPromptReturn?()
             }
         }
         // Glitch caret (docs/31 #3): host output is the ground truth — ANY ingest hides the caret (the

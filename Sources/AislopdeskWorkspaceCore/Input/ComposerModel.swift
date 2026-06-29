@@ -68,6 +68,14 @@ public final class ComposerModel {
     /// the restore itself never re-persists. `@ObservationIgnored`: wiring, not view state.
     @ObservationIgnored public var onPinnedChange: ((Bool) -> Void)?
 
+    /// Fired when the composer is pinned ON (a real `false→true` edge ONLY), so the owner can enforce
+    /// otty's SINGLE window-level pin: the store clears every OTHER pane's pin so there is exactly one
+    /// globally-pinned composer ("rides along regardless of which tab is active"). Distinct from
+    /// ``onPinnedChange`` (which also fires on unpin, for persistence) precisely so the exclusivity sweep
+    /// runs only on a pin-ON edge and never recurses when it unpins the siblings. Wired by the store at
+    /// pane materialization for EVERY composer-bearing pane. `@ObservationIgnored`: wiring, not view state.
+    @ObservationIgnored public var onPinnedExclusive: (() -> Void)?
+
     /// Floating — presents the composer in a non-activating `NSPanel` (macOS) / bottom-sheet
     /// (iOS) detached from the pane bottom (E12 WI-6). Plain view state; toggled by the float
     /// button. The SAME model backs the float, so `⌘↩` still injects into the origin pane.
@@ -125,11 +133,14 @@ public final class ComposerModel {
 
     /// Sets the pin, notifying ``onPinnedChange`` only on a REAL change. Used by ``togglePin()``, by the iOS
     /// sheet-dismiss dock-back, and by ``LivePaneSession``'s persisted-pin restore (which wires
-    /// ``onPinnedChange`` AFTER calling this, so restoring the pin never re-persists it).
+    /// ``onPinnedChange`` AFTER calling this, so restoring the pin never re-persists it). A pin-ON edge also
+    /// fires ``onPinnedExclusive`` so the owner can clear any other pane's pin (otty's single window-level
+    /// pin); a pin-OFF edge does not, so the owner's sibling-clearing sweep can never recurse.
     public func setPinned(_ pinned: Bool) {
         guard isPinned != pinned else { return }
         isPinned = pinned
         onPinnedChange?(pinned)
+        if pinned { onPinnedExclusive?() }
     }
 
     // MARK: Visibility — ⌘⇧E (open/toggle) / ⎋ (cancel)

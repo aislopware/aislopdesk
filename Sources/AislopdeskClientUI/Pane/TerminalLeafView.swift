@@ -26,6 +26,7 @@
 #if canImport(SwiftUI)
 import AislopdeskAgentDetect // E13 WI-4: `ClaudeStatus` — the agent-gate for the Claude bottom-bar mount.
 import AislopdeskWorkspaceCore
+import Defaults // E17 ES-E17-4 / WI-7: observe the Auto-Secure-Input / indicator defaults so the toggle is LIVE.
 import Foundation
 import SwiftUI
 #if canImport(AppKit)
@@ -76,6 +77,17 @@ struct TerminalLeafView: View {
     /// (`.id(PaneID)`-keyed leaf), torn down on disappear so the lock can never leak past a pane close either.
     /// Inert off macOS (the controller is a no-op).
     @State private var secureInput = SecureKeyboardEntryController()
+
+    /// E17 ES-E17-4 / WI-7: the LIVE "Auto Secure Input" setting, OBSERVED here (not just read at wire time) so a
+    /// Settings toggle reconciles every open pane immediately. Reading it as `@Default` registers observation, so
+    /// the body re-renders on the change edge and ``onChange(of:)`` pushes the new value into this pane's
+    /// ``SecureKeyboardEntryController`` (releasing an engaged process-global lock when turned OFF) AND the pane
+    /// model's pill mirror — the "live" contract the Settings footer claims (the E17 carryover footgun).
+    @Default(.autoSecureInput) private var autoSecureInput
+    /// E17 ES-E17-4 / WI-7: the LIVE "Show Secure Input Indicator" setting. OBSERVED so flipping it re-renders the
+    /// leaf and `showSecureInputPill` (which reads ``SettingsKey/secureInputIndicatorEnabled``) re-evaluates at
+    /// once — turning the pill off mid-prompt without waiting for a pane swap or the next echo edge.
+    @Default(.secureInputIndicator) private var secureInputIndicator
 
     /// E10 WI-10 (G8): the per-leaf Command Navigator (⌃⌘O) chrome the pane model's `onRequestBlockNavigator`
     /// callback TOGGLES (the seam doc: "show/hide"). A reference type so the `@MainActor` closure can flip it
@@ -136,6 +148,14 @@ struct TerminalLeafView: View {
         // (`initial: true` fires once up-front, then on each `live?.id` change). A synchronous `@MainActor`
         // closure — no actor hop, unlike the `@Sendable async` `.task` action above.
         .onChange(of: live?.id, initial: true) { wirePaneCallbacks() }
+        // E17 ES-E17-4 / WI-7: keep Secure Input LIVE to a Settings toggle. `wireSecureInputCallbacks()` only
+        // re-syncs the controller on a pane swap (the `live?.id` change above), so without this an engaged
+        // process-global lock + the pill would linger past the user turning "Auto Secure Input" OFF — the exact
+        // carryover footgun. Pushing the new value into BOTH the controller (releases the lock on the OFF edge)
+        // AND the model's pill mirror reconciles them immediately. The indicator change needs no push — reading
+        // `secureInputIndicator` as `@Default` already re-renders `showSecureInputPill`; the reconcile keeps the
+        // model mirror authoritative if a future read moves off the live setting.
+        .onChange(of: autoSecureInput) { reconcileSecureInputSetting() }
         // E10 WI-5 (ES-E10-4): mirror the host-reported cwd onto the model so the AppKit renderer's ⌘-hover
         // hit-test can resolve a RELATIVE detected path to its absolute form for the status-bar preview. The
         // cwd arrives reactively from `PaneContainer` (OSC 7) and changes independently of the live-session id,
@@ -325,7 +345,10 @@ struct TerminalLeafView: View {
     /// always `false` off macOS, so the cross-platform pill never lights on iOS. `false` for a not-yet-live pane.
     private var showSecureInputPill: Bool {
         guard let model = live?.terminalModel else { return false }
-        return model.secureInputActive && SettingsKey.secureInputIndicatorEnabled && !model.readOnlyBadgeActive
+        // Read the OBSERVED `secureInputIndicator` default (not the bare `SettingsKey` accessor) so SwiftUI tracks
+        // the dependency: toggling "Show Secure Input Indicator" in Settings re-renders this leaf and hides the
+        // pill at once (E17 ES-E17-4 / WI-7) — the live-toggle contract — instead of waiting for a pane swap.
+        return model.secureInputActive && secureInputIndicator && !model.readOnlyBadgeActive
     }
 
     /// Whether the `🔒 READ ONLY ×` pill is shown (E17 ES-E17-1 / WI-3). Reads the pane model's OBSERVABLE
@@ -591,6 +614,17 @@ struct TerminalLeafView: View {
         controller.observeAppActivity()
         model.onHostEchoChanged = { controller.setHostNoEcho($0) }
         model.onManualSecureInputChanged = { controller.setManualOn($0) }
+    }
+
+    /// Reconcile this pane's Secure Input to a LIVE "Auto Secure Input" settings change (E17 ES-E17-4 / WI-7).
+    /// Driven by `.onChange(of: autoSecureInput)`, it pushes the new value into BOTH the actuator and the pill
+    /// mirror so an engaged process-global `EnableSecureEventInput` lock is RELEASED (and the pill hidden) the
+    /// instant the user turns the setting OFF — never lingering until the next pane swap / echo edge. No-op for a
+    /// not-yet-live pane; inert off macOS (the controller is a stub and the model mirror stays `false` there).
+    private func reconcileSecureInputSetting() {
+        guard let model = live?.terminalModel else { return }
+        secureInput.setAutoSecureInput(autoSecureInput)
+        model.reconcileSecureInputSetting()
     }
 
     /// Force-disengage secure input + nil the callbacks on teardown so the process-global `EnableSecureEventInput`

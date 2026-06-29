@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
@@ -186,36 +187,127 @@ final class WorkspaceBindingRoutingTests: XCTestCase {
         XCTAssertTrue(sourceSession.sentInput.isEmpty, "nothing was injected into the SOURCE pane")
     }
 
-    /// The no-selection case (M1 fix): with NO selection the capture is `nil` (the dialog stays closed — the
-    /// honest no-op), EVEN when a completed command block exists. The send-to-chat spec's no-selection fallback
-    /// is the last command's OUTPUT body, which is NOT available synchronously here (async OSC-133 wire
-    /// round-trip); quoting the command LINE instead would mislead (it sends the command you typed, not its
-    /// output), so the fallback is DISABLED rather than quoting the wrong text.
-    /// REVERT-TO-CONFIRM-FAIL: the pre-fix code passed `blocks.latest?.commandText` as `lastOutput`, so the
-    /// command-block branch returned a non-nil context quoting "npm test" — the second `XCTAssertNil` fails.
-    func testCaptureReturnsNilWithoutSelectionEvenWithACommandBlock() throws {
+    /// The SYNCHRONOUS capture is SELECTION-ONLY: with no selection it returns `nil` even when a completed
+    /// command block exists, because the spec's no-selection fallback is the last command's OUTPUT body — which
+    /// is fetched ASYNCHRONOUSLY (OSC-133 wire round-trip, see `captureSendToChatLastOutput`), never quoted from
+    /// the command LINE (that would send the command you typed, not its output). So `captureSendToChatContext()`
+    /// stays selection-gated; a no-output (`outputLen: 0`) block is no quote on either path.
+    /// REVERT-TO-CONFIRM-FAIL: making the synchronous capture quote `blocks.latest?.commandText` would return a
+    /// non-nil context quoting "npm test" — the second `XCTAssertNil` fails.
+    func testSynchronousCaptureIsSelectionOnlyEvenWithACommandBlock() throws {
         let store = makeStore()
         let active = try XCTUnwrap(store.tree.activeSession?.activeTab?.activePane)
         let session = try XCTUnwrap(store.handle(for: active) as? RecordingTerminalPaneSession)
         let model = try XCTUnwrap(session.terminalModel)
 
-        // No selection, no block → nothing to quote.
+        // No selection, no block → nothing to quote synchronously.
         session.surfaceRecorder?.selectionText = nil
-        XCTAssertNil(store.captureSendToChatContext(), "no selection + no command block ⇒ no capture (no-op)")
+        XCTAssertNil(store.captureSendToChatContext(), "no selection + no command block ⇒ no synchronous capture")
 
-        // A completed command block must NOT become a (wrong) command-LINE quote — the fallback is disabled.
+        // A completed command block must NOT become a (wrong) command-LINE quote on the synchronous path.
         model.blocks.upsert(
             index: 1, commandText: "npm test", exitCode: 0, durationMS: 10, complete: true, outputLen: 0,
         )
         XCTAssertNil(
             store.captureSendToChatContext(),
-            "no selection ⇒ still no capture: the command LINE is the wrong text and the OUTPUT body is async",
+            "no selection ⇒ still no synchronous capture: the command LINE is the wrong text",
         )
 
         // The selection path (the faithful common case) is unchanged — a real selection still captures.
         session.surfaceRecorder?.selectionText = "let answer = 42"
         let captured = try XCTUnwrap(store.captureSendToChatContext(), "a live selection still yields a capture")
         XCTAssertEqual(captured.quoted, "let answer = 42", "the selection path is untouched by the fallback fix")
+    }
+
+    /// The ASYNC no-selection fallback (the send-to-chat fix): with NO selection but a PRESENT last-output block,
+    /// `captureSendToChatLastOutput` fetches the real OSC-133 `D`-block OUTPUT body (wire 15→29) and yields a
+    /// NON-NIL context quoting it — matching ES-E13-5's "selection OR last command output". The block must hold
+    /// output (`outputLen > 0`, the same "has output" gate the copy affordance uses) and a live block-output
+    /// sink must be wired (production wires it on connect); the reply is delivered via `blocks.resolveOutput`.
+    /// REVERT-TO-CONFIRM-FAIL: the pre-fix code had no output fallback at all (the no-selection path was a hard
+    /// no-op), so this `XCTUnwrap` of a non-nil context fails.
+    func testNoSelectionCapturesRealLastCommandOutput() throws {
+        let store = makeStore()
+        let active = try XCTUnwrap(store.tree.activeSession?.activeTab?.activePane)
+        let session = try XCTUnwrap(store.handle(for: active) as? RecordingTerminalPaneSession)
+        let model = try XCTUnwrap(session.terminalModel)
+
+        // No selection — force the no-selection path.
+        session.surfaceRecorder?.selectionText = nil
+        // A completed command block that HOLDS output (outputLen > 0 is the "has output" gate).
+        model.blocks.upsert(
+            index: 7, commandText: "ls", exitCode: 0, durationMS: 4, complete: true, outputLen: 12,
+        )
+        // A live block-output sink (production wires this on connect) so `copyBlockOutput` fires the request.
+        var requested: [UInt32] = []
+        model.requestBlockOutputSink = { requested.append($0) }
+
+        var captured: SendToChatContext?
+        var resolved = false
+        store.captureSendToChatLastOutput { context in
+            captured = context
+            resolved = true
+        }
+        // The fetch fired a type-15 request for the newest block; deliver the host's type-29 reply.
+        XCTAssertEqual(requested, [7], "the no-selection fallback requests the newest block's output")
+        model.blocks.resolveOutput(index: 7, output: Data("README.md\n".utf8))
+
+        XCTAssertTrue(resolved, "the fallback resolves once the host reply lands")
+        let context = try XCTUnwrap(captured, "no selection + a present last-output block ⇒ a NON-NIL capture")
+        XCTAssertEqual(
+            context.quoted, "README.md\n",
+            "the captured quote is the real OSC-133 D-block OUTPUT body (verbatim, VT-stripped)",
+        )
+        XCTAssertNotEqual(context.quoted, "ls", "the quote is the OUTPUT body, never the command LINE")
+    }
+
+    /// The async fallback is an HONEST no-op when there is nothing to quote: a block with NO output
+    /// (`outputLen == 0`) is not worth a fetch (`onResult(nil)`, no wire request), and an UNAVAILABLE reply
+    /// (empty type-29 = evicted / no live connection) resolves to `nil` too — so the caller can surface a toast
+    /// rather than an empty dialog. Pins that the fallback never fabricates a quote.
+    func testNoSelectionFallbackIsNilWhenNoOutputAvailable() throws {
+        let store = makeStore()
+        let active = try XCTUnwrap(store.tree.activeSession?.activeTab?.activePane)
+        let session = try XCTUnwrap(store.handle(for: active) as? RecordingTerminalPaneSession)
+        let model = try XCTUnwrap(session.terminalModel)
+        session.surfaceRecorder?.selectionText = nil
+
+        // Capture the most recent fallback result + a resolved flag (the fallback always calls back).
+        var lastResult: SendToChatContext?
+        var resolvedCount = 0
+        func runFallback() {
+            store.captureSendToChatLastOutput { context in
+                lastResult = context
+                resolvedCount += 1
+            }
+        }
+        var requested: [UInt32] = []
+        model.requestBlockOutputSink = { requested.append($0) }
+
+        // No block at all → nil, no request fired.
+        runFallback()
+        XCTAssertEqual(resolvedCount, 1, "no block ⇒ resolved synchronously")
+        XCTAssertNil(lastResult, "no block ⇒ nil capture")
+        XCTAssertTrue(requested.isEmpty, "no block ⇒ no wire request")
+
+        // A block with NO output is not worth a fetch either.
+        model.blocks.upsert(
+            index: 3, commandText: "true", exitCode: 0, durationMS: 1, complete: true, outputLen: 0,
+        )
+        runFallback()
+        XCTAssertEqual(resolvedCount, 2, "an outputLen==0 block ⇒ resolved synchronously")
+        XCTAssertNil(lastResult, "an outputLen==0 block ⇒ nil capture")
+        XCTAssertTrue(requested.isEmpty, "an empty block ⇒ still no wire request")
+
+        // A block WITH output but an UNAVAILABLE reply (empty type-29) resolves to nil (not an empty quote).
+        model.blocks.upsert(
+            index: 4, commandText: "cat x", exitCode: 1, durationMS: 2, complete: true, outputLen: 9,
+        )
+        runFallback()
+        XCTAssertEqual(requested, [4], "a block with output fires a fetch")
+        model.blocks.resolveOutput(index: 4, output: Data()) // empty == evicted/unavailable
+        XCTAssertEqual(resolvedCount, 3, "the host reply resolves the fetch")
+        XCTAssertNil(lastResult, "an unavailable reply ⇒ nil capture (no empty quote)")
     }
 
     // MARK: - .pinWindow (E19 ES-E19-1 / WI-3 — Pin Window)

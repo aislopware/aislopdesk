@@ -42,6 +42,10 @@ struct OpenQuicklyView: View {
     @State private var selection = 0
     /// Whether the ⌘K Actions popover is shown for the selected row.
     @State private var actionsVisible = false
+    /// The ⌘K Actions popover's fuzzy filter query (otty parity: the action set is itself searchable).
+    @State private var actionsQuery = ""
+    /// The keyboard-highlighted action index within the popover's FILTERED action list.
+    @State private var actionsSelection = 0
     /// The focused pane's Jump-To rows, SNAPSHOTTED once on appear (running the detector over the whole
     /// scrollback is not per-keystroke work) — the **Current** source, kept verbatim so a Current row's ⌘K
     /// reuses the shared `LinkActionActuator.rowActions(for:JumpToItem,…)` table.
@@ -53,11 +57,19 @@ struct OpenQuicklyView: View {
 
     /// Pre-focuses the search field on appear so typing reaches it immediately (otty parity).
     @FocusState private var searchFocused: Bool
+    /// Pre-focuses the ⌘K Actions popover's filter field when it opens (so typing filters actions at once).
+    @FocusState private var actionsFocused: Bool
 
     // The fixed panel width + results viewport cap (open-quickly.png: a centered card, wider than Jump-To so
     // the six pills + the trailing cwd/badge fit).
     private let panelWidth: CGFloat = 640
     private let resultsMaxHeight: CGFloat = 360
+    /// The rendered row height (`row(_:)` frame) — the divisor for one PageUp/PageDown "page" of rows.
+    private let rowHeight: CGFloat = 38
+
+    /// One PageUp/PageDown "page" measured in rows: the visible viewport height divided by the row height,
+    /// floored to at least one row (so a page always advances). Integer math — no float on the wire/selection.
+    private var pageStep: Int { max(1, Int(resultsMaxHeight / rowHeight)) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -85,6 +97,14 @@ struct OpenQuicklyView: View {
             selection = 0
             actionsVisible = false
         }
+        // Opening the ⌘K Actions popover starts with a blank filter + the first action highlighted; closing it
+        // returns the keyboard to the main search field. Retyping the filter resets the highlight to the top.
+        .onChange(of: actionsVisible) { _, visible in
+            actionsQuery = ""
+            actionsSelection = 0
+            if !visible { searchFocused = true }
+        }
+        .onChange(of: actionsQuery) { _, _ in actionsSelection = 0 }
         // Async-load the Agents source on appear + whenever the focused pane / its metadata façade changes or
         // the picker switches to a pill that surfaces Agents (.all / .agents). `.task(id:)` auto-cancels the
         // prior fetch, so a stale in-flight list can never clobber the current one.
@@ -380,31 +400,116 @@ struct OpenQuicklyView: View {
     // MARK: - Actions popover (⌘K — the per-row action set)
 
     private func actionsPopover(for item: OpenQuicklyItem) -> some View {
-        let actions = rowActions(for: item)
+        let actions = filteredActions(for: item)
         return VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
-                Button {
-                    action.run()
-                    close()
-                } label: {
-                    HStack(spacing: Otty.Metric.space2) {
-                        Image(systemName: action.symbol)
-                            .frame(width: 16)
-                        Text(action.title)
-                            .font(.system(size: Otty.Typeface.body))
-                        Spacer(minLength: Otty.Metric.space3)
-                    }
-                    .foregroundStyle(Otty.Text.primary)
-                    .padding(.horizontal, Otty.Metric.space3)
-                    .frame(height: 30)
-                    .contentShape(Rectangle())
+            // A pre-focused fuzzy filter field (otty parity: spec line 39 — the ⌘K Actions popover is itself
+            // fuzzy-searchable). Typing narrows `actions` through the SAME `FuzzyMatcher.score` the main list
+            // uses; ↑/↓ move the highlight; ↩ runs the highlighted action.
+            actionsSearchField
+            divider
+            if actions.isEmpty {
+                Text("No actions")
+                    .font(.system(size: Otty.Typeface.body))
+                    .foregroundStyle(Otty.Text.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, Otty.Metric.space2)
+            } else {
+                ForEach(Array(actions.enumerated()), id: \.offset) { index, action in
+                    actionRow(action, index: index, isHighlighted: index == actionsSelection)
                 }
-                .buttonStyle(.plain)
             }
         }
         .padding(.vertical, Otty.Metric.space1)
-        .frame(minWidth: 220)
+        .frame(minWidth: 240)
         .background(Otty.Surface.card)
+        // The popover owns the keyboard while open (its field is focused): ↑/↓ move the highlight over the
+        // FILTERED list; ↩ is the field's `.onSubmit`; Esc closes just the popover (not the whole picker).
+        .onKeyPress(phases: .down) { press in handleActionsKey(press, count: actions.count) }
+    }
+
+    private var actionsSearchField: some View {
+        HStack(spacing: Otty.Metric.space2) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: Otty.Typeface.footnote))
+                .foregroundStyle(Otty.Text.secondary)
+            TextField("Filter actions…", text: $actionsQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: Otty.Typeface.body))
+                .foregroundStyle(Otty.Text.primary)
+                .tint(Otty.State.accent)
+                .focused($actionsFocused)
+                .onSubmit { runHighlightedAction() }
+        }
+        .padding(.horizontal, Otty.Metric.space3)
+        .frame(height: 34)
+        .onAppear {
+            // Same one-runloop-hop focus idiom as the main search field (a `@FocusState` set in the appear
+            // tick, before the backing responder exists, is dropped).
+            DispatchQueue.main.async { actionsFocused = true }
+        }
+    }
+
+    private func actionRow(_ action: LinkActionActuator.RowAction, index: Int, isHighlighted: Bool) -> some View {
+        Button {
+            action.run()
+            close()
+        } label: {
+            HStack(spacing: Otty.Metric.space2) {
+                Image(systemName: action.symbol)
+                    .frame(width: 16)
+                Text(action.title)
+                    .font(.system(size: Otty.Typeface.body))
+                Spacer(minLength: Otty.Metric.space3)
+            }
+            .foregroundStyle(Otty.Text.primary)
+            .padding(.horizontal, Otty.Metric.space3)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: Otty.Metric.radiusItem)
+                    .fill(isHighlighted ? Otty.State.selected : Color.clear),
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in if hovering { actionsSelection = index } }
+    }
+
+    /// The selected row's ⌘K action table, fuzzy-filtered + ranked by ``actionsQuery`` through the SAME
+    /// `FuzzyMatcher` scorer the main result list uses (an empty query returns every action in table order).
+    private func filteredActions(for item: OpenQuicklyItem) -> [LinkActionActuator.RowAction] {
+        OpenQuicklyModel.rankActions(
+            rowActions(for: item),
+            query: actionsQuery,
+            title: { $0.title },
+        ) { q, h in FuzzyMatcher.score(q, h)?.score }
+    }
+
+    /// ↑/↓ move the highlight over the filtered actions (clamped); Esc closes just the popover. ↩ is handled
+    /// by the field's `.onSubmit` (so a single ↩ never double-fires). Everything else falls through.
+    private func handleActionsKey(_ press: KeyPress, count: Int) -> KeyPress.Result {
+        if press.key == .upArrow {
+            actionsSelection = OpenQuicklyModel.clampedSelection(current: actionsSelection, delta: -1, count: count)
+            return .handled
+        }
+        if press.key == .downArrow {
+            actionsSelection = OpenQuicklyModel.clampedSelection(current: actionsSelection, delta: 1, count: count)
+            return .handled
+        }
+        if press.key == .escape {
+            actionsVisible = false
+            return .handled
+        }
+        return .ignored
+    }
+
+    /// Run the highlighted (↩) filtered action on the selected row, then close. A no-op when the highlight is
+    /// out of range (e.g. the filter narrowed the list past the prior highlight).
+    private func runHighlightedAction() {
+        guard let item = selectedItem else { return }
+        let actions = filteredActions(for: item)
+        guard actionsSelection >= 0, actionsSelection < actions.count else { return }
+        actions[actionsSelection].run()
+        close()
     }
 
     /// The per-kind ⌘K action table. A **Current** row (a Jump-To detection) reuses the shared
@@ -696,6 +801,25 @@ struct OpenQuicklyView: View {
             moveSelection(1)
             return .handled
         }
+        // PageUp/PageDown jump a full viewport of rows; Home/End snap to the first/last row (open-quickly.png
+        // "Jump through list | PageUp / PageDown, Home / End"). All clamp through the shared `clampedSelection`.
+        if press.key == .pageUp {
+            moveSelection(-pageStep)
+            return .handled
+        }
+        if press.key == .pageDown {
+            moveSelection(pageStep)
+            return .handled
+        }
+        if press.key == .home {
+            selection = OpenQuicklyModel.clampedSelection(current: 0, delta: 0, count: selectableRows.count)
+            return .handled
+        }
+        if press.key == .end {
+            let n = selectableRows.count
+            selection = OpenQuicklyModel.clampedSelection(current: 0, delta: n - 1, count: n)
+            return .handled
+        }
         if press.key == .tab {
             let current = coordinator.openQuicklyFilter
             let next = press.modifiers.contains(.shift)
@@ -727,12 +851,7 @@ struct OpenQuicklyView: View {
     }
 
     private func moveSelection(_ delta: Int) {
-        let n = selectableRows.count
-        guard n > 0 else {
-            selection = 0
-            return
-        }
-        selection = max(0, min(n - 1, selection + delta))
+        selection = OpenQuicklyModel.clampedSelection(current: selection, delta: delta, count: selectableRows.count)
     }
 
     // MARK: - Act

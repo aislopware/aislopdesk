@@ -277,7 +277,13 @@ type_body_length:
   # consumes. It sits with the rest of the floating cluster (`spawn·move·resize·embedFloating`, which set
   # the `private(set) tree` and so already live in the main body); keeping the reader next to its mutators
   # keeps the cluster cohesive. Single-helper growth, not bloat.
-  warning: 1930
+  # 1930 → 1940 (2026-06-29): Batch-2 — WorkspaceStore gains the two `onCommandStarted` (OSC 133;C) STALE-BADGE
+  # CLEAR wire closures, one in the tree path (`wireMaterializedLeaf`) and one in the canvas path
+  # (`reconcileRegistry`), each mirroring its inline `onCommandCompleted`/`onAgentSignal`/`onProgressUpdate`
+  # sibling on `connection?` in the same materialization seam (so they belong with those siblings in the body,
+  # not an extension) — plus the E12 WI-6 single-window composer-pin wire in the new-leaf materialization loop.
+  # Wire-only closures in the materialization seam, no new stored state. Wire-closure cluster, not bloat.
+  warning: 1940
   error: 2700
 
 # Error backstops tightened toward the warnings (2026-06-24): under `--strict` the WARNING is the binding

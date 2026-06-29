@@ -55,12 +55,29 @@ public enum SettingsKey {
     // `Defaults.Keys` flags (never folded into a typed prefs model → golden-safe, like `agentNotify*`). They
     // gate which fused tab badge the sidebar SHOWS via the pure ``AgentBadgeGates`` (the resolver stays pure +
     // unchanged); a per-pane override in ``WorkspaceStore`` beats this global default. Claude-only.
-    /// otty "Badge while processing" — show the running spinner badge (default ON; Claude-only).
+    /// otty "Badge while processing" — show the agent THINKING spinner (default OFF, per
+    /// `progress-state.md` line 42/63 "Claude Code — While Processing (off by default)"; Claude-only). This
+    /// gates ONLY the agent's own spinner — a program's busy / OSC 9;4 progress spinner is never silenced by it.
     public static let agentBadgeWhileProcessing = "agents.badgeWhileProcessing"
     /// otty "Badge when complete" — show the completed-checkmark / finished-dot badge (default ON; Claude-only).
     public static let agentBadgeWhenComplete = "agents.badgeWhenComplete"
     /// otty "Badge when awaiting input" — show the awaiting-input hand badge (default ON; Claude-only).
     public static let agentBadgeWhenAwaitingInput = "agents.badgeWhenAwaitingInput"
+    // Progress cluster (progress-state.md lines 32-35 — Settings → Shell "TAB BADGE" section). The three
+    // COMMAND-driven badge toggles, DISTINCT from the Claude `agentBadge*` set above so a user controls command
+    // vs agent badges independently. Fire-time `Defaults.Keys` flags (never folded into a typed prefs model →
+    // golden-safe, like `agentBadge*`). Consumed via `SettingsKey.commandBadgeGates` → `TabBadgeGating.resolve`.
+    /// otty "Tab Badge — When Command Finishes" — show the completed/finished badge for a clean command exit
+    /// (default ON). Distinct from the agent `agentBadgeWhenComplete` gate.
+    public static let tabBadgeOnCommandFinish = "tabBadge.onCommandFinish"
+    /// otty "Tab Badge — When Command Fails" — show the error badge for a non-zero command exit (default ON).
+    /// Gates only the `.failure` COMMAND-exit badge; an OSC 9;4;2 program progress error has no opt-out.
+    public static let tabBadgeOnCommandFail = "tabBadge.onCommandFail"
+    /// otty "Tab Badge — When Command Awaits Input" — show the awaiting-input hand for a plain command stopped
+    /// at an interactive prompt (default ON). The host-side ~1.5s cursor-at-prompt quiescence detector that
+    /// would DRIVE this badge is a deferred ceiling (see `docs/DECISIONS.md`); the toggle is wired so the future
+    /// signal gates without a later code change. Distinct from the agent `agentBadgeWhenAwaitingInput` gate.
+    public static let tabBadgeOnCommandAwaitInput = "tabBadge.onCommandAwaitInput"
     // Controls / scroll / copy (otty Controls section). These are FIRE-TIME `Defaults.Keys` flags — they
     // are deliberately NOT folded into any typed prefs model, so they never reach the `EnvConfig` overlay
     // or the `video-prefs.json` sidecar (golden-safe by construction, like `oscNotifications`). E8 owns the
@@ -413,6 +430,29 @@ public enum SettingsKey {
             badgeWhileProcessing: agentBadgeWhileProcessingEnabled,
             badgeWhenComplete: agentBadgeWhenCompleteEnabled,
             badgeWhenAwaitingInput: agentBadgeWhenAwaitingInputEnabled,
+        )
+    }
+
+    // MARK: Progress cluster — command badge gates (Settings → Shell "TAB BADGE")
+
+    /// otty "Tab Badge — When Command Finishes" — show the clean-exit badge (default ON). Read fire-time.
+    public static var tabBadgeOnCommandFinishEnabled: Bool { Defaults[.tabBadgeOnCommandFinish] }
+
+    /// otty "Tab Badge — When Command Fails" — show the error badge for a non-zero exit (default ON). Fire-time.
+    public static var tabBadgeOnCommandFailEnabled: Bool { Defaults[.tabBadgeOnCommandFail] }
+
+    /// otty "Tab Badge — When Command Awaits Input" — show the hand for a plain interactive prompt (default ON).
+    /// Read fire-time. (The host detector that DRIVES the badge is deferred — see DECISIONS.md.)
+    public static var tabBadgeOnCommandAwaitInputEnabled: Bool { Defaults[.tabBadgeOnCommandAwaitInput] }
+
+    /// The resolved GLOBAL ``CommandBadgeGates`` the pure gating consumes — the ONE seam ``RailRowsBuilder`` /
+    /// the control backend read alongside ``agentBadgeGates`` so the three COMMAND-badge toggles are applied in
+    /// exactly one place. Command badges have no per-pane override (unlike the agent gates).
+    public static var commandBadgeGates: CommandBadgeGates {
+        CommandBadgeGates(
+            whenCommandFinishes: tabBadgeOnCommandFinishEnabled,
+            whenCommandFails: tabBadgeOnCommandFailEnabled,
+            whenCommandAwaitsInput: tabBadgeOnCommandAwaitInputEnabled,
         )
     }
 
@@ -843,11 +883,18 @@ public extension Defaults.Keys {
     static let agentNotifyTaskComplete = Key<Bool>(SettingsKey.agentNotifyTaskComplete, default: true)
     static let agentNotifyAwaitInput = Key<Bool>(SettingsKey.agentNotifyAwaitInput, default: true)
     // E13/WI-3 agent badge gates (agents__agents-overview.md "Agent Behaviour"). Fire-time flags, never folded
-    // into a typed prefs model → golden-safe. All default ON (every agent badge shows, byte-identical to the
-    // pre-E13 rail). Consumed via `SettingsKey.agentBadgeGates` → `AgentBadgeGates.gated` in `RailRowsBuilder`.
-    static let agentBadgeWhileProcessing = Key<Bool>(SettingsKey.agentBadgeWhileProcessing, default: true)
+    // into a typed prefs model → golden-safe. Consumed via `SettingsKey.agentBadgeGates` → `TabBadgeGating.resolve`.
+    // `whileProcessing` defaults OFF (progress-state.md "Claude Code — While Processing (off by default)"); the
+    // other two default ON.
+    static let agentBadgeWhileProcessing = Key<Bool>(SettingsKey.agentBadgeWhileProcessing, default: false)
     static let agentBadgeWhenComplete = Key<Bool>(SettingsKey.agentBadgeWhenComplete, default: true)
     static let agentBadgeWhenAwaitingInput = Key<Bool>(SettingsKey.agentBadgeWhenAwaitingInput, default: true)
+    // Progress cluster (progress-state.md — Settings → Shell "TAB BADGE"). The three COMMAND-driven badge
+    // toggles, DISTINCT from the agent set above. Fire-time flags → golden-safe. All default ON. Consumed via
+    // `SettingsKey.commandBadgeGates` → `TabBadgeGating.resolve`.
+    static let tabBadgeOnCommandFinish = Key<Bool>(SettingsKey.tabBadgeOnCommandFinish, default: true)
+    static let tabBadgeOnCommandFail = Key<Bool>(SettingsKey.tabBadgeOnCommandFail, default: true)
+    static let tabBadgeOnCommandAwaitInput = Key<Bool>(SettingsKey.tabBadgeOnCommandAwaitInput, default: true)
     static let systemDialogPanes = Key<Bool>(SettingsKey.systemDialogPanes, default: true)
     static let autoSwitchLayouts = Key<Bool>(SettingsKey.autoSwitchLayouts, default: true)
     static let redactSecrets = Key<Bool>(SettingsKey.redactSecrets, default: true)

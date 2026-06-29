@@ -3185,8 +3185,8 @@ public final class WorkspaceStore {
 
     /// E13 WI-3 (ES-E13-2): the per-pane ``AgentBadgeGates`` OVERRIDE map — the otty tab-context-menu badge
     /// toggles. An absent key ⇒ the pane follows the GLOBAL default (``SettingsKey/agentBadgeGates``);
-    /// ``agentBadgeGates(for:)`` resolves override-else-global, and ``RailRowsBuilder`` runs
-    /// ``AgentBadgeGates/gated(_:by:)`` on the resolver output with it. Pure VIEW state, NOT persisted (a
+    /// ``agentBadgeGates(for:)`` resolves override-else-global, and ``RailRowsBuilder`` feeds it to
+    /// ``TabBadgeGating/resolve(...)``. Pure VIEW state, NOT persisted (a
     /// per-pane override is a runtime affordance, like ``paneReadOnly``). PRUNED to the live leaf set on every
     /// reconcile alongside ``paneAgentStatus`` so a closed pane's override drops out (no unbounded growth).
     public internal(set) var paneAgentBadgeOverrides: [PaneID: AgentBadgeGates] = [:]
@@ -3432,6 +3432,12 @@ public final class WorkspaceStore {
         connection?.onProgressUpdate = { [weak self] progress in
             self?.handleProgress(progress, for: id)
         }
+        // COMMAND-START STALE-BADGE CLEAR (progress-state.md): a new command beginning (OSC 133;C) clears this
+        // pane's stale completion ✓/✗ so a busy background pane resolves to the running spinner, not the prior
+        // run's exit badge.
+        connection?.onCommandStarted = { [weak self] in
+            self?.handleCommandStarted(id: id)
+        }
         // B3 BACKGROUND-PANE COMMAND-COMPLETION: route a finished command (OSC 133;D, type 23) to the
         // focus-gated store handler — badges an UNFOCUSED pane (✓/✗) and fires the long-command
         // notification only when backgrounded (replaces the old direct notifier.notifyIfLong in the VM).
@@ -3439,11 +3445,11 @@ public final class WorkspaceStore {
             guard let self else { return }
             let title = tree.spec(for: id)?.title ?? ""
             handleCommandCompleted(id: id, exitCode: exitCode, durationMS: durationMS, paneTitle: title)
-            // E16 WI-9: advance any in-flight recipe REPLAY in this pane on the local-prompt-return edge —
-            // a no-op unless a replay is mid-flight here; resumes the queue after a shell-handoff (`ssh`/…)
-            // pause once the inner session exits and the local prompt returns (the absorb counter skips the
-            // typed-ahead non-interactive completions). 100% client-side — no wire / golden touch.
-            recipeReplayCommandCompleted(for: id)
+            // NB: an in-flight recipe REPLAY does NOT resume here. OSC-133;D for an interactive handoff command
+            // (`ssh`/`docker exec -it`/`tmux attach`) fires only when that session EXITS — resuming on it would
+            // inject the held commands back into the LOCAL shell (wrong host). The replay's shell-handoff resume
+            // is driven instead by the inner shell's OSC-133;A prompt-START edge (`terminal.onPromptReturn`,
+            // wired below) so the held queue lands INSIDE the inner session. See `recipeReplayPromptReturned`.
             // A26 cwd-freshness (OSC-7 equivalent): refresh this pane's last-known cwd from the host `cwd`
             // RPC on each command completion, so a `cd` here updates the inherit source for the next new
             // tab / split. `[weak connection]` avoids a retain cycle (the closure is owned by `connection`).
@@ -3492,6 +3498,11 @@ public final class WorkspaceStore {
         // `snippetAutoExpand` setting). Same wiring pattern as `wireKeyInterceptor`; lives in
         // WorkspaceStore+Keybinding so this body stays under the lint ceiling.
         wireSnippetExpander(terminal: terminal)
+        // E16 WI-9 shell-handoff RESUME (OSC-133;A): drive an in-flight recipe replay's prompt-return resume off
+        // the inner shell's prompt-START edge — NOT the outer OSC-133;D completion (which for `ssh`/… fires only
+        // on EXIT and would inject the held queue back into the LOCAL shell). Lives in WorkspaceStore+Recipes so
+        // this body stays under the lint ceiling (same pattern as `wireSnippetExpander`).
+        wireRecipeReplayResume(handle: handle, id: id)
         // FOCUS-ON-CLICK: the surface's mouseDown calls `onRequestFocus`; route it to the tree focus so the
         // workspace focus (chrome / inspector / which pane the next split or close targets) follows a click.
         terminal?.onRequestFocus = { [weak self] in self?.focusPaneTree(id) }
@@ -3714,6 +3725,15 @@ public final class WorkspaceStore {
             let handle = makeSession(spec)
             (handle as? PaneSessionIDAdopting)?.adopt(id: id)
             registry[id] = handle
+            // E12 WI-6 — otty's SINGLE window-level pin: wire this pane's composer so a pin-ON edge clears
+            // every OTHER pane's pin (no second, unreachable pinned composer). Wired for EVERY composer-bearing
+            // session (production `LivePaneSession` AND the recording test double), keyed by this leaf id. If
+            // `adopt` just RESTORED a persisted pin, enforce immediately too, so a legacy multi-pin relaunch
+            // collapses to a single pin (last-restored winning) instead of re-creating the orphan.
+            if let composer = (handle as? ComposerProviding)?.composerModel {
+                composer.onPinnedExclusive = { [weak self] in self?.enforceSingleComposerPin(keeping: id) }
+                if composer.isPinned { enforceSingleComposerPin(keeping: id) }
+            }
             onMaterialize?(id, handle)
         }
     }
@@ -3792,6 +3812,10 @@ public final class WorkspaceStore {
                 // CLAUDE AUTO-DETECT (W11): same agent-signal fold as the tree path's `wireMaterializedLeaf`.
                 connection?.onAgentSignal = { [weak self] event in
                     self?.handleAgentSignal(id: id, event: event)
+                }
+                // COMMAND-START STALE-BADGE CLEAR: same command-start badge reset as the tree path.
+                connection?.onCommandStarted = { [weak self] in
+                    self?.handleCommandStarted(id: id)
                 }
                 // B3 BACKGROUND-PANE COMMAND-COMPLETION: same focus-gated completion route as the tree path.
                 connection?.onCommandCompleted = { [weak self] exitCode, durationMS in
