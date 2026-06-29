@@ -155,15 +155,22 @@ struct PaletteView: View {
             // the category label, NOT "whichever separator sorts first" (which mislabelled a Recents/Actions
             // header before this section existed).
             if item.title == PaletteCategory.workingDirectory.label, let cwd = workingDirectory {
-                cwdBadge(cwd)
+                // Home-abbreviate for display (`/Users/abner/Workplace/otty` → `~/Workplace/otty/`) to match
+                // command-palette.png's `~/Workplace/otty/` pill. `cwd` is the RAW remote-host path from the
+                // `cwd()` RPC, so the abbreviation matches the home SHAPE (`/Users/<name>` · `/home/<name>`),
+                // never the client's local home (see ``CwdDisplay``).
+                cwdBadge(CwdDisplay.abbreviate(cwd))
             }
         }
         // `.padding(.horizontal, space3)` is the action-row's INNER padding; `.padding(.leading, space2)` adds
         // its OUTER inset. Together with the 20pt gutter + the `space2` HStack spacing the header text lands at
         // the EXACT x of a row label (space2 + space3 + 20 + space2), so headers + labels are flush (the row's
-        // Batch-4 inset highlight + ✓-gutter are left untouched).
+        // Batch-4 inset highlight + ✓-gutter are left untouched). The trailing `space2` mirrors the action
+        // row's OUTER inset (space3 + space2 = 20pt) so the cwd pill's RIGHT edge lines up with the keycap-chip
+        // column instead of jutting `space2` past it (command-palette.png: pill + keycaps share one right edge).
         .padding(.horizontal, Otty.Metric.space3)
         .padding(.leading, Otty.Metric.space2)
+        .padding(.trailing, Otty.Metric.space2)
         .padding(.top, Otty.Metric.space3)
         .padding(.bottom, Otty.Metric.space1)
         .id(item.id)
@@ -324,6 +331,52 @@ struct PaletteView: View {
     /// per key symbol (the spec renders each key as its own rounded badge). Whitespace separators are dropped.
     private func keycaps(_ shortcut: String) -> [String] {
         shortcut.split(separator: " ").flatMap { chord in chord.map(String.init) }
+    }
+}
+
+// MARK: - CwdDisplay (pure home-abbreviation for the cwd pill — no SwiftUI, so it is unit-pinned)
+
+/// The pure display bridge that turns a RAW remote-host working directory into the abbreviated form the
+/// command-palette WORKING DIRECTORY pill shows (`command-palette.png`: `~/Workplace/otty/`).
+///
+/// Two transforms: a leading home prefix collapses to `~`, and a trailing `/` marks the directory. The cwd is
+/// a **remote-host** path (from the `cwd()` metadata RPC), so the home is detected by SHAPE — `/Users/<name>`
+/// (macOS) or `/home/<name>` (Linux) — NEVER `NSHomeDirectory()`, which is the CLIENT's own home and would be
+/// wrong for a remote host. Pure + total + deterministic (no `FileManager`/`Date`, never traps); 100%
+/// client-side display, so nothing here touches the wire / golden corpus. `CwdDisplayTests` pins the mapping
+/// headlessly.
+enum CwdDisplay {
+    /// Home-style roots a remote cwd can carry, matched generically (the user name is the next path segment).
+    private static let homeRoots = ["/Users/", "/home/"]
+
+    /// Abbreviate a host cwd for the pill: `/Users/abner/Workplace/otty` → `~/Workplace/otty/`. An empty
+    /// string stays empty; the filesystem root `/` stays `/`; an already-`~`-rooted path keeps its `~` and
+    /// only gains the trailing slash; a non-home path (`/etc`) keeps its path and gains the trailing slash.
+    static func abbreviate(_ raw: String) -> String {
+        guard !raw.isEmpty else { return "" }
+        return withTrailingSlash(tildeCollapsed(raw))
+    }
+
+    /// Replace a leading `/Users/<name>` or `/home/<name>` home prefix with `~`. A path already rooted at `~`,
+    /// a path with no home prefix, or a bare home root WITHOUT a `<name>` segment is returned unchanged.
+    private static func tildeCollapsed(_ path: String) -> String {
+        if path == "~" || path.hasPrefix("~/") { return path }
+        for root in homeRoots where path.hasPrefix(root) {
+            // The first path segment after the root is the user name; the home boundary is the END of that
+            // segment (the next `/`, or the string end). A root with no name segment is NOT a home dir.
+            let afterRoot = path.dropFirst(root.count)
+            guard let first = afterRoot.first, first != "/" else { return path }
+            if let slash = afterRoot.firstIndex(of: "/") {
+                return "~" + afterRoot[slash...] // "~" + "/Workplace/otty"
+            }
+            return "~" // the path IS exactly the home dir
+        }
+        return path
+    }
+
+    /// Append a single trailing `/` (the directory marker) unless one is already present.
+    private static func withTrailingSlash(_ path: String) -> String {
+        path.hasSuffix("/") ? path : path + "/"
     }
 }
 #endif
