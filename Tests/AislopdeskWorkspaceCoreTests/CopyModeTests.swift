@@ -45,6 +45,27 @@ final class CopyModeTests: XCTestCase {
         )
     }
 
+    func testFullPageKeys() {
+        // ⌃f = full page DOWN (toward newer = positive), ⌃b = full page UP (toward older = negative). `0.9` is
+        // the SAME "≈ a page" magnitude the PageDown/PageUp scroll hooks use. Revert-to-confirm-fail: before
+        // the fix neither key was wired — ⌃f fell to `default` (swallowed, no action) and ⌃b likewise.
+        let (model, rec) = makeModel()
+        model.handleCopyModeKey(.char("f", control: true, shift: false))
+        model.handleCopyModeKey(.char("b", control: true, shift: false))
+        XCTAssertEqual(
+            rec.actions, ["scroll_page_fractional:0.9", "scroll_page_fractional:-0.9"],
+            "Ctrl-F down a full page, Ctrl-B up a full page",
+        )
+    }
+
+    /// `f` WITHOUT Control stays Hint Mode (it must NOT alias onto the new ⌃f full-page scroll): a plain `f`
+    /// arms hint mode (no scroll action) while `⌃f` scrolls — the control modifier is load-bearing.
+    func testPlainFIsHintModeNotFullPageScroll() {
+        let (model, rec) = makeModel()
+        model.handleCopyModeKey(.char("f", control: false, shift: false))
+        XCTAssertTrue(rec.actions.isEmpty, "plain f arms Hint Mode, never a scroll action")
+    }
+
     func testTopAndBottomKeys() {
         let (model, rec) = makeModel()
         model.handleCopyModeKey(.char("g", control: false, shift: false))

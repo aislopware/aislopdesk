@@ -163,12 +163,14 @@ struct CursorPreviewView: View {
     // MARK: Live preview
 
     /// The `john@doe-pc$ git commit -m "│"` mock — a monospaced prompt line with the live caret between the
-    /// quotes, on the inset element surface (the otty preview card).
+    /// quotes, on the inset element surface (the otty preview card). Per `cursor-style.png`'s visual spec the
+    /// prompt colours are `john` in green, `@doe-pc` in muted blue-gray (the host run, distinct from the user),
+    /// and `$ git commit -m "` in the default foreground — so the host part maps to the blue `Otty.Status.info`
+    /// token (the closest theme-aware blue-gray), NOT the same green as `john`.
     private var previewCard: some View {
         HStack(spacing: 0) {
             Text("john").foregroundStyle(Otty.Status.ok)
-            Text("@").foregroundStyle(Otty.Text.primary)
-            Text("doe-pc").foregroundStyle(Otty.Status.ok)
+            Text("@doe-pc").foregroundStyle(Otty.Status.info)
             Text("$ git commit -m \"").foregroundStyle(Otty.Text.primary)
             cursorGlyph
             Text("\"").foregroundStyle(Otty.Text.primary)

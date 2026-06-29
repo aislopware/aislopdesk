@@ -645,8 +645,9 @@ struct TerminalLeafView: View {
     // MARK: - Hint Mode actuation (E10 WI-9 / ES-E10-6)
 
     /// Actuate a resolved hint `target` for `intent`. A path/URL link routes through the SAME pure
-    /// ``LinkActionPolicy`` the ⌘click / Jump-To paths use (so there is no parallel mapping to drift); a
-    /// git-hash / IP copies its text (no defined open/reveal — a useful fallback, never a dead action); a custom
+    /// ``LinkActionPolicy`` the ⌘click / Jump-To paths use (so there is no parallel mapping to drift); an IP
+    /// OPENS (`http://<ip>`) on Hint-to-Open and copies otherwise; a git-hash copies its text on every intent
+    /// (no open target for a bare hash — a deliberate gap, see DECISIONS.md E10); a custom
     /// `hint-pattern` runs its `{0}` action template (a known-safe `open <url>` on the client, else verbatim on
     /// the HOST shell — the mapping note's "arbitrary shell strings run on the host"). `static` so the
     /// model-stored closure needs no leaf `self`.
@@ -654,8 +655,19 @@ struct TerminalLeafView: View {
         switch target.kind {
         case let .link(link):
             actuate(linkAction(for: intent, link: link), model: model)
-        case .gitHash,
-             .ipAddress:
+        case .ipAddress:
+            // Hint-to-OPEN on a bare IP browses to it (otty opens the dotted-quad as a host). `copy`/`reveal`
+            // still copy the text — there is no Finder target for an IP. `http://` (not `https://`): a bare
+            // IP almost always serves plain HTTP and a TLS cert won't match a raw address.
+            switch intent {
+            case .open: openURLString("http://" + target.raw)
+            case .copy,
+                 .reveal: copyToPasteboard(target.raw)
+            }
+        case .gitHash:
+            // A bare commit hash has NO open target (no repo URL context to resolve it against), so every
+            // intent copies the text — a useful fallback, never a dead action. Recorded as a deliberate gap
+            // in docs/DECISIONS.md (E10) rather than faking an open.
             copyToPasteboard(target.raw)
         case let .custom(actionTemplate):
             switch intent {

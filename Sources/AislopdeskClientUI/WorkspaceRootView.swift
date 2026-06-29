@@ -35,6 +35,11 @@ public struct WorkspaceRootView: View {
     /// item via the representable, the iOS detail column) read ONE selection, and the four `Details: *` jump
     /// commands can write it through the `selectDetailsTab` closure installed in `wireChromeToggles()`.
     @State private var details = DetailsPanelState()
+    /// The single live preferences store, injected once at the WindowGroup root (`\.preferencesStore`). Used by
+    /// the iOS ``SettingsSheet`` (the gear) AND threaded into the macOS split host so the sidebar's tab context
+    /// menu can surface the "Prevent Sleep While Processing" flag (Batch 4). Cross-platform (was iOS-only). `nil`
+    /// (no scene injection / a preview) → the gear presents nothing and the Prevent-Sleep row is hidden.
+    @Environment(\.preferencesStore) private var preferencesStore
     /// E19/A18 (WI-7): the live otty `auto-hide-tabs-panel` mode. Read via `@Default` (NOT the plain
     /// ``SettingsKey/autoHideTabsPanel`` accessor) so SwiftUI re-evaluates the body — and thus re-fires the
     /// `.onChange(of: autoHideTabsPanel)` observer below — when the user flips the Settings picker. Drives the
@@ -77,9 +82,6 @@ public struct WorkspaceRootView: View {
         )
     }
 
-    /// The single live preferences store, injected once at the WindowGroup root (`\.preferencesStore`) and
-    /// handed to the iOS ``SettingsSheet``. `nil` (no scene injection / a preview) → the gear presents nothing.
-    @Environment(\.preferencesStore) private var preferencesStore
     /// E13 (ES-E13-1/ES-E13-2 iOS halves): the app-owned Agents install-hooks controller, injected once at the
     /// WindowGroup root (`\.agentHooksController`) and handed to the iOS ``SettingsSheet`` so the Agents card +
     /// the Agent-Behaviour toggles are LIVE on iOS (the macOS `Settings` scene injects it on its own side).
@@ -157,6 +159,7 @@ public struct WorkspaceRootView: View {
         // titlebar (`OttyTitlebar`, hosted inside `ContentColumn`) IS the chrome.
         WorkspaceSplitRepresentable(
             store: store, connection: connection, chrome: chrome, details: details, overlay: overlay,
+            preferences: preferencesStore,
         )
         .ignoresSafeArea()
         // E12 WI-6 (pin): a PINNED composer is promoted OUT of its pane subtree to a WINDOW-level bottom
@@ -211,7 +214,7 @@ public struct WorkspaceRootView: View {
             columnVisibility: sidebarColumnVisibility,
             preferredCompactColumn: detailsCompactColumnBinding,
         ) {
-            NavigatorColumn(store: store)
+            NavigatorColumn(store: store, preferences: preferencesStore)
         } content: {
             ContentColumn(store: store, connection: connection, chrome: chrome)
         } detail: {
@@ -542,10 +545,15 @@ struct WorkspaceSplitRepresentable: NSViewControllerRepresentable {
     /// The overlay reducer — threaded so the controller can wire the inspector's Status row to
     /// `openConnect()` (ES-E2-6, the macOS connect affordance). Captured once in `makeNSViewController`.
     let overlay: OverlayCoordinator
+    /// The live ``PreferencesStore`` (`\.preferencesStore`) — forwarded into the controller so the sidebar's
+    /// ``NavigatorColumn`` tab context menu can surface the host-LOCAL "Prevent Sleep While Processing" flag
+    /// (Batch 4). The NSHostingController columns do not inherit the WindowGroup environment, hence the explicit
+    /// thread. `nil` (no scene injection / a preview) hides the row.
+    let preferences: PreferencesStore?
 
     func makeNSViewController(context _: Context) -> AislopdeskSplitViewController {
         AislopdeskSplitViewController(
-            store: store, connection: connection, chrome: chrome, details: details,
+            store: store, connection: connection, chrome: chrome, details: details, preferences: preferences,
             onConnect: { [overlay] in overlay.openConnect() },
         )
     }

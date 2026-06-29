@@ -220,6 +220,41 @@ public struct ActionsPaletteSource: PaletteDataSource {
                 if let tabID = store.tree.activeSession?.activeTab?.id { store.toggleSyncInput(tabID: tabID) }
             },
         ),
+        // Named layout presets (tmux/zellij `select-layout`; otty/registry comment: "menu/palette only — no
+        // chord"). The registry tracks `.applyLayout(_)` as palette/menu-only but listed it on NEITHER surface
+        // (only the chorded `.cycleLayout` shipped), so the documented entry point was missing. Surface the five
+        // presets here so they're reachable. Each re-tiles the active tiled tab directly via
+        // ``WorkspaceStore/applyLayout(_:)`` (a graceful no-op on a 0/1-leaf tab). Chord-less ⇒ no hint chip.
+        layoutItem(
+            id: "action.layoutEvenHorizontal",
+            title: "Layout: Even Horizontal",
+            icon: "rectangle.split.3x1",
+            preset: .evenHorizontal,
+        ),
+        layoutItem(
+            id: "action.layoutEvenVertical",
+            title: "Layout: Even Vertical",
+            icon: "rectangle.split.1x2",
+            preset: .evenVertical,
+        ),
+        layoutItem(
+            id: "action.layoutMainVertical",
+            title: "Layout: Main Vertical",
+            icon: "rectangle.split.2x1",
+            preset: .mainVertical,
+        ),
+        layoutItem(
+            id: "action.layoutMainHorizontal",
+            title: "Layout: Main Horizontal",
+            icon: "square.split.1x2",
+            preset: .mainHorizontal,
+        ),
+        layoutItem(
+            id: "action.layoutTiled",
+            title: "Layout: Tiled",
+            icon: "rectangle.split.2x2",
+            preset: .tiled,
+        ),
         // New Session (otty ⌃⌘N) — mints a fresh session whose first pane is an in-pane `.chooser` (Terminal /
         // Remote window). Cross-platform (the palette is the iOS entry point — there is no ⌃⌘N there).
         item(
@@ -263,6 +298,25 @@ public struct ActionsPaletteSource: PaletteDataSource {
             keywords: "composer prompt write agent message draft compose",
             shortcut: glyph(.composer), category: .agents,
             run: { store in store.requestComposerInActivePane() },
+        ),
+        // Prompt Queue (E12, otty Agents ▸ Prompt Queue; ⌘⇧M) — open the active pane's composer in prompt-queue
+        // input mode. The macOS Agents menu has it; surfacing it here makes it reachable cross-platform (iOS has
+        // no Agents menu). A graceful no-op off a terminal active pane. Glyph from the registry (no drift).
+        item(
+            id: "action.promptQueue", icon: "list.bullet.rectangle.portrait", title: "Prompt Queue",
+            keywords: "prompt queue agent messages pending backlog compose",
+            shortcut: glyph(.promptQueue), category: .agents,
+            run: { store in store.requestPromptQueueInActivePane() },
+        ),
+        // Send to Chat (E13 ES-E13-5, otty Agents ▸ Send to Chat; ⌘⌃↩) — quote the active pane's selection /
+        // last command into a chosen Claude-only agent pane. A VIEW overlay (the coordinator captures the quote
+        // + presents the scrimmed dialog), so it routes through ``PaletteAction/openSendToChat`` — the SAME ⌘⌃↩
+        // surface the menu mirrors. Surfacing it makes the dialog reachable from the palette (cross-platform).
+        // It HONESTLY no-ops (toast) when there is nothing to quote, so it is never a dead control.
+        PaletteItem(
+            id: "action.sendToChat", icon: "arrow.up.message", title: "Send to Chat",
+            keywords: "send chat agent selection command share forward message",
+            shortcut: glyph(.sendToChat), filter: .actions, category: .agents, action: .openSendToChat,
         ),
         // Fork in Split Right / Down / New Tab (E13 ES-E13-7, otty `agents__fork-branch-session`; CLAUDE-ONLY).
         // PALETTE / MENU ONLY (the registry rows ship `chord: nil`) — the fork is started inside the agent's
@@ -310,6 +364,26 @@ public struct ActionsPaletteSource: PaletteDataSource {
         PaletteItem(
             id: "action.openSettings", icon: "slider.horizontal.3", title: "Open Settings",
             subtitle: nil, shortcut: nil, filter: .actions, category: .settings, action: .openSettings,
+        ),
+        // Theme / config verbs (Batch 4 catalog-completeness; otty palette "Theme: Switch Theme / Open Theme
+        // File" + "Settings: Reload Config"). Theme is LOCAL client state in aislopdesk (``ThemeStore`` /
+        // ``PreferencesStore``), so these are pure client actions routed by the coordinator to injected handlers
+        // (the SAME live `appearance` Settings → Appearance edits). Chord-less ⇒ no hint chip. Grouped under the
+        // SETTINGS section (aislopdesk has no separate Theme palette category).
+        PaletteItem(
+            id: "action.switchTheme", icon: "paintpalette", title: "Switch Theme",
+            subtitle: nil, keywords: "theme switch appearance color scheme dark light monokai paper palette",
+            shortcut: nil, filter: .actions, category: .settings, action: .switchTheme,
+        ),
+        PaletteItem(
+            id: "action.reloadConfig", icon: "arrow.clockwise.circle", title: "Reload Config",
+            subtitle: nil, keywords: "reload config reapply refresh settings preferences theme apply reload theme",
+            shortcut: nil, filter: .actions, category: .settings, action: .reloadConfig,
+        ),
+        PaletteItem(
+            id: "action.openThemeFile", icon: "doc.text", title: "Open Theme File",
+            subtitle: nil, keywords: "open theme file reveal finder folder custom ottytheme edit config",
+            shortcut: nil, filter: .actions, category: .settings, action: .openThemeFile,
         ),
         // The cheat sheet is also reachable by ⌘/; surfacing it here means the keyboard reference is
         // discoverable without knowing the chord. Its hint derives from the registry (no drift).
@@ -363,6 +437,21 @@ public struct ActionsPaletteSource: PaletteDataSource {
         PaletteItem(
             id: id, icon: icon, title: title, keywords: keywords, shortcut: shortcut,
             filter: .actions, category: category, action: .store(run),
+        )
+    }
+
+    /// Build a PANE "Layout: …" row whose `.store` run-arm re-tiles the active tab into a named
+    /// ``WorkspaceTreeOps/LayoutPreset`` via ``WorkspaceStore/applyLayout(_:)`` (a graceful no-op on a 0/1-leaf
+    /// tab). Chord-less (the named presets ship no key equivalent) ⇒ no hint chip. The keyword set folds in the
+    /// tmux/zellij/select-layout synonyms so "layout" / "retile" / "tile" all surface the rows.
+    private static func layoutItem(
+        id: String, title: String, icon: String, preset: WorkspaceTreeOps.LayoutPreset,
+    ) -> PaletteItem {
+        item(
+            id: id, icon: icon, title: title,
+            keywords: "layout retile arrange tile even main tiled select-layout tmux zellij \(preset.rawValue)",
+            shortcut: nil, category: .pane,
+            run: { store in store.applyLayout(preset) },
         )
     }
 

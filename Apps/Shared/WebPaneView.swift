@@ -124,6 +124,8 @@ struct WebPaneView: WebViewRepresentable {
                 hardReload: { [weak webView] in webView?.reloadFromOrigin() },
                 // ⌘F: present the platform's native find-in-page UI.
                 find: { [weak webView] in WebPaneView.Coordinator.presentFind(webView) },
+                // Leftmost ✗ while loading: stop the in-flight load.
+                stop: { [weak webView] in webView?.stopLoading() },
             )
             self.controller = controller
             context.onControllerReady?(controller)
@@ -156,10 +158,21 @@ struct WebPaneView: WebViewRepresentable {
         func syncHistory(_ webView: WKWebView) {
             controller?.updateHistory(canGoBack: webView.canGoBack, canGoForward: webView.canGoForward)
         }
+
+        /// Push the live page's loading state into the controller so the chrome's leftmost button flips between
+        /// Stop (loading) and Close (idle).
+        func setLoading(_ isLoading: Bool) {
+            controller?.updateLoading(isLoading)
+        }
     }
 }
 
 extension WebPaneView.Coordinator: WKNavigationDelegate {
+    /// A provisional navigation began — the page is now LOADING (the leftmost ✗ becomes Stop).
+    func webView(_: WKWebView, didStartProvisionalNavigation _: WKNavigation?) {
+        setLoading(true)
+    }
+
     /// A navigation committed (link click / redirect / Back-Forward / address-bar load). Record what the view
     /// now shows as already-displayed BEFORE forwarding the write-back, so the `onNavigated` echo (which
     /// changes `WebPaneModel.requestedURL` → a fresh descriptor → `sync`) can't re-load the destination — a
@@ -172,8 +185,19 @@ extension WebPaneView.Coordinator: WKNavigationDelegate {
 
     /// The page finished loading — final history + title (otty titles the pane after the loaded page).
     func webView(_ webView: WKWebView, didFinish _: WKNavigation?) {
+        setLoading(false)
         syncHistory(webView)
         if let title = webView.title, !title.isEmpty { context.onTitle(title) }
+    }
+
+    /// A load failed (network error / stopped) — clear the loading state so the ✗ returns to Close.
+    func webView(_: WKWebView, didFail _: WKNavigation?, withError _: any Error) {
+        setLoading(false)
+    }
+
+    /// A provisional load failed (e.g. bad host / cancelled) — clear the loading state.
+    func webView(_: WKWebView, didFailProvisionalNavigation _: WKNavigation?, withError _: any Error) {
+        setLoading(false)
     }
 
     // Validate-then-drop: only http(s)/about commit; a page-initiated jump to a non-web scheme

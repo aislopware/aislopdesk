@@ -563,23 +563,7 @@ struct OpenQuicklyView: View {
             }
             return actions
         case let .openFolder(path):
-            var actions = [
-                RowAction(title: "Change Directory Here", symbol: "arrow.turn.down.right") {
-                    LinkActionActuator.actuate(.changeDirectoryPTY(path), model: activeModel)
-                },
-                RowAction(title: "Reveal in Finder", symbol: "folder") {
-                    LinkActionActuator.actuate(.revealHost(path), model: activeModel)
-                },
-                RowAction(title: "Copy Path", symbol: "doc.on.doc") {
-                    LinkActionActuator.copyToPasteboard(path)
-                },
-            ]
-            if folders != nil {
-                actions.append(RowAction(title: "Forget This Folder", symbol: "trash") {
-                    folders?.forget(path: path)
-                })
-            }
-            return actions
+            return Self.folderRowActions(path: path, store: store, model: activeModel, folders: folders)
         case let .resumeAgent(sessionID, cwd):
             var actions = [RowAction(title: "Resume Session", symbol: "play") {
                 resumeAgent(sessionID: sessionID, cwd: cwd)
@@ -606,6 +590,46 @@ struct OpenQuicklyView: View {
             }
             return actions
         }
+    }
+
+    /// The Folder ⌘K action table (otty `open-quickly.png` Actions: "Open in New Window · Split Right / Down ·
+    /// Change Directory Here · Reveal · Copy Path · Forget This Folder"). **Open in New Window** is N/A in the
+    /// single-window vertical-rail model (pinned N/A in `docs/DECISIONS.md`, like "Move Tab to New Window") and
+    /// is omitted rather than shipped as a dead row. **Split Right / Down** open a FRESH terminal split rooted
+    /// at the folder (the same `openTerminalRooted` ingress the external folder-drop Split-zones reuse, now with
+    /// an `axis` so Split-Down is a vertical split). `static` so the ⌘K action set is reachable headlessly
+    /// (`OpenQuicklyFolderActionsTests`) without instantiating the SwiftUI view — `model`/`folders` accept the
+    /// nil/no-store path.
+    static func folderRowActions(
+        path: String,
+        store: WorkspaceStore,
+        model: TerminalViewModel?,
+        folders: FolderFrecencyStore?,
+    ) -> [LinkActionActuator.RowAction] {
+        typealias RowAction = LinkActionActuator.RowAction
+        var actions = [
+            RowAction(title: "Split Right", symbol: "rectangle.split.2x1") {
+                store.openTerminalRooted(at: path, split: true, leading: false, axis: .horizontal)
+            },
+            RowAction(title: "Split Down", symbol: "rectangle.split.1x2") {
+                store.openTerminalRooted(at: path, split: true, leading: false, axis: .vertical)
+            },
+            RowAction(title: "Change Directory Here", symbol: "arrow.turn.down.right") {
+                LinkActionActuator.actuate(.changeDirectoryPTY(path), model: model)
+            },
+            RowAction(title: "Reveal in Finder", symbol: "folder") {
+                LinkActionActuator.actuate(.revealHost(path), model: model)
+            },
+            RowAction(title: "Copy Path", symbol: "doc.on.doc") {
+                LinkActionActuator.copyToPasteboard(path)
+            },
+        ]
+        if folders != nil {
+            actions.append(RowAction(title: "Forget This Folder", symbol: "trash") {
+                folders?.forget(path: path)
+            })
+        }
+        return actions
     }
 
     /// Map an Open-Quickly kind back onto its Jump-To kind for the reconstructed `JumpToItem` (cosmetic — the

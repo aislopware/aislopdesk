@@ -29,6 +29,10 @@ struct BlockHistoryView: View {
 
     @State private var selection: UInt32?
     @State private var failedOnly = false
+    /// Whether the Commands list owns keyboard focus. Gates the ⌘↑/⌘↓ stepper so the shortcut is LIVE only
+    /// while the inspector list is focused — otherwise the window-global `.keyboardShortcut` would swallow
+    /// ⌘↑/⌘↓ even when a terminal pane is focused (a disabled control does not fire its shortcut).
+    @FocusState private var listFocused: Bool
     /// The fetched plain-text output per block index. A present key = fetch resolved (value may be `nil`
     /// for unavailable); an absent key + `fetching` membership = a request is in flight.
     @State private var outputCache: [UInt32: String?] = [:]
@@ -84,6 +88,7 @@ struct BlockHistoryView: View {
             }
         }
         .listStyle(.inset)
+        .focused($listFocused)
         .onChange(of: selection) { _, newValue in
             if let index = newValue { fetchIfNeeded(index) }
         }
@@ -91,7 +96,10 @@ struct BlockHistoryView: View {
         .overlay(keyboardStepper)
     }
 
-    /// Invisible buttons carrying ⌘↑ / ⌘↓ so selection-stepping works without stealing other keys.
+    /// Invisible buttons carrying ⌘↑ / ⌘↓ so selection-stepping works without stealing other keys. DISABLED
+    /// unless the list is focused: a window-global `.keyboardShortcut` fires regardless of focus, so an
+    /// always-enabled stepper would capture ⌘↑/⌘↓ away from a focused terminal pane. A disabled control does
+    /// not respond to its keyboard shortcut, so gating on `listFocused` scopes the binding to the inspector.
     private var keyboardStepper: some View {
         ZStack {
             Button("") { step(by: -1) }.keyboardShortcut(.upArrow, modifiers: .command)
@@ -100,6 +108,7 @@ struct BlockHistoryView: View {
         .opacity(0)
         .frame(width: 0, height: 0)
         .accessibilityHidden(true)
+        .disabled(!listFocused)
     }
 
     // MARK: Detail

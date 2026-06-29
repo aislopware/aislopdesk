@@ -60,6 +60,17 @@ struct InspectorColumn: View {
     private var activePingMS: Double? { activeLive?.connection?.latencyMS }
     private var activeAgentStatus: ClaudeStatus { activeLive?.claudeStatus ?? .none }
 
+    /// Whether the focused pane is a LIVE agent pane (a non-`.none` Claude status) — the gate for the Info-tab
+    /// agent section (E4/WI-6 `info-panel.png` › "OpenCode" section appears "when the focused pane is an agent
+    /// pane"). Gating on the live pane (not on whether on-disk sessions exist) means a freshly-started agent
+    /// shows the section immediately, and a plain terminal never does.
+    private var isAgentPane: Bool { activeAgentStatus != .none }
+
+    /// The focused agent pane's CURRENTLY-running Claude session id (the `claude --resume <id>` target), or
+    /// `nil` when the pane is not a live agent or the session id is not yet known — drives the "Copy Session
+    /// ID" affordance (disabled when `nil`).
+    private var activeAgentSessionID: String? { activeLive?.liveAgentSessionID }
+
     private var cwd: String? {
         guard let id = activePaneID else { return nil }
         return store.tree.activeSession?.specs[id]?.lastKnownCwd
@@ -235,7 +246,7 @@ struct InspectorColumn: View {
             sectionDivider
             ProcessPortsView(model: activeModel)
                 .padding(.bottom, Otty.Metric.space2)
-            if !activeModel.agentSessions.isEmpty {
+            if isAgentPane {
                 sectionDivider
                 agentSessionsSection
             }
@@ -295,33 +306,75 @@ struct InspectorColumn: View {
         #endif
     }
 
-    /// The Info-tab agent-history affordance (E4/WI-6): a "View Session History" action — otty's green
-    /// clock row — shown only when the pane project has captured agent sessions. Tapping it presents
-    /// `AgentSessionHistoryView` over the panel; the trailing count hints how many sessions are available.
+    /// The Info-tab AGENT-PANE section (E4/WI-6, `info-panel.png` › the agent-named section — labelled with the
+    /// agent's name, "Claude Code" here per the Claude-only scope). Shown when the focused pane is a live agent
+    /// (``isAgentPane``), NOT gated on whether on-disk sessions exist — so the section appears for a freshly
+    /// started agent, matching otty. Carries the agent-specific actions: **Copy Session ID** (the live session
+    /// id; disabled until known) and **View Session History** (presents `AgentSessionHistoryView`; the trailing
+    /// count hints how many sessions are available when ≥ 1). otty's "Fork in…" is a separate agent-fork
+    /// surface, not shipped here.
     private var agentSessionsSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            OttySectionHeader("Sessions")
-            Button {
-                showSessionHistory = true
-            } label: {
-                HStack(spacing: Otty.Metric.space2) {
-                    Image(systemName: "clock.arrow.circlepath")
-                    Text("View Session History")
-                    Spacer(minLength: Otty.Metric.space2)
+            OttySectionHeader("Claude Code")
+            agentActionRow(
+                systemImage: "doc.on.doc",
+                title: "Copy Session ID",
+                action: copySessionID,
+                disabled: activeAgentSessionID == nil,
+            )
+            agentActionRow(
+                systemImage: "clock.arrow.circlepath",
+                title: "View Session History",
+                action: { showSessionHistory = true },
+            ) {
+                if !activeModel.agentSessions.isEmpty {
                     Text(String(activeModel.agentSessions.count))
                         .font(.system(size: Otty.Typeface.footnote))
                         .foregroundStyle(Otty.Text.tertiary)
                         .monospacedDigit()
                 }
-                .font(.system(size: Otty.Typeface.base))
-                .foregroundStyle(Otty.State.accent)
-                .padding(.horizontal, Otty.Metric.space3)
-                .padding(.vertical, 3)
-                .contentShape(.rect)
             }
-            .buttonStyle(.plain)
         }
         .padding(.bottom, Otty.Metric.space2)
+    }
+
+    /// One otty-styled agent action row: a leading SF Symbol + an accent label, with an optional trailing
+    /// accessory (e.g. the session count). A `disabled` row renders muted and is non-tappable.
+    private func agentActionRow(
+        systemImage: String,
+        title: String,
+        action: @escaping () -> Void,
+        disabled: Bool = false,
+        @ViewBuilder trailing: () -> some View = { EmptyView() },
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: Otty.Metric.space2) {
+                Image(systemName: systemImage)
+                Text(title)
+                Spacer(minLength: Otty.Metric.space2)
+                trailing()
+            }
+            .font(.system(size: Otty.Typeface.base))
+            .foregroundStyle(disabled ? Otty.Text.tertiary : Otty.State.accent)
+            .padding(.horizontal, Otty.Metric.space3)
+            .padding(.vertical, 3)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .accessibilityLabel(title)
+    }
+
+    /// Writes the focused agent pane's live Claude session id to the system pasteboard (the `copyWorkingDirectory`
+    /// idiom — NSPasteboard on macOS, UIPasteboard on iOS). A `nil` id is a no-op (the row is disabled).
+    private func copySessionID() {
+        guard let id = activeAgentSessionID else { return }
+        #if canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(id, forType: .string)
+        #elseif canImport(UIKit)
+        UIPasteboard.general.string = id
+        #endif
     }
 
     private var sectionDivider: some View {

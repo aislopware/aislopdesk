@@ -266,11 +266,11 @@ struct TerminalFindBar: View {
         }
         .padding(.horizontal, Otty.Metric.space2)
         .padding(.vertical, Otty.Metric.space1)
+        // find.png: the floating find-bar card is delineated by its FILL + drop SHADOW only — there is NO
+        // hairline stroke around the CARD (verified by pixel-scanning find.png: the pane→shadow gradient
+        // transitions straight into the card fill with no border line). Only the `Aa`/`ab`/`.*` mode chips keep
+        // their OWN individual hairline outlines (FindTogglePill); the card itself wears no border/overlay.
         .background(Otty.Surface.element, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusControl))
-        .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
-        )
         .shadow(color: Otty.State.shadow, radius: 12, x: 0, y: 4)
         .onAppear {
             // A `@FocusState` set in the same tick the view appears (before its backing responder exists) is

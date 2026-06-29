@@ -105,12 +105,17 @@ public final class WebPaneController {
     public private(set) var canGoBack: Bool = false
     /// Whether the live page can navigate forward — pushed from the `WKWebView`'s `canGoForward` KVO.
     public private(set) var canGoForward: Bool = false
+    /// Whether the live page is CURRENTLY loading — pushed from the `WKWebView`'s navigation delegate
+    /// (`didStartProvisionalNavigation` → `true`, `didFinish`/`didFail` → `false`). `false` until a live view
+    /// reports otherwise, so the chrome's leftmost button starts as Close (✗), flipping to Stop while loading.
+    public private(set) var isLoading: Bool = false
 
     private let goBackAction: () -> Void
     private let goForwardAction: () -> Void
     private let reloadAction: () -> Void
     private let hardReloadAction: () -> Void
     private let findAction: () -> Void
+    private let stopAction: () -> Void
 
     public init(
         goBack: @escaping () -> Void = {},
@@ -118,12 +123,14 @@ public final class WebPaneController {
         reload: @escaping () -> Void = {},
         hardReload: @escaping () -> Void = {},
         find: @escaping () -> Void = {},
+        stop: @escaping () -> Void = {},
     ) {
         goBackAction = goBack
         goForwardAction = goForward
         reloadAction = reload
         hardReloadAction = hardReload
         findAction = find
+        stopAction = stop
     }
 
     /// Drive the live page back one history entry (no-op if the production view installed no action).
@@ -140,11 +147,21 @@ public final class WebPaneController {
     /// platform's WebKit find (`UIFindInteraction` on iOS, the macOS find bar). No-op without a live view.
     public func find() { findAction() }
 
+    /// Stop the live page's in-flight load (`WKWebView.stopLoading()`) — the browser ✗ button's "Stop"
+    /// semantics while a page is loading. No-op without a live view / installed action.
+    public func stop() { stopAction() }
+
     /// The production view pushes the live `WKWebView`'s navigation history here (its `canGoBack` /
     /// `canGoForward` KVO) so the chrome enables / greys Back / Forward.
     public func updateHistory(canGoBack: Bool, canGoForward: Bool) {
         self.canGoBack = canGoBack
         self.canGoForward = canGoForward
+    }
+
+    /// The production view pushes the live page's loading state here (its navigation-delegate start/finish/fail
+    /// callbacks) so the chrome's leftmost button flips between Stop (loading) and Close (idle).
+    public func updateLoading(_ isLoading: Bool) {
+        self.isLoading = isLoading
     }
 }
 

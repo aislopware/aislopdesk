@@ -431,6 +431,15 @@ public enum AllSettingsCatalog {
             bucket: .advancedOnly,
             keywords: "undo prompt readline command z edit",
         ),
+        SettingEntry(
+            key: SettingsKey.optionAsAltKey,
+            label: "Option as Alt",
+            description: "Treat the macOS Option key as Alt/Meta so terminal apps see Esc-prefixed sequences; "
+                + "off keeps Option free for accented characters.",
+            defaultText: "Off",
+            bucket: .advancedOnly,
+            keywords: "option alt meta esc keyboard macos key word jump emacs vim readline accented",
+        ),
 
         // E10 (Path/link detection — otty Settings → Controls → Open With / Link Schemes). Declared here so
         // the Advanced "All Settings" list is complete; E10 WI-5/6/8/9 own the behaviour.
@@ -721,6 +730,7 @@ public enum AllSettingsCatalog {
         SettingsKey.scrollMultiplier, SettingsKey.allowMouseCapture, SettingsKey.allowShiftClickKey,
         SettingsKey.clickToMove, SettingsKey.rightClickActionKey, SettingsKey.scrollPastLastLineKey,
         SettingsKey.scrollPastFirstLineKey, SettingsKey.smoothScroll, SettingsKey.undoAtPrompt,
+        SettingsKey.optionAsAltKey,
         // Controls — links + system dialog
         SettingsKey.linkDetection, SettingsKey.linkCmdClickKey, SettingsKey.linkCmdShiftClickKey,
         SettingsKey.autoDetectLinkSchemesKey, SettingsKey.customLinkSchemes, SettingsKey.systemDialogPanes,

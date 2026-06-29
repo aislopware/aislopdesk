@@ -21,6 +21,7 @@
 // it gains the same search field, grouped `Section`s, badge + `#N`, and drag reorder under `#if os(iOS)`.
 
 #if canImport(SwiftUI)
+import AislopdeskVideoProtocol // AgentPreferences — the `preventSleep` flag the tab context menu toggles (B4)
 import AislopdeskWorkspaceCore
 import Defaults
 import SFSafeSymbols
@@ -28,6 +29,14 @@ import SwiftUI
 
 struct NavigatorColumn: View {
     let store: WorkspaceStore
+
+    /// The live ``PreferencesStore`` — threaded in so the tab context menu can surface the host-LOCAL
+    /// **Prevent Sleep While Processing** flag (Batch 4 catalog-completeness; otty `open-code-agent-history.png`
+    /// shows it on the tab menu). The macOS sidebar is hosted in a SEPARATE `NSHostingController` that does not
+    /// inherit the WindowGroup environment, so the split-view host passes it explicitly (`nil` on a preview /
+    /// pre-injection ⇒ the Prevent-Sleep row is simply hidden, never a dead control). On iOS the column inherits
+    /// the value via the `NavigationSplitView`, but it is still passed explicitly for parity.
+    var preferences: PreferencesStore?
 
     /// The transient sidebar search query — narrows the rows via the pure ``RailRowsBuilder/filtered`` (E6
     /// WI-5). View-local `@State`: it is a presentational filter, NOT row order (which lives on the store).
@@ -137,7 +146,7 @@ struct NavigatorColumn: View {
     /// `.searchable` instead, so this custom field is macOS-only.)
     private var searchField: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
+            Image(systemSymbol: .magnifyingglass)
                 .font(.system(size: Otty.Typeface.footnote))
                 .foregroundStyle(Otty.Text.icon)
             TextField("Search tabs", text: $query)
@@ -147,7 +156,7 @@ struct NavigatorColumn: View {
                 .tint(Otty.State.accent) // the active caret is the accent colour (otty parity)
             if !query.isEmpty {
                 Button { query = "" } label: {
-                    Image(systemName: "xmark.circle.fill")
+                    Image(systemSymbol: .xmarkCircleFill)
                         .font(.system(size: Otty.Typeface.footnote))
                         .foregroundStyle(Otty.Text.icon)
                 }
@@ -330,9 +339,11 @@ struct NavigatorColumn: View {
     /// the three BADGE items are PER-PANE override toggles (seeded from the pane's CURRENT effective gates, so
     /// the first flip preserves the other two — an absent override follows the global Settings → Agents
     /// default); the two NOTIFY items toggle the GLOBAL fire-time keys (no per-pane notify in otty). Claude-only.
-    /// **Prevent Sleep While Processing** is a host-LOCAL `AgentPreferences` flag living in `PreferencesStore`,
-    /// which the AppKit-hosted sidebar does not receive — it is surfaced in Settings → Agent Behaviour (host);
-    /// adding the tab-menu item needs `PreferencesStore` threaded into the split-view host (a follow-up).
+    /// **Prevent Sleep While Processing** (Batch 4) is a host-LOCAL `AgentPreferences` flag living in
+    /// `PreferencesStore` (it rides the sidecar → applies on reconnect; default-OFF). It is surfaced here only
+    /// when the store is threaded in (the split-view host now does), bound to the SAME global `agent.preventSleep`
+    /// Settings → Agent Behaviour edits — otty's tab menu lists it (`open-code-agent-history.png`). A `nil` store
+    /// (preview / pre-injection) simply hides the row.
     @ViewBuilder
     private func rowContextMenu(_ row: RailRow) -> some View {
         Button("Clear Badge") { store.clearAgentBadge(row.id) }
@@ -357,6 +368,16 @@ struct NavigatorColumn: View {
             get: { Defaults[.agentNotifyAwaitInput] },
             set: { Defaults[.agentNotifyAwaitInput] = $0 },
         ))
+        // Prevent Sleep While Processing (E13 ES-E13-3; otty tab menu) — the host-LOCAL system-sleep assertion
+        // gate. Bound to the GLOBAL `agent.preventSleep` flag (the SAME Settings → Agent Behaviour edits), shown
+        // only when the live store is threaded in. `?? false` mirrors the daemon default-OFF (`nil` ⇒ unset).
+        if let preferences {
+            Divider()
+            Toggle("Prevent Sleep While Processing", isOn: Binding(
+                get: { preferences.agent.preventSleep ?? false },
+                set: { preferences.agent.preventSleep = $0 },
+            ))
+        }
     }
 
     /// Make the row's tab active (if it isn't) then focus its pane. Both go through the store.

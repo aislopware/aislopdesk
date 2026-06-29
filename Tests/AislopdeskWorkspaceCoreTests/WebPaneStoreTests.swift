@@ -260,4 +260,21 @@ final class WebPaneStoreTests: XCTestCase {
             "the original terminal receives nothing — the drop `cd` targets only the new pane",
         )
     }
+
+    /// Batch-4 item 9 — the Open-Quickly Folder "Split Down" action passes `axis: .vertical` to
+    /// `openTerminalRooted`, which must split the active pane VERTICALLY (a stacked split), not horizontally.
+    /// Revert-to-confirm-fail: on the un-fixed store `openTerminalRooted` has NO `axis` parameter (the call
+    /// fails to compile) and always split `.horizontal`.
+    func testOpenTerminalRootedSplitDownIsAVerticalSplit() throws {
+        let store = makeStore()
+        store.openTerminalRooted(at: "/srv/app", split: true, leading: false, axis: .vertical, launchGrace: .zero)
+
+        let root = try XCTUnwrap(store.tree.activeSession?.activeTab?.root, "the active tab has a root")
+        guard case let .split(_, axis, children) = root else {
+            XCTFail("Split Down produces a split node at the tab root, not a bare leaf")
+            return
+        }
+        XCTAssertEqual(axis, .vertical, "Split Down splits the active pane vertically (axis: .vertical)")
+        XCTAssertEqual(children.count, 2, "the split has the original pane + the new folder terminal")
+    }
 }

@@ -565,7 +565,8 @@ public final class TerminalViewModel {
     /// ``copyModeState`` and show live in the pill (``viPendingCount``); the NEXT motion applies the count and
     /// clears it. The count SCALES a parameterized action (`scroll_page_lines:±count`, `jump_to_prompt:±count`)
     /// and REPEATS a directional one (`adjust_selection:<dir>` / `navigate_search:…` ×count, which take no
-    /// magnitude). An absolute jump (`g`/`G`) and a half-page (`⌃d`/`⌃u`) just consume/clear the count.
+    /// magnitude). An absolute jump (`g`/`G`), a half-page (`⌃d`/`⌃u`), and a full-page (`⌃f`/`⌃b`) just
+    /// consume/clear the count.
     ///
     /// VISUAL MODES: `v`/`V`/`⌃v` set ``VisualMode`` `.char`/`.line`/`.block` (pill `VISUAL`/`VISUAL LINE`/
     /// `VISUAL BLOCK`); in a visual mode the line motions drive `adjust_selection:<dir>` to EXTEND an anchored
@@ -614,6 +615,16 @@ public final class TerminalViewModel {
         case .char("u", control: true, _):
             _ = copyModeState.consumeCount()
             actions?.performBindingAction("scroll_page_fractional:-0.5")
+        // Full-page (vim ⌃f forward / ⌃b backward): a single viewport-page step; the count is consumed/cleared,
+        // not scaled (parity with the half-page keys). `0.9` (one page minus a sliver of overlap context) is
+        // the SAME "≈ a page" magnitude the PageDown/PageUp scroll hooks use (WorkspaceStore+FontScroll).
+        // Sign convention (Binding.zig): positive = DOWN toward newer (⌃f), negative = UP toward older (⌃b).
+        case .char("f", control: true, _):
+            _ = copyModeState.consumeCount()
+            actions?.performBindingAction("scroll_page_fractional:0.9")
+        case .char("b", control: true, _):
+            _ = copyModeState.consumeCount()
+            actions?.performBindingAction("scroll_page_fractional:-0.9")
         // Absolute top/bottom: a count is meaningless on an absolute jump → consumed/cleared.
         case .char("g", control: false, shift: false):
             _ = copyModeState.consumeCount()

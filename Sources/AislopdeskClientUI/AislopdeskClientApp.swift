@@ -286,6 +286,30 @@ public struct AislopdeskClientApp: App {
             UIPasteboard.general.string = text
             #endif
         }
+        // Batch 4 (catalog-completeness): the palette's Theme / Config verbs are LOCAL client actions over the
+        // live ``PreferencesStore`` (the SAME `appearance` slot Settings → Appearance edits). "Switch Theme"
+        // advances the primary slot through the built-in themes (chrome retint + terminal cells repaint live);
+        // "Reload Config" re-applies the live settings + posts the config-reload broadcast (the CLI `config
+        // reload` analog); "Open Theme File" reveals the custom-themes folder in Finder (macOS).
+        overlay.switchTheme = { [weak preferences] in
+            guard let preferences else { return }
+            var appearance = preferences.appearance
+            appearance.theme = Self.nextBuiltinTheme(after: appearance.theme)
+            appearance.customLightSlug = nil // a built-in choice clears any prior custom-slug override
+            preferences.appearance = appearance
+        }
+        overlay.reloadConfig = { [weak preferences] in
+            preferences?.reapplyLiveSettings()
+            NotificationCenter.default.post(name: WorkspaceControlBackend.configReloadNotification, object: nil)
+        }
+        #if os(macOS)
+        overlay.openThemeFile = {
+            guard let dir = ThemeLibrary.themesDirectoryURL() else { return }
+            // Create the folder first so a never-yet-used custom-themes dir still opens (otty creates on demand).
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(dir)
+        }
+        #endif
 
         #if os(macOS)
         // EXPLICIT NOTIFICATIONS (OSC 9 / OSC 777) + long-command + agent-attention → local macOS
@@ -789,6 +813,21 @@ public struct AislopdeskClientApp: App {
             }
         }
         return nil
+    }
+
+    /// Batch 4 (catalog-completeness): the next built-in theme after `current` for the palette "Switch Theme"
+    /// verb — advances the primary slot through the shipped built-ins (Settings → Appearance order), wrapping. A
+    /// `nil` / `.system` / custom-slug current resolves to the compile-time default (Monokai Pro Classic) and
+    /// advances from there, so the FIRST "Switch Theme" is always a visible change rather than a no-op. PURE (no
+    /// GUI dependency) — mirrors ``ThemeCatalog/builtinThemes`` order via the matching ``ThemeChoice`` cases.
+    private static func nextBuiltinTheme(after current: ThemeChoice?) -> ThemeChoice {
+        let order: [ThemeChoice] = [
+            .monokaiProClassic, .monokaiProClassicLight, .monokaiProOctagon, .monokaiProMachine,
+            .monokaiProRistretto, .monokaiProSpectrum, .paper, .dark,
+        ]
+        let resolved = current.flatMap { order.contains($0) ? $0 : nil } ?? .monokaiProClassic
+        let idx = order.firstIndex(of: resolved) ?? 0
+        return order[(idx + 1) % order.count]
     }
 
     /// E16 WI-10 — the live reserved-snippet-var strings handed to ``WorkspaceStore/snippetReservedValues``

@@ -127,6 +127,26 @@ public enum PaletteAction: Sendable {
     /// the row PARKS the confirmation rather than trapping — the SAME fallback the ⌘⇧W route arm uses, never a
     /// dead control.
     case closeWindow
+    /// Theme parity (Batch 4 catalog-completeness): otty's palette "Switch Theme" — switch the active local
+    /// theme. Routed by the overlay coordinator to the injected ``OverlayCoordinator/switchTheme`` closure
+    /// (bound app-side to ``PreferencesStore`` — it advances the primary slot through the built-in themes, the
+    /// SAME live `appearance.theme` Settings → Appearance edits, so the chrome retints + the terminal cells
+    /// repaint immediately). `nil`-closure default (tests / previews) is a graceful no-op.
+    case switchTheme
+    /// Theme parity (Batch 4): otty's palette "Reload Config" / "Reload Theme" — re-apply the live client
+    /// settings (theme retint + keybinding republish). Routed by the coordinator to the injected
+    /// ``OverlayCoordinator/reloadConfig`` closure (bound app-side to ``PreferencesStore/reapplyLiveSettings()``
+    /// plus the config-reload broadcast the CLI `config reload` posts). A graceful no-op by default.
+    case reloadConfig
+    /// Theme parity (Batch 4): otty's palette "Open Theme File" — reveal the custom-themes folder
+    /// (`~/.config/aislopdesk/themes/`) in Finder so a hand-authored `.ottytheme` can be edited. Routed by the
+    /// coordinator to the injected ``OverlayCoordinator/openThemeFile`` closure (macOS `NSWorkspace`; iOS has no
+    /// `~/.config` so it is a documented no-op). A graceful no-op by default.
+    case openThemeFile
+    /// Agent parity (Batch 4): otty Agents ▸ Send to Chat — open the Send-to-Chat dialog over the active pane's
+    /// quote. Routed by the coordinator to ``OverlayCoordinator/openSendToChat()`` (the SAME ⌘⌃↩ surface the
+    /// menu mirrors), which HONESTLY no-ops (toast) when there is nothing to quote. CLAUDE-only.
+    case openSendToChat
     /// A non-interactable separator/zero row.
     case noOp
 }

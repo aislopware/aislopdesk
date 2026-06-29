@@ -567,7 +567,12 @@ public enum WorkspaceTreeOps {
         switch direction {
         case .next,
              .previous:
-            target = FocusResolver.cycle(tab.root.allPaneIDs(), from: from, forward: direction == .next)
+            // Cycle through the SAME float-inclusive ordering as the ⌘]/⌘[ pane-cycle
+            // (``cyclePaneTarget(forward:in:)`` → ``Tab/allPaneIDs()`` = pre-order DFS + the floating layer),
+            // NOT the tiled-only `tab.root.allPaneIDs()`, so ⌘-arrow cycling reaches floated panes too. One
+            // shared enumerator means the two cycle paths can't drift (a float reachable by ⌘] is reachable
+            // here as well).
+            target = cyclePaneTarget(forward: direction == .next, in: ws)
         case .left,
              .right,
              .up,

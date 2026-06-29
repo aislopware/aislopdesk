@@ -266,6 +266,11 @@ public enum TerminalConfigBuilder {
         let precision = formatSize(c.scrollMultiplier)
         let discrete = formatSize(c.scrollMultiplier * 3)
         lines.append("mouse-scroll-multiplier = precision:\(precision),discrete:\(discrete)")
+        // otty "Option as Alt" (Settings → Controls → Keyboard) — the macOS Option-key→Alt/Meta behaviour. The
+        // token is libghostty's `macos-option-as-alt` enum value 1:1 (`false`/`true`/`left`/`right`); the
+        // client's libghostty surface owns the key→byte encoding, so emitting it here actuates the setting. The
+        // factory bundle keeps `false` (otty's default — Option stays free for accented characters).
+        lines.append("macos-option-as-alt = \(c.macosOptionAsAltToken)")
         // Cursor colour / text-under / opacity (render prefs). An empty colour ⇒ skip (the "unset honoured"
         // rule, same as background / foreground); opacity always emits (a numeric pref, formatted not fused).
         let cursorColor = prefs.cursorColor.trimmingCharacters(in: .whitespaces)
@@ -368,6 +373,10 @@ public struct TerminalControlsConfig: Sendable, Equatable {
     public var shiftArrowSelect: Bool
     /// otty Scroll-Multiplier — drives BOTH `mouse-scroll-multiplier` precision + discrete factors.
     public var scrollMultiplier: Double
+    /// otty "Option as Alt" token — emitted verbatim as libghostty's `macos-option-as-alt`
+    /// (`false`/`true`/`left`/`right`, default `false`). Resolved from `OptionAsAlt.configValue` at the
+    /// `PreferencesStore.applyTerminal()` call-site (the leaf stays `Defaults`-free).
+    public var macosOptionAsAltToken: String
 
     public init(
         copyOnSelect: Bool = false,
@@ -385,6 +394,7 @@ public struct TerminalControlsConfig: Sendable, Equatable {
         rightClickActionToken: String = "context-menu",
         shiftArrowSelect: Bool = true,
         scrollMultiplier: Double = 1.0,
+        macosOptionAsAltToken: String = "false",
     ) {
         self.copyOnSelect = copyOnSelect
         self.trimTrailing = trimTrailing
@@ -401,5 +411,6 @@ public struct TerminalControlsConfig: Sendable, Equatable {
         self.rightClickActionToken = rightClickActionToken
         self.shiftArrowSelect = shiftArrowSelect
         self.scrollMultiplier = scrollMultiplier
+        self.macosOptionAsAltToken = macosOptionAsAltToken
     }
 }

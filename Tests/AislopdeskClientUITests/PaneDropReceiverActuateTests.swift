@@ -77,6 +77,44 @@ final class PaneDropReceiverActuateTests: XCTestCase {
         XCTAssertFalse(siblings.contains(a), "NOT a sibling of the focused pane A (the split-brain bug)")
     }
 
+    // MARK: Read-only gate — a read-only terminal pane is INERT to drops (E17 parity with the paste halt)
+
+    /// An Open-In-Place (`hostOpen`) drop onto a READ-ONLY terminal pane must NOT fire the host-open verb —
+    /// `hostOpen` (unlike `injectText` → `sendInput`) does not self-gate read-only, so without the actuator
+    /// gate a drop would bypass the read-only halt. Revert-to-confirm-fail: drop the `guard
+    /// terminalModel?.isReadOnly != true` line from `actuate` and `onRequestOpenHostPath` fires.
+    func testReadOnlyPaneRejectsOpenInPlaceDrop() throws {
+        let store = makeStore()
+        let paneID = try XCTUnwrap(store.tree.activeSession?.activeTab?.activePane, "seeded active pane")
+        let model = TerminalViewModel()
+        model.isReadOnly = true
+        var opened: [String] = []
+        model.onRequestOpenHostPath = { opened.append($0) }
+
+        PaneDropReceiver.actuate(
+            .hostOpen("/Users/me/file.txt"),
+            store: store, terminalModel: model, overlay: nil, paneID: paneID,
+        )
+        XCTAssertTrue(opened.isEmpty, "a read-only terminal pane must not open-in-place on a drop")
+    }
+
+    /// Control: the SAME drop onto a WRITABLE pane DOES open-in-place — proving the gate blocks only the
+    /// read-only case (it must not over-block the normal path).
+    func testWritablePaneAllowsOpenInPlaceDrop() throws {
+        let store = makeStore()
+        let paneID = try XCTUnwrap(store.tree.activeSession?.activeTab?.activePane, "seeded active pane")
+        let model = TerminalViewModel()
+        model.isReadOnly = false
+        var opened: [String] = []
+        model.onRequestOpenHostPath = { opened.append($0) }
+
+        PaneDropReceiver.actuate(
+            .hostOpen("/Users/me/file.txt"),
+            store: store, terminalModel: model, overlay: nil, paneID: paneID,
+        )
+        XCTAssertEqual(opened, ["/Users/me/file.txt"], "a writable pane opens-in-place on the host (control)")
+    }
+
     // MARK: Split-Right (a dropped folder) onto a NON-focused pane splits THAT pane
 
     func testSplitInjectPathTargetsDroppedPaneNotFocusedPane() throws {

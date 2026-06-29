@@ -192,6 +192,32 @@ final class TerminalControlsTests: XCTestCase {
         XCTAssertFalse(MouseShiftCapture.never.extendsSelection, "hard never-extend reads OFF")
     }
 
+    /// `OptionAsAlt`'s raw values are aislopdesk's own kebab-readable persistence tokens; `configValue` is the
+    /// libghostty `macos-option-as-alt` token (`false`/`true`/`left`/`right`) the config builder (WI-2) emits.
+    /// The two axes DIFFER (`both` persists as `both`, emits `true`), so this is a real oracle, not a restate of
+    /// the rawValue. The factory keeps OFF (Option composes accented characters — otty's default).
+    func testOptionAsAltRawValuesAndConfigValue() {
+        XCTAssertEqual(OptionAsAlt.allCases.map(\.rawValue), ["off", "both", "left", "right"])
+        XCTAssertEqual(OptionAsAlt.off.configValue, "false")
+        XCTAssertEqual(OptionAsAlt.both.configValue, "true", "BOTH Option keys maps to libghostty `true`")
+        XCTAssertEqual(OptionAsAlt.left.configValue, "left")
+        XCTAssertEqual(OptionAsAlt.right.configValue, "right")
+        // Validate-then-repair: an unknown / hostile token resolves to OFF (never traps).
+        XCTAssertEqual(OptionAsAlt(rawValue: "both"), .both)
+        XCTAssertEqual(OptionAsAlt(rawValue: "garbage"), .off)
+        // The factory bundle keeps Option free for accented characters.
+        XCTAssertEqual(TerminalControls().optionAsAlt, .off)
+        XCTAssertEqual(TerminalControls().optionAsAlt.configValue, "false")
+    }
+
+    /// `from(defaults:)` reads the persisted `optionAsAlt` key through the `RawRepresentableBridge`. Revert-to-
+    /// fail: drop the `optionAsAlt:` read in the factory and the field stays `.off` instead of the stored value.
+    func testFactoryReadsOptionAsAlt() {
+        let defaults = makeIsolatedDefaults()
+        defaults.set(OptionAsAlt.left.rawValue, forKey: SettingsKey.optionAsAltKey)
+        XCTAssertEqual(TerminalControls.from(defaults: defaults).optionAsAlt, .left)
+    }
+
     // MARK: - OSC-52 read confirm decision (WI-6)
 
     /// The pure OSC-52 clipboard-READ resolution the embedder's GUI-only `confirm_read_clipboard_cb` (WI-6)

@@ -591,10 +591,12 @@ final class OpenQuicklyModelTests: XCTestCase {
         XCTAssertEqual(row.subtitle, "/work", "a terminal pane's subtitle is its cwd")
     }
 
-    /// A `.remoteGUI` backing pane reads as a WINDOW: the window glyph (`display`), a "Window" badge, and —
-    /// because a video pane has no shell cwd — the host/window title stands in as the subtitle. The
-    /// `OpenQuicklyKind` stays `.pane` and the `Act` stays the kind-generic `.focusPane`, so `↩` focuses the
-    /// pane exactly as a terminal row does. RED on un-fixed code (no `paneKind` thread ⇒ "Pane"/split/nil).
+    /// A `.remoteGUI` backing pane reads as a WINDOW: the window glyph (`display`), a "Window" badge, and the
+    /// kind-generic `.focusPane` `Act` (`↩` focuses it exactly as a terminal row). With NO app name threaded
+    /// AND no cwd, the subtitle is NIL — a single line, never an echo of the window title already on line 1
+    /// (Batch-4 item 4: the host app shows on line 2 ONLY when it is distinct; a window-title "fallback" would
+    /// merely duplicate line 1). The host-app subtitle for a real binding is covered by
+    /// `RemoteGUIFirstClassPeerTests.testOpenedItemsDifferentiatesTheRemoteWindowRow` (appName threaded).
     func testPaneItemRemoteGUIReadsAsAWindow() {
         let pid = PaneID(raw: UUID())
         let row = OpenQuicklyModel.paneItem(paneID: pid, title: "Safari — GitHub", cwd: nil, paneKind: .remoteGUI)
@@ -602,7 +604,7 @@ final class OpenQuicklyModelTests: XCTestCase {
         XCTAssertEqual(row.paneKind, .remoteGUI)
         XCTAssertEqual(row.badge, "Window", "a `.remoteGUI` pane is badged a 'Window', not a 'Pane'")
         XCTAssertEqual(row.symbol, "display", "a remote window uses the window glyph, not the split glyph")
-        XCTAssertEqual(row.subtitle, "Safari — GitHub", "no cwd ⇒ the host/window title is the subtitle")
+        XCTAssertNil(row.subtitle, "no app name + no cwd ⇒ single line, never an echo of the window title")
         if case let .focusPane(id) = row.act {
             XCTAssertEqual(id, pid, "↩ on a remote-window row still focuses that exact pane")
         } else {
@@ -612,13 +614,14 @@ final class OpenQuicklyModelTests: XCTestCase {
 
     /// The auto `.systemDialog` video pane is differentiated too — the same window glyph, but a "Dialog" badge
     /// (it streams a host SYSTEM prompt, not a user-picked window). Total mapping: both video kinds are windows.
+    /// With no app name threaded the subtitle is nil (single line, no window-title echo — item 4).
     func testPaneItemSystemDialogReadsAsADialog() {
         let pid = PaneID(raw: UUID())
         let row = OpenQuicklyModel.paneItem(paneID: pid, title: "Authenticate", cwd: nil, paneKind: .systemDialog)
         XCTAssertEqual(row.paneKind, .systemDialog)
         XCTAssertEqual(row.badge, "Dialog", "a `.systemDialog` pane is badged a 'Dialog'")
         XCTAssertEqual(row.symbol, "display", "a dialog window uses the window glyph")
-        XCTAssertEqual(row.subtitle, "Authenticate", "no cwd ⇒ the dialog title is the subtitle")
+        XCTAssertNil(row.subtitle, "no app name + no cwd ⇒ single line, never an echo of the dialog title")
     }
 
     /// A real cwd always wins over the host/window-title fallback (defensive — a video pane normally reports no

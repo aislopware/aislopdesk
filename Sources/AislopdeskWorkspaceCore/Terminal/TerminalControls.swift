@@ -224,6 +224,52 @@ public enum MouseShiftCapture: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// How the macOS Option key is treated for terminal input (otty "Option as Alt", libghostty
+/// `macos-option-as-alt`, default ``off``). aislopdesk's client renders with libghostty, so the
+/// key→byte encoding happens in the local surface — `macos-option-as-alt` is the real, reachable
+/// config knob the builder (WI-2) emits.
+///
+/// - ``off``: Option composes accented characters (¡, é, ©…) as normal — libghostty `false`.
+/// - ``both``: BOTH Option keys send Alt/Meta (Esc-prefixed) sequences — libghostty `true`.
+/// - ``left`` / ``right``: only the named Option key sends Alt/Meta; the other still composes.
+///
+/// PURE `String`-raw + `CaseIterable`. The raw values are aislopdesk's own kebab-readable persistence
+/// tokens (NOT the libghostty tokens — `both` persists as `both`, not `true`); the libghostty config
+/// token is exposed separately as ``configValue`` so persistence stays readable while the config builder
+/// emits the libghostty form. ``init(rawValue:)`` is validate-then-repair to ``off`` (the default) — the
+/// same non-failable shape as ``RightClickAction`` so the `Defaults.PreferRawRepresentable` bridge works.
+public enum OptionAsAlt: String, Codable, Sendable, CaseIterable {
+    case off
+    case both
+    case left
+    case right
+
+    /// Decodes the persisted token, repairing a stale / hostile value to ``off`` (the default) rather than
+    /// trapping. Non-failable so the `Defaults.PreferRawRepresentable` bridge works.
+    public init(rawValue: String) {
+        switch rawValue {
+        case "off": self = .off
+        case "both": self = .both
+        case "left": self = .left
+        case "right": self = .right
+        default: self = .off
+        }
+    }
+
+    /// The libghostty `macos-option-as-alt` config token this case maps to (the enum's four values are
+    /// `false` / `true` / `left` / `right` — see the vendored ghostty `input/config.zig` `OptionAsAlt`).
+    /// Consumed by the config builder (WI-2); kept here so the libghostty representation lives next to the
+    /// enum and is unit-pinned. ``both`` → `true` (BOTH Option keys), ``off`` → `false`.
+    public var configValue: String {
+        switch self {
+        case .off: "false"
+        case .both: "true"
+        case .left: "left"
+        case .right: "right"
+        }
+    }
+}
+
 // MARK: - E10 link-interaction enums (otty Settings → Controls → Open With / Link Schemes)
 
 /// What a `⌘`click on a detected link / path does (otty `link-cmd-click`, default ``open``).
@@ -357,6 +403,11 @@ public struct TerminalControls: Codable, Sendable, Equatable {
     public var shiftArrowSelect: Bool
     /// otty `mouse-scroll-multiplier` — multiply the scroll-wheel delta (default `1.0`).
     public var scrollMultiplier: Double
+    /// otty "Option as Alt" — whether the macOS Option key sends Alt/Meta (Esc-prefixed) sequences
+    /// (default ``OptionAsAlt/off``, libghostty `macos-option-as-alt`). The config builder (WI-2) emits its
+    /// ``OptionAsAlt/configValue`` as `macos-option-as-alt`; the client's libghostty surface owns the
+    /// key→byte encoding, so this is a real, reachable knob.
+    public var optionAsAlt: OptionAsAlt
 
     public init(
         copyOnSelect: Bool = false,
@@ -374,6 +425,7 @@ public struct TerminalControls: Codable, Sendable, Equatable {
         rightClickAction: RightClickAction = .contextMenu,
         shiftArrowSelect: Bool = true,
         scrollMultiplier: Double = 1.0,
+        optionAsAlt: OptionAsAlt = .off,
     ) {
         self.copyOnSelect = copyOnSelect
         self.trimTrailing = trimTrailing
@@ -390,6 +442,7 @@ public struct TerminalControls: Codable, Sendable, Equatable {
         self.rightClickAction = rightClickAction
         self.shiftArrowSelect = shiftArrowSelect
         self.scrollMultiplier = scrollMultiplier
+        self.optionAsAlt = optionAsAlt
     }
 
     /// Read the live control bundle from the persisted fire-time `Defaults.Keys` flags. The `defaults`
@@ -418,6 +471,7 @@ public struct TerminalControls: Codable, Sendable, Equatable {
             rightClickAction: defaults[.rightClickAction],
             shiftArrowSelect: defaults[.shiftArrowSelect],
             scrollMultiplier: defaults[.scrollMultiplier],
+            optionAsAlt: defaults[.optionAsAlt],
         )
     }
 }

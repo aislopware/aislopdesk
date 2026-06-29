@@ -33,8 +33,18 @@ struct SnippetEditorSheet: View {
     /// The snippet body text. Named `snippetText` (NOT `body`) so it does not collide with the SwiftUI
     /// `var body: some View` requirement.
     @State private var snippetText: String
+    /// The live height of the multiline Text editor — driven by the bottom-trailing drag grip (the resize
+    /// handle in `textsnippet-setting.png`; SwiftUI's `TextEditor` exposes no native grip, so the grip is a
+    /// manual `DragGesture`). Clamped to ``Self/textAreaMinHeight`` so it can never collapse.
+    @State private var textAreaHeight: CGFloat = 120
+    /// The editor height captured at the START of a resize drag, so the cumulative `DragGesture` translation
+    /// applies from a stable base (never compounds frame-to-frame). `nil` between drags.
+    @State private var resizeStartHeight: CGFloat?
 
     @Environment(\.dismiss) private var dismiss
+
+    /// The floor the drag-resize clamps the Text editor to (its initial height).
+    private static let textAreaMinHeight: CGFloat = 120
 
     init(
         isNew: Bool,
@@ -138,7 +148,7 @@ struct SnippetEditorSheet: View {
                 .foregroundStyle(Otty.Text.primary)
                 .tint(Otty.State.accent)
                 .scrollContentBackground(.hidden)
-                .frame(minHeight: 120)
+                .frame(height: textAreaHeight)
                 .padding(Otty.Metric.space1)
                 .background(
                     RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
@@ -148,12 +158,38 @@ struct SnippetEditorSheet: View {
                     RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
                         .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
                 )
+                .overlay(alignment: .bottomTrailing) { resizeGrip }
             // The reserved template vars (resolved by `ReservedSnippetVars`, never user-prompted) — the otty
             // helper line, verbatim, so the user knows the four built-in placeholders exist.
             Text("Placeholders: {{cursor}} · {{clipboard}} · {{date}} · {{time}}")
                 .font(.system(size: Otty.Typeface.footnote))
                 .foregroundStyle(Otty.Text.tertiary)
         }
+    }
+
+    /// The bottom-right resize grip for the Text editor (`textsnippet-setting.png`). `TextEditor` has no native
+    /// grip, so this is a manual diagonal-hatch handle driven by a `DragGesture`: each drag grows/shrinks the
+    /// editor height from the height captured at drag-start (clamped to ``Self/textAreaMinHeight`` via the
+    /// ordered, NaN-faithful `CGFloat.maximum` — the house float idiom, never a bare clamp).
+    private var resizeGrip: some View {
+        SnippetResizeGrip()
+            .fill(Otty.Text.tertiary)
+            .frame(width: 11, height: 11)
+            .padding(Otty.Metric.space1 + 2)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        let base = resizeStartHeight ?? textAreaHeight
+                        if resizeStartHeight == nil { resizeStartHeight = base }
+                        textAreaHeight = CGFloat.maximum(Self.textAreaMinHeight, base + value.translation.height)
+                    }
+                    .onEnded { _ in resizeStartHeight = nil },
+            )
+        #if os(macOS)
+            .pointerStyle(.frameResize(position: .bottomTrailing))
+        #endif
+            .accessibilityHidden(true)
     }
 
     // MARK: Footer (Cancel + Save Changes)
@@ -184,6 +220,21 @@ struct SnippetEditorSheet: View {
             }
             .buttonStyle(.plain)
         }
+    }
+}
+
+/// A small bottom-right corner grip — three diagonal hatches, the conventional "drag to resize" affordance
+/// (mirrors the floating-pane card's corner grip). Pure `Shape`, no theme read.
+private struct SnippetResizeGrip: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        // Three parallel diagonals fanning out from the bottom-right corner (closest = longest).
+        let insets: [CGFloat] = [rect.width, rect.width * 0.62, rect.width * 0.28]
+        for inset in insets {
+            path.move(to: CGPoint(x: rect.maxX - inset, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - inset))
+        }
+        return path.strokedPath(StrokeStyle(lineWidth: 1, lineCap: .round))
     }
 }
 #endif

@@ -7,7 +7,8 @@
 // an emulated terminal (libghostty IS the renderer per DECISIONS / doc 17).
 //
 // It reads only `TerminalViewModel` connection state + bytes-received (no surface attach), so it is safe
-// in tests and previews. SYSTEM colours/fonts only — NO design-system, NO libghostty/Metal import.
+// in tests and previews. Text/dot colours route through the `Otty.*` token layer (so the placeholder reads
+// as the active theme over the themed pane backdrop) — NO libghostty/Metal import.
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -28,13 +29,13 @@ struct BuildStatusPlaceholderView: TerminalRenderingView {
         VStack(spacing: 12) {
             Image(systemSymbol: .appleTerminal)
                 .font(.system(size: Otty.Typeface.display, weight: .regular))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Otty.Text.secondary)
             Text("terminal")
                 .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(Otty.Text.primary)
             Text("Run ThirdParty/ghostty/build-libghostty.sh — the headless build renders this panel.")
                 .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Otty.Text.secondary)
                 .multilineTextAlignment(.center)
             statusLine
         }
@@ -47,11 +48,11 @@ struct BuildStatusPlaceholderView: TerminalRenderingView {
         let status = model.connectionStatus
         HStack(spacing: 6) {
             Circle()
-                .fill(status.isLive ? Color.green : Color.secondary)
+                .fill(status.isLive ? Otty.Status.ok : Otty.Text.secondary)
                 .frame(width: 7, height: 7)
             Text("\(status.label) · \(model.bytesReceived) bytes")
                 .font(.system(size: Otty.Typeface.footnote).monospaced())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Otty.Text.secondary)
         }
     }
 }

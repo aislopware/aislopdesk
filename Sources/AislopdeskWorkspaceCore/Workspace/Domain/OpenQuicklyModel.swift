@@ -474,7 +474,12 @@ public enum OpenQuicklyModel {
     private static func paneRowSubtitle(cwd: String?, title: String, paneKind: PaneKind, appName: String?) -> String? {
         if let cwd = nonEmpty(cwd) { return cwd }
         guard paneKind.isVideo else { return nil }
-        return nonEmpty(appName) ?? nonEmpty(title)
+        // EMPTY HOST-TITLE PARITY: only surface the host app on line 2 when it is NOT already what line 1
+        // shows. An empty streamed-window title makes the display title (line 1) fall back to the app name,
+        // so an app-name subtitle would echo it on both lines — a single line instead (the window-title
+        // fallback is likewise an echo of line 1, so it is dropped rather than duplicated).
+        if let app = nonEmpty(appName), app != title { return app }
+        return nil
     }
 
     /// Build one **Recent** row for a recently-closed tab at LIFO `index` (0 = most-recently closed). `↩`

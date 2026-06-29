@@ -66,7 +66,7 @@ final class TerminalConfigBuilderControlsTests: XCTestCase {
             "selection-clear-on-copy", "clipboard-paste-protection", "clipboard-paste-bracketed-safe",
             "clipboard-read", "clipboard-write", "mouse-hide-while-typing", "mouse-shift-capture",
             "cursor-click-to-move", "mouse-reporting", "right-click-action", "mouse-scroll-multiplier",
-            "cursor-opacity",
+            "cursor-opacity", "macos-option-as-alt",
         ] {
             XCTAssertNil(map[key], "\(key) must be absent when controls are not supplied")
         }
@@ -212,6 +212,30 @@ final class TerminalConfigBuilderControlsTests: XCTestCase {
             for: TerminalPreferences(), controls: TerminalControlsConfig(),
         ))
         XCTAssertEqual(unit["mouse-scroll-multiplier"], "precision:1,discrete:3")
+    }
+
+    // MARK: Option as Alt — libghostty owns the macOS Option→Alt/Meta encoding via `macos-option-as-alt`
+
+    /// The Option-as-Alt token passes through verbatim as libghostty's `macos-option-as-alt`, so the client's
+    /// libghostty surface encodes the Option key the way the user chose. FAILS before the fix: the builder
+    /// emitted NO `macos-option-as-alt` line, so Option always composed accented characters and never reached a
+    /// TUI as Alt/Meta. Each token is one of the libghostty `OptionAsAlt` enum values 1:1.
+    func testOptionAsAltTokenPassesThroughVerbatim() {
+        for token in ["false", "true", "left", "right"] {
+            let map = parse(TerminalConfigBuilder.string(
+                for: TerminalPreferences(), controls: TerminalControlsConfig(macosOptionAsAltToken: token),
+            ))
+            XCTAssertEqual(map["macos-option-as-alt"], token, "the \(token) option must reach libghostty verbatim")
+        }
+    }
+
+    /// The FACTORY control bundle keeps libghostty's own default (`macos-option-as-alt = false`), so out of the
+    /// box Option composes accented characters — matching otty's "Option as Alt" default OFF.
+    func testDefaultOptionAsAltIsFalse() {
+        let map = parse(TerminalConfigBuilder.string(
+            for: TerminalPreferences(), controls: TerminalControlsConfig(),
+        ))
+        XCTAssertEqual(map["macos-option-as-alt"], "false")
     }
 
     // MARK: Cursor color / text / opacity (H4 / H5) — from TerminalPreferences

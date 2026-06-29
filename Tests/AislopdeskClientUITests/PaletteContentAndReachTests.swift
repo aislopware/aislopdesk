@@ -230,4 +230,96 @@ final class PaletteContentAndReachTests: XCTestCase {
         XCTAssertEqual(store.tree.activeSession?.tabs.count ?? 0, tabsBefore, "no tab minted without a fork")
         XCTAssertEqual(store.tree.allPaneIDs().count, panesBefore, "no split minted without a fork")
     }
+
+    // MARK: - Batch 4 (catalog completeness): theme/config verbs, layout presets, the rest of the Agents menu
+
+    /// The Theme / Config verbs (otty palette "Theme: Switch Theme / Open Theme File" + "Settings: Reload
+    /// Config") are now in the catalog under SETTINGS, each routing its coordinator action. REVERT-TO-CONFIRM-
+    /// FAIL: they were absent (the palette had Open Settings only), so `catalog.first` is nil → `XCTUnwrap` trips.
+    func testThemeAndConfigVerbsAreInTheCatalog() throws {
+        let expected: [(id: String, title: String)] = [
+            ("action.switchTheme", "Switch Theme"),
+            ("action.reloadConfig", "Reload Config"),
+            ("action.openThemeFile", "Open Theme File"),
+        ]
+        for (id, title) in expected {
+            let item = try row(id)
+            XCTAssertEqual(item.title, title, "the '\(id)' row's title")
+            XCTAssertEqual(item.category, .settings, "the '\(id)' theme/config verb groups under SETTINGS")
+            XCTAssertEqual(item.filter, .actions, "the '\(id)' row is a verb (Actions filter)")
+        }
+        XCTAssertTrue(searchIDs("theme").contains("action.switchTheme"), "typing 'theme' surfaces Switch Theme")
+        XCTAssertTrue(searchIDs("reload").contains("action.reloadConfig"), "typing 'reload' surfaces Reload Config")
+    }
+
+    /// CLOSED loop: each Theme / Config row runs the injected ``OverlayCoordinator`` closure (the app binds them
+    /// to ``PreferencesStore`` / `NSWorkspace`), then closes the palette. FAILS if a row's run arm dropped its
+    /// closure (the dead-control regression the audit flags).
+    func testRunningThemeConfigRowsFireInjectedCoordinatorClosures() throws {
+        let (overlay, _) = makeOverlay()
+        var fired: Set<String> = []
+        overlay.switchTheme = { fired.insert("switchTheme") }
+        overlay.reloadConfig = { fired.insert("reloadConfig") }
+        overlay.openThemeFile = { fired.insert("openThemeFile") }
+        for (id, key) in [
+            ("action.switchTheme", "switchTheme"),
+            ("action.reloadConfig", "reloadConfig"),
+            ("action.openThemeFile", "openThemeFile"),
+        ] {
+            overlay.openPalette()
+            try overlay.run(row(id))
+            XCTAssertTrue(fired.contains(key), "running '\(id)' fires its injected '\(key)' coordinator closure")
+            XCTAssertFalse(overlay.paletteVisible, "running '\(id)' closes the palette")
+        }
+    }
+
+    /// The five NAMED layout presets (tmux/zellij `select-layout`; registry-documented "menu/palette only") are
+    /// now palette rows under PANE, each a `.store` arm calling ``WorkspaceStore/applyLayout(_:)``. REVERT-TO-
+    /// CONFIRM-FAIL: they were on NO surface (only the chorded Cycle Layout shipped) → the `XCTUnwrap` trips.
+    func testNamedLayoutPresetsAreInTheCatalog() throws {
+        for (id, title) in [
+            ("action.layoutEvenHorizontal", "Layout: Even Horizontal"),
+            ("action.layoutEvenVertical", "Layout: Even Vertical"),
+            ("action.layoutMainVertical", "Layout: Main Vertical"),
+            ("action.layoutMainHorizontal", "Layout: Main Horizontal"),
+            ("action.layoutTiled", "Layout: Tiled"),
+        ] {
+            let item = try row(id)
+            XCTAssertEqual(item.title, title, "the '\(id)' row's title")
+            XCTAssertEqual(item.category, .pane, "the '\(id)' layout preset groups under PANE")
+            XCTAssertNil(item.shortcut, "the named presets ship no default chord ⇒ no hint chip")
+            guard case .store = item.action else {
+                XCTFail("the '\(id)' layout preset is a `.store` row that re-tiles directly")
+                return
+            }
+        }
+        XCTAssertTrue(
+            searchIDs("layout").contains("action.layoutTiled"),
+            "typing 'layout' surfaces the named presets in the palette snapshot",
+        )
+    }
+
+    /// The rest of the Agents menu — Prompt Queue (a `.store` arm) and Send to Chat (the coordinator's
+    /// `.openSendToChat` dialog) — are now in the palette under AGENTS (Open Composer already was). REVERT-TO-
+    /// CONFIRM-FAIL: they lived only in the registry (macOS Agents menu) → `catalog.first` nil → `XCTUnwrap` trips.
+    func testPromptQueueAndSendToChatAreInThePaletteUnderAgents() throws {
+        let promptQueue = try row("action.promptQueue")
+        XCTAssertEqual(promptQueue.title, "Prompt Queue")
+        XCTAssertEqual(promptQueue.category, .agents, "Prompt Queue groups under AGENTS")
+        guard case .store = promptQueue.action else {
+            XCTFail("Prompt Queue is a `.store` row (active-pane composer op)")
+            return
+        }
+
+        let sendToChat = try row("action.sendToChat")
+        XCTAssertEqual(sendToChat.title, "Send to Chat")
+        XCTAssertEqual(sendToChat.category, .agents, "Send to Chat groups under AGENTS")
+        guard case .openSendToChat = sendToChat.action else {
+            XCTFail("Send to Chat routes the coordinator's Send-to-Chat dialog")
+            return
+        }
+
+        XCTAssertTrue(searchIDs("prompt").contains("action.promptQueue"), "typing 'prompt' surfaces Prompt Queue")
+        XCTAssertTrue(searchIDs("send").contains("action.sendToChat"), "typing 'send' surfaces Send to Chat")
+    }
 }

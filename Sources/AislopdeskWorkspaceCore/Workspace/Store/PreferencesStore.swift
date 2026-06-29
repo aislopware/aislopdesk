@@ -265,6 +265,7 @@ public final class PreferencesStore {
             rightClickActionToken: controls.rightClickAction.rawValue,
             shiftArrowSelect: controls.shiftArrowSelect,
             scrollMultiplier: controls.scrollMultiplier,
+            macosOptionAsAltToken: controls.optionAsAlt.configValue,
         )
     }
 
@@ -404,7 +405,7 @@ public final class PreferencesStore {
         .clearSelectionOnTyping, .clearSelectionOnCopy, .backspaceDeletesSelection, .shiftArrowSelect,
         // Controls — mouse / scroll
         .mouseHideWhileTyping, .focusFollowsMouse, .scrollOnOutput, .scrollMultiplier,
-        .allowMouseCapture, .allowShiftClick, .clickToMove, .rightClickAction,
+        .allowMouseCapture, .allowShiftClick, .clickToMove, .rightClickAction, .optionAsAlt,
         .scrollPastLastLine, .scrollPastFirstLine, .smoothScroll, .undoAtPrompt,
         // Controls — link detection + hint patterns
         .linkDetection, .linkCmdClick, .linkCmdShiftClick, .autoDetectLinkSchemes, .customLinkSchemes,

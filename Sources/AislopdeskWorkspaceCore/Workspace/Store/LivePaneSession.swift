@@ -112,7 +112,9 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// whose claude has exited (id retained, status fallen back to `.none`) drops out of the Resume jump map
     /// and a Resume of that session SPAWNS a fresh run rather than wrongly "jumping" to a dead tab. `nil`
     /// otherwise. Drives ``WorkspaceStore/liveAgentSessionIDs()`` via the ``LiveAgentSessionProviding`` seam.
-    var liveAgentSessionID: String? { claudeStatus == .none ? nil : knownAgentSessionID }
+    /// `public` so the Details panel's agent-pane section (`InspectorColumn`, ClientUI) can surface it for the
+    /// "Copy Session ID" affordance (the Info-tab agent section).
+    public var liveAgentSessionID: String? { claudeStatus == .none ? nil : knownAgentSessionID }
 
     /// The live inspector second-channel client. Set when the inspector is subscribed; nilled on
     /// pause/teardown. Private so callers go through the lifecycle methods.

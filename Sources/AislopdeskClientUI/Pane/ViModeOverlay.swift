@@ -158,6 +158,7 @@ struct ViKeyHintBar: View {
     private static let motion: [Hint] = [
         Hint(keys: ["j", "k"], label: "Scroll line"),
         Hint(keys: ["⌃d", "⌃u"], label: "Half page"),
+        Hint(keys: ["⌃f", "⌃b"], label: "Full page"),
         Hint(keys: ["g", "G"], label: "Top / bottom"),
         Hint(keys: ["[", "]"], label: "Prev / next prompt"),
         Hint(keys: ["1", "…", "9"], label: "Repeat count"),

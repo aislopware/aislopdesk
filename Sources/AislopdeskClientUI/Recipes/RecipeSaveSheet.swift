@@ -8,7 +8,7 @@
 //   • tab / window scope → a **Content** radio group (Layout Only · Include Commands · Include Scrollback —
 //     the last GREYED honestly, deferred per the plan's pinned deferrals) + a "Make paths portable" toggle;
 //   • commands scope → the recent-OSC-133 commands list (oldest-first) with a **Select All** toggle and
-//     inline-editable text, Save enabled only when ≥ 1 is ticked (spec §Custom Commands).
+//     double-click-to-edit text (spec §Custom Commands), Save enabled only when ≥ 1 is ticked.
 // Footer: a plain Cancel + a solid-accent Save. Cross-platform (macOS ⌘S + iOS File-menu equivalent).
 //
 // Otty.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
@@ -26,8 +26,15 @@ struct RecipeSaveSheet: View {
     @State private var scope: RecipeScope = .window
     @State private var content: RecipeSaveContent = .layoutOnly
     @State private var portable = false
-    /// The commands-scope sub-list — recent OSC-133 commands (oldest-first), ticked + inline-editable.
+    /// The commands-scope sub-list — recent OSC-133 commands (oldest-first), ticked + double-click-to-edit.
     @State private var commandRows: [CommandRow] = []
+    /// The row currently in EDIT mode (spec §Custom Commands: "double-click any item to edit"). A row displays
+    /// its command as plain text until double-clicked; only the editing row swaps to a focused `TextField`.
+    /// `nil` ⇒ every row is display-only.
+    @State private var editingRowID: CommandRow.ID?
+    /// Drives focus for the editing row's field so the double-click lands the caret immediately and a focus
+    /// loss (clicking elsewhere) ends editing.
+    @FocusState private var focusedRowID: CommandRow.ID?
 
     @Environment(\.dismiss) private var dismiss
 
@@ -179,7 +186,8 @@ struct RecipeSaveSheet: View {
     }
 
     private func commandRow(_ row: Binding<CommandRow>) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
+        let id = row.wrappedValue.id
+        return HStack(spacing: Otty.Metric.space2) {
             Button { row.wrappedValue.ticked.toggle() } label: {
                 Image(systemName: row.wrappedValue.ticked ? "checkmark.square.fill" : "square")
                     .font(.system(size: Otty.Metric.iconSize))
@@ -188,15 +196,38 @@ struct RecipeSaveSheet: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(row.wrappedValue.ticked ? "Deselect command" : "Select command")
-            // Inline-editable text — click into the field to edit a command before saving (spec §Custom
-            // Commands "double-click any item to edit"; here a persistent editable field is the looser idiom).
-            TextField("", text: row.text)
-                .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.body).monospaced())
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent)
-                .padding(Otty.Metric.space1)
-                .background(plate)
+            // Double-click-to-edit (spec §Custom Commands "double-click any item to edit"): rows are
+            // DISPLAY-ONLY plain text until double-clicked, then the one editing row swaps to a focused field.
+            if editingRowID == id {
+                TextField("", text: row.text)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: Otty.Typeface.body).monospaced())
+                    .foregroundStyle(Otty.Text.primary)
+                    .tint(Otty.State.accent)
+                    .focused($focusedRowID, equals: id)
+                    .onSubmit { editingRowID = nil }
+                    .padding(Otty.Metric.space1)
+                    .background(plate)
+            } else {
+                Text(row.wrappedValue.text.isEmpty ? " " : row.wrappedValue.text)
+                    .font(.system(size: Otty.Typeface.body).monospaced())
+                    .foregroundStyle(Otty.Text.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Otty.Metric.space1)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) {
+                        editingRowID = id
+                        focusedRowID = id
+                    }
+                    .accessibilityLabel("Command — double-click to edit")
+            }
+        }
+        // A focus change away from the editing row ends edit mode (clicking another row / outside the field),
+        // so only an active double-click keeps a row editable.
+        .onChange(of: focusedRowID) { _, focused in
+            if editingRowID == id, focused != id { editingRowID = nil }
         }
     }
 

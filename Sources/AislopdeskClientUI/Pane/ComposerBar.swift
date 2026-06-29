@@ -289,7 +289,9 @@ struct ComposerBar: View {
                     tint: composer.isPinned ? Otty.State.accent : Otty.Text.icon,
                 ) { composer.togglePin() }
                 OttyPlateButton(
-                    symbol: .arrowUpForwardApp,
+                    // Pop-out glyph to float; dock-back glyph (`.pipExit`, the same embed glyph the floating
+                    // card's titlebar uses) once floating, so the icon mirrors the action it performs.
+                    symbol: composer.isFloating ? .pipExit : .arrowUpForwardApp,
                     help: composer.isFloating ? "Dock composer back" : "Float composer on top",
                     size: iconSize,
                     plate: plate,

@@ -92,9 +92,14 @@ struct CompositorPaneCard: View {
     }
 
     /// The pane title (host/window title for a `.remoteGUI`, shell title for a terminal), from the active
-    /// session's spec table — a generic fallback when empty so the strip is never blank.
+    /// session's spec table — preferring the LIVE ``PaneSpec/lastKnownTitle`` (the OSC 0/2 / page title the
+    /// rail, titlebar, and status bar all bind to) over the static spec `title`, so the floating card's grab
+    /// strip tracks the live title instead of the stale launch title. A generic fallback when empty so the
+    /// strip is never blank.
     private var title: String {
-        let resolved = store.tree.activeSession?.specs[paneID]?.title ?? ""
+        let spec = store.tree.activeSession?.specs[paneID]
+        if let live = spec?.lastKnownTitle, !live.isEmpty { return live }
+        let resolved = spec?.title ?? ""
         return resolved.isEmpty ? "Floating pane" : resolved
     }
 

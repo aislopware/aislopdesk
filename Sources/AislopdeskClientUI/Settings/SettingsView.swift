@@ -135,13 +135,14 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     }
 
     /// The otty sidebar glyph for the section (SF Symbol name), matched to otty's sidebar as closely as SF
-    /// Symbols allow: General = `exclamationmark.circle`, Controls = `flag` (pennant/pointer), Agents =
+    /// Symbols allow: General = `exclamationmark.circle`, Controls = `cursorarrow` (the pointer/cursor glyph
+    /// otty shows beside "Controls" in `all-settings.png` — input/scroll/pointer settings), Agents =
     /// `powerplug`, Recipes = `book`, Key Bindings = `bolt` (lightning).
     var systemImage: String {
         switch self {
         case .general: "exclamationmark.circle"
         case .shell: "terminal"
-        case .controls: "flag"
+        case .controls: "cursorarrow"
         case .editor: "doc.text"
         case .agents: "powerplug"
         case .appearance: "paintpalette"
@@ -906,6 +907,7 @@ private struct ControlsSettingsTab: View {
     @Default(.allowMouseCapture) private var allowMouseCapture
     // Keyboard / System.
     @Default(.undoAtPrompt) private var undoAtPrompt
+    @Default(.optionAsAlt) private var optionAsAlt
     @Default(.systemDialogPanes) private var systemDialogPanes
     // Links (otty Settings → Controls → Open With / Link Schemes, E10 WI-3). Client-side link interaction —
     // NOT libghostty config, so these bind DIRECTLY (no `refreshing(_:)` terminal-config rebuild).
@@ -986,6 +988,17 @@ private struct ControlsSettingsTab: View {
                     "Press Cmd-Z at the shell prompt to emit the readline undo sequence.",
                     isOn: $undoAtPrompt,
                 )
+                pickerRow(
+                    "Option as Alt",
+                    "Treat the macOS Option key as Alt/Meta so terminal apps see Esc-prefixed sequences "
+                        + "(Emacs, Vim word-jumps, readline). Off keeps Option free for accented characters.",
+                    selection: $optionAsAlt,
+                ) {
+                    Text("Off").tag(OptionAsAlt.off)
+                    Text("Both Option Keys").tag(OptionAsAlt.both)
+                    Text("Left Option Only").tag(OptionAsAlt.left)
+                    Text("Right Option Only").tag(OptionAsAlt.right)
+                }
                 timingFooter(.live)
             }
 

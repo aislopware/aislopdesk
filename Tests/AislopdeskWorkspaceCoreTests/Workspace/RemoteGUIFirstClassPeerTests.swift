@@ -249,6 +249,41 @@ final class RemoteGUIFirstClassPeerTests: XCTestCase {
         )
     }
 
+    /// **Batch-4 item 4 — EMPTY HOST-TITLE PARITY (both the rail + the Open-Quickly lines).** A remote window
+    /// whose streamed window has NO title has its label collapsed to the app name by `newRemoteWindowTab`, so
+    /// line 1 (`lastKnownTitle ?? title`) AND the streamed window title are both just the app name. The host
+    /// app must then show on ONE line only — not the app name on both. Revert-to-confirm-fail: on the un-fixed
+    /// `railSubtitle`/`paneRowSubtitle` the app name returns on BOTH lines (line 1 == subtitle == "Safari").
+    func testEmptyHostTitleShowsTheAppNameOnOneLineOnly() throws {
+        let store = makeFakeStore()
+        let id = store.newRemoteWindowTab(windowID: 88, title: "", appName: "Safari")
+        let spec = try XCTUnwrap(store.tree.activeSession?.specs[id])
+
+        // Line 1 fell back to the app name (the window had no title).
+        XCTAssertEqual(spec.title, "Safari", "an empty window title makes line 1 fall back to the app name")
+        // Rail line 2 must be nil — a single line, not the app name twice.
+        XCTAssertNil(spec.railSubtitle, "empty host title ⇒ the rail shows the app name once, not on both lines")
+
+        // Open-Quickly row: same one-line discipline (subtitle nil, never an echo of the title).
+        let row = try XCTUnwrap(OpenQuicklyModel.openedItems(from: store.tree).first { $0.act == .focusPane(id) })
+        XCTAssertEqual(row.title, "Safari", "the Opened row title is the app name (the empty-title fallback)")
+        XCTAssertNil(row.subtitle, "empty host title ⇒ the Open-Quickly row is a single line, no app-name echo")
+    }
+
+    /// GUARD the non-empty case is UNCHANGED by the item-4 collapse: a window WITH a real title keeps the host
+    /// app on line 2 (a labelled window — window title on line 1, host app on line 2), on BOTH surfaces.
+    func testPresentHostTitleKeepsTheHostAppSubtitle() throws {
+        let store = makeFakeStore()
+        let id = store.newRemoteWindowTab(windowID: 89, title: "GitHub", appName: "Safari")
+        let spec = try XCTUnwrap(store.tree.activeSession?.specs[id])
+
+        XCTAssertEqual(spec.title, "GitHub", "a present window title is line 1")
+        XCTAssertEqual(spec.railSubtitle, "Safari", "a present window title keeps the host app on the rail's line 2")
+
+        let row = try XCTUnwrap(OpenQuicklyModel.openedItems(from: store.tree).first { $0.act == .focusPane(id) })
+        XCTAssertEqual(row.subtitle, "Safari", "the Open-Quickly row keeps the host app on line 2 too")
+    }
+
     // MARK: - ES-E21-3 / WI-6 — float is kind-generic for the video pane
 
     /// `WorkspaceTreeOps.toggleFloating` floats a `.remoteGUI` active pane with NO kind guard — it leaves the

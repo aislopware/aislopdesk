@@ -73,6 +73,7 @@ struct AllSettingsListView: View {
     @Default(.clipboardWrite) private var clipboardWrite
     @Default(.allowShiftClick) private var allowShiftClick
     @Default(.rightClickAction) private var rightClickAction
+    @Default(.optionAsAlt) private var optionAsAlt
     @Default(.scrollPastLastLine) private var scrollPastLastLine
     @Default(.scrollPastFirstLine) private var scrollPastFirstLine
     // E10 (Path/link detection — otty Settings → Controls → Open With / Link Schemes). Client-side link
@@ -277,6 +278,13 @@ struct AllSettingsListView: View {
                 Text("Paste").tag(RightClickAction.paste)
                 Text("Copy or Paste").tag(RightClickAction.copyOrPaste)
                 Text("Ignore").tag(RightClickAction.ignore)
+            }
+        case SettingsKey.optionAsAltKey:
+            menuPicker($optionAsAlt, refresh: true) {
+                Text("Off").tag(OptionAsAlt.off)
+                Text("Both Option Keys").tag(OptionAsAlt.both)
+                Text("Left Option Only").tag(OptionAsAlt.left)
+                Text("Right Option Only").tag(OptionAsAlt.right)
             }
         case SettingsKey.scrollPastLastLineKey:
             menuPicker($scrollPastLastLine) {

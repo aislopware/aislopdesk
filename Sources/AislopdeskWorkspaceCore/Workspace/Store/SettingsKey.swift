@@ -135,6 +135,9 @@ public enum SettingsKey {
     public static let allowShiftClickKey = "controls.allowShiftClick"
     /// otty `cursor-click-to-move` — click in the prompt to move the shell cursor (default ON).
     public static let clickToMove = "controls.clickToMove"
+    /// otty "Option as Alt" — whether the macOS Option key sends Alt/Meta (stored ``OptionAsAlt`` rawValue,
+    /// default `off`). Emitted by the config builder (WI-2) as libghostty `macos-option-as-alt`.
+    public static let optionAsAltKey = "controls.optionAsAlt"
     /// otty `mouse.rightClickAction` — what a bare right-click does in the viewport (stored
     /// ``RightClickAction`` rawValue, default `context-menu`).
     public static let rightClickActionKey = "controls.rightClickAction"
@@ -806,6 +809,10 @@ public enum SettingsKey {
     /// ``RightClickAction/contextMenu``. A stale / invalid raw value repairs to `.contextMenu`.
     public static var rightClickAction: RightClickAction { Defaults[.rightClickAction] }
 
+    /// How the macOS Option key is treated (otty "Option as Alt", libghostty `macos-option-as-alt`), default
+    /// ``OptionAsAlt/off``. A stale / invalid raw value repairs to `.off`.
+    public static var optionAsAlt: OptionAsAlt { Defaults[.optionAsAlt] }
+
     /// Overscroll past the last content row (otty "Scroll Past Last Line"), default ``ScrollPastLast/disabled``.
     /// A stale / invalid raw value repairs to `.disabled`. The render policy suppresses it on the alt screen.
     public static var scrollPastLastLine: ScrollPastLast { Defaults[.scrollPastLastLine] }
@@ -1017,6 +1024,7 @@ public extension Defaults.Keys {
     static let clipboardShellControlled = Key<Bool>(SettingsKey.clipboardShellControlled, default: true)
     static let allowShiftClick = Key<MouseShiftCapture>(SettingsKey.allowShiftClickKey, default: .enabled)
     static let rightClickAction = Key<RightClickAction>(SettingsKey.rightClickActionKey, default: .contextMenu)
+    static let optionAsAlt = Key<OptionAsAlt>(SettingsKey.optionAsAltKey, default: .off)
     static let scrollPastLastLine = Key<ScrollPastLast>(SettingsKey.scrollPastLastLineKey, default: .disabled)
     static let scrollPastFirstLine = Key<ScrollPastFirst>(SettingsKey.scrollPastFirstLineKey, default: .disabled)
     // E10 (Path/link detection — otty Settings → Controls → Open With / Link Schemes). Fire-time flags, never
@@ -1098,6 +1106,7 @@ extension RightClickAction: Defaults.Serializable, Defaults.PreferRawRepresentab
 extension ScrollPastLast: Defaults.Serializable, Defaults.PreferRawRepresentable {}
 extension ScrollPastFirst: Defaults.Serializable, Defaults.PreferRawRepresentable {}
 extension MouseShiftCapture: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+extension OptionAsAlt: Defaults.Serializable, Defaults.PreferRawRepresentable {}
 
 /// Store the E10 link-interaction enums as their bare `String` rawValue (the otty / aislopdesk config
 /// tokens) so each persisted link setting round-trips compactly; `PreferRawRepresentable` selects the

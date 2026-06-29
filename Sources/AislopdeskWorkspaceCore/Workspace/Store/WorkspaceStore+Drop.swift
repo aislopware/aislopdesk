@@ -21,8 +21,10 @@ public extension WorkspaceStore {
     /// Opens a terminal rooted at `path` and points it there.
     ///
     /// - `split == false` → a new TAB (the New-Tab drop zone; reuses ``newTab(kind:)``).
-    /// - `split == true` → splits the active pane horizontally (`leading` = left/top — Split-Left vs
-    ///   Split-Right; reuses ``splitActivePane(axis:kind:leading:)``).
+    /// - `split == true` → splits the active pane along `axis` (`leading` = left/top — Split-Left/Up vs
+    ///   Split-Right/Down; reuses ``splitActivePane(axis:kind:leading:)``). `axis` defaults to `.horizontal`
+    ///   (the external-drop Split-Left/Right zones); the Open-Quickly folder "Split Right / Down" actions pass
+    ///   `.vertical` for Split-Down.
     ///
     /// Then schedules a deferred `cd '<path>' 2>/dev/null || cd '<parent>'\n` into the freshly-minted pane.
     /// The dropped path is HOST-resolved (otty is local, we are remote — the receiver layers an advisory
@@ -34,10 +36,11 @@ public extension WorkspaceStore {
         at path: String,
         split: Bool,
         leading: Bool,
+        axis: SplitAxis = .horizontal,
         launchGrace: Duration = .milliseconds(1500),
     ) {
         if split {
-            splitActivePane(axis: .horizontal, kind: .terminal, leading: leading)
+            splitActivePane(axis: axis, kind: .terminal, leading: leading)
         } else {
             newTab(kind: .terminal)
         }

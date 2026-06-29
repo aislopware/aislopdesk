@@ -87,6 +87,11 @@ struct ThemeEditorView: View {
     /// write + library rescan + app-wide surface reflow via ``persistEdit(_:)``) runs only ONCE the drag
     /// settles (≈ commit), never per tick. Cancelled / flushed when edit mode ends or the active theme changes.
     @State private var pendingPersist: Task<Void, Never>?
+    /// The "Switch to it now" opt-in (themes spec §Import: *"Tick 'Switch to it now' to activate immediately"*).
+    /// **Default OFF** — an import ADDS the theme to the library WITHOUT switching the active theme; only when
+    /// this is ticked does the import also activate the imported slug. This replaces the old always-activate
+    /// behaviour, so an import no longer hijacks the active theme without consent.
+    @State private var switchToImported = false
     #endif
 
     var body: some View {
@@ -348,6 +353,12 @@ struct ThemeEditorView: View {
                 }
             }
             .fixedSize()
+            // Themes spec §Import: import ADDS to the library by default; tick this to also activate the
+            // imported theme immediately (otherwise the active theme is left untouched).
+            Toggle("Switch to it now", isOn: $switchToImported)
+                .toggleStyle(.checkbox)
+                .font(.system(size: Otty.Typeface.footnote))
+                .help("When on, the imported theme becomes active immediately; otherwise it is only added.")
             Spacer(minLength: 0)
         }
     }
@@ -582,9 +593,12 @@ struct ThemeEditorView: View {
                 at: url, format: format, builtinSlugs: Self.builtinSlugs,
             )
             ThemeCatalog.shared.reloadCustom()
-            activate(slug: result.slug)
+            // Default: ADD only (the active theme is left untouched). The imported slug is activated ONLY when
+            // "Switch to it now" is ticked — the pure ``importOutcome`` decision is the headlessly-tested seam.
+            let outcome = Self.importOutcome(slug: result.slug, switchToImported: switchToImported)
+            if outcome.activate { activate(slug: result.slug) }
             editingDocument = nil
-            statusMessage = "Imported as “\(result.slug)”."
+            statusMessage = outcome.statusMessage
         } catch {
             statusMessage = "Import failed: \(Self.describe(error))"
         }
@@ -616,6 +630,27 @@ struct ThemeEditorView: View {
 extension ThemeEditorView {
     /// The `OttyTheme.id` prefix a scanned custom theme carries (`custom-<slug>`).
     static let customIDPrefix = "custom-"
+
+    /// The post-import ACTIVATION decision + status line (themes spec §Import: import ADDS by default; the
+    /// "Switch to it now" tick activates immediately). Pure + platform-agnostic so the default-no-auto-switch
+    /// contract is pinned headlessly (`ThemeImportSwitchTests`) without an `NSOpenPanel` / disk import.
+    struct ImportOutcome: Equatable {
+        /// Whether to ALSO activate the imported slug (true only when "Switch to it now" was ticked).
+        let activate: Bool
+        /// The transient status line shown under the action row.
+        let statusMessage: String
+    }
+
+    /// Decide whether an import should switch the active theme: ADD-only by default, activate when `switchToImported`.
+    static func importOutcome(slug: String, switchToImported: Bool) -> ImportOutcome {
+        if switchToImported {
+            return ImportOutcome(activate: true, statusMessage: "Imported “\(slug)” and switched to it.")
+        }
+        return ImportOutcome(
+            activate: false,
+            statusMessage: "Imported as “\(slug)”. Tick “Switch to it now” to activate it.",
+        )
+    }
 
     /// A human-readable display name for a resolved theme (built-in id → its picker label), used as the
     /// Duplicate base name. A custom theme uses its document's own `displayName` (handled by the caller).

@@ -32,7 +32,7 @@ final class SettingsSectionTaxonomyTests: XCTestCase {
     private static let expected: [(raw: String, title: String, icon: String)] = [
         ("general", "General", "exclamationmark.circle"),
         ("shell", "Shell", "terminal"),
-        ("controls", "Controls", "flag"),
+        ("controls", "Controls", "cursorarrow"),
         ("editor", "Editor", "doc.text"),
         ("agents", "Agents", "powerplug"),
         ("appearance", "Appearance", "paintpalette"),

@@ -17,6 +17,11 @@ final class AislopdeskSplitViewController: NSSplitViewController {
     private let store: WorkspaceStore
     private let connection: AppConnection
     private let chrome: WorkspaceChromeState
+    /// The live ``PreferencesStore`` — forwarded into the sidebar's ``NavigatorColumn`` so the tab context menu
+    /// can surface the host-LOCAL "Prevent Sleep While Processing" flag (Batch 4). The sidebar is hosted in a
+    /// SEPARATE `NSHostingController` that does not inherit the WindowGroup `\.preferencesStore` environment, so
+    /// it is threaded explicitly. `nil` (a preview / pre-injection scene) hides the Prevent-Sleep row.
+    private let preferences: PreferencesStore?
     /// The shared Details-tab selection (E9/WI-7) — forwarded to the inspector's `InspectorColumn` so a
     /// `Details: *` jump command (which writes `details.selected` via the root view's installed closure)
     /// switches the hosted panel's tab. The SAME instance the root view captures for the reveal closure.
@@ -40,12 +45,14 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         connection: AppConnection,
         chrome: WorkspaceChromeState,
         details: DetailsPanelState,
+        preferences: PreferencesStore? = nil,
         onConnect: @escaping () -> Void = {},
     ) {
         self.store = store
         self.connection = connection
         self.chrome = chrome
         self.details = details
+        self.preferences = preferences
         self.onConnect = onConnect
         super.init(nibName: nil, bundle: nil)
     }
@@ -79,7 +86,7 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         //    inset-grouped/rounded selection, which is the "native SwiftUI rounded corners" look we are
         //    replacing. A plain item lets `NavigatorColumn` paint otty's flat warm panel + white-card rows.
         //    Holding priority above the content's default so window-resize grows the content, not the sidebar.
-        let navigator = NSHostingController(rootView: NavigatorColumn(store: store))
+        let navigator = NSHostingController(rootView: NavigatorColumn(store: store, preferences: preferences))
         let sidebarItem = NSSplitViewItem(viewController: navigator)
         sidebarItem.minimumThickness = Self.defaultSidebarWidth
         sidebarItem.maximumThickness = 360

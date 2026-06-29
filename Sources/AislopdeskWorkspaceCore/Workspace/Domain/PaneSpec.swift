@@ -279,7 +279,16 @@ public extension PaneSpec {
     var railSubtitle: String? {
         if let cwd = Self.presentablePresence(lastKnownCwd) { return cwd }
         guard kind.isVideo, let video else { return nil }
-        if let app = Self.presentablePresence(video.appName) { return app }
+        if let app = Self.presentablePresence(video.appName) {
+            // EMPTY HOST-TITLE PARITY: when the streamed window has NO title, the `newRemoteWindowTab` /
+            // `addSystemDialogPane` LABEL collapses to the app name — so the display title (line 1) AND the
+            // streamed window title are BOTH just the app name. Printing the host app on line 2 then shows it
+            // on both lines. Suppress to a single line ONLY in that all-collapsed case; a window WITH a real
+            // title keeps line 1 distinct, so the host-app subtitle still shows (a labelled window).
+            let line1 = Self.presentablePresence(lastKnownTitle) ?? Self.presentablePresence(title)
+            if line1 == app, Self.presentablePresence(video.title) == app { return nil }
+            return app
+        }
         return Self.presentablePresence(video.title)
     }
 

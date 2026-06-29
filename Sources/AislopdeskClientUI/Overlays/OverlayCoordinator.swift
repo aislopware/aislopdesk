@@ -180,6 +180,18 @@ public final class OverlayCoordinator {
     /// arm fall back to ``WorkspaceStore/requestCloseWindow()`` — the SAME parked-confirmation fallback the
     /// ⌘⇧W route arm uses, never a dead control.
     @ObservationIgnored public var closeWindow: (@MainActor () -> Void)?
+    /// Theme parity (Batch 4): switches the active local theme (otty palette "Switch Theme"). Bound app-side to
+    /// ``PreferencesStore`` (advance the primary slot through the built-in themes), so the palette row retints
+    /// the chrome + terminal cells through the SAME live `appearance.theme` Settings → Appearance edits. No-op
+    /// by default (tests / previews), so the row is never a trap.
+    @ObservationIgnored public var switchTheme: @MainActor () -> Void = {}
+    /// Theme parity (Batch 4): re-applies the live client settings (otty palette "Reload Config"). Bound
+    /// app-side to ``PreferencesStore/reapplyLiveSettings()`` + the config-reload broadcast. No-op by default.
+    @ObservationIgnored public var reloadConfig: @MainActor () -> Void = {}
+    /// Theme parity (Batch 4): reveals the custom-themes folder in Finder (otty palette "Open Theme File").
+    /// Bound app-side (macOS `NSWorkspace`); iOS has no `~/.config`, so it is a documented no-op there. No-op by
+    /// default.
+    @ObservationIgnored public var openThemeFile: @MainActor () -> Void = {}
 
     // MARK: Modal gate
 
@@ -456,6 +468,24 @@ public final class OverlayCoordinator {
         case .openRemotePicker:
             closePalette()
             openRemotePicker()
+        // Theme parity (Batch 4): a live theme switch / config reload — both chainable (⌘↩ keep-open) like the
+        // `.store` rows, so the user can cycle themes or re-apply without re-opening. The injected closure is a
+        // graceful no-op by default (tests / previews).
+        case .switchTheme:
+            switchTheme()
+            if !keepOpen { closePalette() }
+        case .reloadConfig:
+            reloadConfig()
+            if !keepOpen { closePalette() }
+        // Open Theme File reveals the themes folder (navigates away to Finder), so it always closes the palette.
+        case .openThemeFile:
+            openThemeFile()
+            closePalette()
+        // Send to Chat opens its own scrimmed dialog (an overlay-switching row like settings / connect), so it
+        // closes-then-opens; `openSendToChat()` honestly no-ops (toast) when there is nothing to quote.
+        case .openSendToChat:
+            closePalette()
+            openSendToChat()
         case .noOp:
             break
         }

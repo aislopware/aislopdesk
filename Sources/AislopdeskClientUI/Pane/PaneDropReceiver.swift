@@ -133,10 +133,16 @@ struct PaneDropReceiver: DropDelegate {
 
     // MARK: Lifecycle
 
-    /// Accept the drag iff it is enabled AND carries a supported type — otherwise decline so no overlay shows
-    /// (validate-then-drop). `hasItemsConforming(to:)` is a pure query, so no actor hop is needed here.
+    /// Accept the drag iff it is enabled, the dropped-on terminal pane is NOT read-only, AND it carries a
+    /// supported type — otherwise decline so no overlay shows (validate-then-drop). READ-ONLY gate (E17 parity
+    /// with the ``TerminalViewModel/sendInput(_:)`` paste halt): a read-only pane refuses every drop, so the
+    /// affordance never appears and no inject / open-in-place can land. `terminalModel` is nil for a web /
+    /// chooser pane (read-only doesn't apply). `hasItemsConforming(to:)` is a pure query; the read-only read
+    /// hops to the main actor, where every `DropDelegate` callback is already delivered.
     func validateDrop(info: DropInfo) -> Bool {
-        enabled && info.hasItemsConforming(to: Self.acceptedTypes)
+        guard enabled, info.hasItemsConforming(to: Self.acceptedTypes) else { return false }
+        let terminalModel = terminalModel
+        return MainActor.assumeIsolated { terminalModel?.isReadOnly != true }
     }
 
     /// On entry, kick off the async classification of the pasteboard; the overlay appears once `content` is
@@ -226,6 +232,12 @@ struct PaneDropReceiver: DropDelegate {
         overlay: OverlayCoordinator?,
         paneID: PaneID,
     ) {
+        // READ-ONLY gate (E17 parity with the paste halt): a read-only terminal pane is inert to drops — no
+        // verbatim inject, no open-in-place host verb, no terminal-rooted tab/split. Belt-and-suspenders with
+        // `validateDrop` (which suppresses the overlay) AND the single defence on the open-in-place `hostOpen`
+        // path, which — unlike `injectText` → `sendInput` — does NOT self-gate read-only. `terminalModel` is
+        // nil for a web/chooser pane, where read-only doesn't apply, so those drops are unaffected.
+        guard terminalModel?.isReadOnly != true else { return }
         store.focusPaneTree(paneID)
         switch action {
         case let .injectText(text):

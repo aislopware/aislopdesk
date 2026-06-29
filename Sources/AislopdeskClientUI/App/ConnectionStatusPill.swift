@@ -9,6 +9,7 @@
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
+import SFSafeSymbols
 import SwiftUI
 
 struct ConnectionStatusPill: View {
@@ -48,12 +49,12 @@ struct ConnectionStatusPill: View {
                     .foregroundStyle(Otty.Text.primary)
                     .lineLimit(1)
                 Text(StatusPresentation.connectionLabel(status))
-                    .font(.system(size: Otty.Typeface.small + 1))
+                    .font(.system(size: Otty.Typeface.footnote))
                     .foregroundStyle(Otty.Text.secondary)
                     .lineLimit(1)
                 if case .connected = status, let pingMS {
                     Text("· \(Int(pingMS.rounded())) ms")
-                        .font(.system(size: Otty.Typeface.small + 1).monospacedDigit())
+                        .font(.system(size: Otty.Typeface.footnote).monospacedDigit())
                         .foregroundStyle(Otty.Text.secondary)
                         .lineLimit(1)
                 }
@@ -64,7 +65,7 @@ struct ConnectionStatusPill: View {
         }
         .buttonStyle(.plain)
         .background(Otty.Surface.element, in: Capsule())
-        .overlay(Capsule().strokeBorder(Otty.Line.subtle, lineWidth: 1))
+        .overlay(Capsule().strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline))
         .help(StatusPresentation.connectionHelp(host: host, status: status))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(StatusPresentation.connectionHelp(host: host, status: status))
@@ -76,8 +77,8 @@ struct ConnectionStatusPill: View {
         Button {
             Task { await connection.retry() }
         } label: {
-            Image(systemName: "arrow.clockwise")
-                .font(.system(size: Otty.Typeface.small + 1, weight: .semibold))
+            Image(systemSymbol: .arrowClockwise)
+                .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
                 .foregroundStyle(Otty.Text.secondary)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 4)
@@ -85,7 +86,7 @@ struct ConnectionStatusPill: View {
         }
         .buttonStyle(.plain)
         .background(Otty.Surface.element, in: Capsule())
-        .overlay(Capsule().strokeBorder(Otty.Line.subtle, lineWidth: 1))
+        .overlay(Capsule().strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline))
         .help("Retry connecting to \(host)")
         .accessibilityLabel("Retry connecting to \(host)")
     }

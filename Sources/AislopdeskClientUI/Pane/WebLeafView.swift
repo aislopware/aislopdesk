@@ -57,6 +57,9 @@ final class WebPaneModel {
     var canGoBack: Bool { controller?.canGoBack ?? false }
     /// Whether Forward is available — `false` with no live controller (greyed at the tip of history).
     var canGoForward: Bool { controller?.canGoForward ?? false }
+    /// Whether the live page is loading — drives the leftmost ✗ button's Stop-vs-Close role. `false` with no
+    /// live controller (a headless placeholder never loads), so the button is Close.
+    var isLoading: Bool { controller?.isLoading ?? false }
 
     init(initialAddress: String?) {
         addressText = initialAddress ?? ""
@@ -95,6 +98,10 @@ final class WebPaneModel {
     /// Hard-reload the LIVE page ignoring the cache (the ⌘⇧R browser idiom) — drives the controller's
     /// `reloadFromOrigin`. No-op without a live controller (headless / no live `WKWebView`).
     func hardReload() { controller?.hardReload() }
+
+    /// Stop the live page's in-flight load — the ✗ button's "Stop" role while `isLoading`. No-op without a
+    /// live controller.
+    func stop() { controller?.stop() }
 
     /// Present the live page's native find-in-page UI (⌘F) through the controller. No-op without a live
     /// controller (the headless placeholder has nothing to search).
@@ -207,7 +214,14 @@ struct WebLeafView: View {
 
     private var addressChrome: some View {
         HStack(spacing: Otty.Metric.space1) {
-            OttyPlateButton(symbol: .xmark, help: "Close pane") { store.requestClosePane(paneID) }
+            // Leftmost ✗ (web-broswer.png): STOP the in-flight load while the page is loading, else CLOSE the
+            // pane — the browser stop/close idiom (same glyph, role flips with `model.isLoading`).
+            OttyPlateButton(
+                symbol: .xmark,
+                help: model.isLoading ? "Stop loading" : "Close pane",
+            ) {
+                if model.isLoading { model.stop() } else { store.requestClosePane(paneID) }
+            }
             // Back / Forward drive the live page through the `WebPaneController` the production WebPaneView
             // publishes; enabled by its `canGoBack` / `canGoForward` history (greyed when there is no live
             // view or at the ends of history — faithful to web-broswer.png).
