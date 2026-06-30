@@ -54,6 +54,16 @@ public final class RemoteWindowModel {
     /// model→store coupling — the model never learns the read-only state; the seam withholds the sink.
     public var keyInjector: ((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?
 
+    /// RESIZE GRIP: the live ``VideoWindowView`` publishes this once its session exists (and clears it,
+    /// `nil`, on teardown / when the pane is read-only). The pane's bottom-right grip calls it to drive an
+    /// absolute host-window resize. `(phase, tx, ty)` — phase `0` = drag began, `1` = changed, `2` = ended;
+    /// `tx`/`ty` = cumulative drag translation in LOCAL pane points. `nil` ⇒ no live sink (no grip shown).
+    public var resizeInjector: ((_ phase: UInt8, _ tx: Double, _ ty: Double) -> Void)?
+
+    /// Whether the resize grip should be live: streaming AND a resize sink is wired (withheld while
+    /// read-only). `GuiLeafView` gates the grip overlay on this.
+    public var canResizeWindow: Bool { active != nil && resizeInjector != nil }
+
     /// Whether a paste-as-keystrokes is possible right now: streaming AND a live key sink is wired. A
     /// read-only pane has no sink (the seam withholds it, see ``keyInjector``), so this is `false` there.
     public var canPasteKeystrokes: Bool { active != nil && keyInjector != nil }

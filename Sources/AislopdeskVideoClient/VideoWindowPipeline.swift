@@ -94,6 +94,12 @@ final class VideoWindowPipeline {
     /// or the legacy connect-time host-follow negotiation runs (standalone windows).
     var onStreamNativePoints: ((VideoSize) -> Void)?
 
+    /// ACTUAL-SIZE VIEWPORT (2026-06-30): fired on the @MainActor whenever the decoded size changes,
+    /// carrying the HOST WINDOW's POINT size — UNCONDITIONALLY (no 1:1-pane-snap coupling). The macOS
+    /// backing view reads it to auto-zoom the stream to its actual point size inside a fixed pane
+    /// viewport. Set by the view in `activate`; left `nil` on iOS (manual pinch) / standalone.
+    var onDecodedPointsChanged: ((VideoSize) -> Void)?
+
     #if os(macOS)
     /// The LOCAL `NSCursor` mirroring the host's CURRENT cursor SHAPE (Parsec model: the OS draws it at
     /// the instant local mouse position, so the pointer never lags by an RTT). `nil` until the shape
@@ -432,6 +438,11 @@ final class VideoWindowPipeline {
                 // opaque-content rects to the renderer (it alpha-masks the black flank). Empty clears.
                 Task { @MainActor in self?.applyHostContentMask(rects) }
             },
+            notifyDecodedPoints: { [weak self] points in
+                // ACTUAL-SIZE VIEWPORT: hop to main and hand the host window's point size to the view so
+                // it can auto-zoom the stream to 1:1 inside its fixed pane viewport (no-op if unbound).
+                Task { @MainActor in self?.onDecodedPointsChanged?(points) }
+            },
         )
 
         let session = AislopdeskVideoClientSession(
@@ -497,25 +508,11 @@ final class VideoWindowPipeline {
     /// and re-places the cursor overlay.
     func layoutChanged(layerSize: VideoSize) {
         self.layerSize = layerSize
-        // `layerSize` is in POINTS (the cursor/videoScale denominator stays in points). The
-        // Metal DRAWABLE, however, must be sized in PIXELS — drawableSize = points ×
-        // contentsScale — or the layer renders at 1× and the display upscales it to the Retina
-        // screen, which looks badly BLURRED (the bug: drawableSize was set to the point size).
-        if let layer = renderer?.metalLayer {
-            let scale = layer.contentsScale > 0 ? layer.contentsScale : 1
-            layer.drawableSize = CGSize(width: layerSize.width * scale, height: layerSize.height * scale)
-            if ProcessInfo.processInfo.environment["AISLOPDESK_VIDEO_DEBUG"] != nil {
-                // Proof the contentsScale fix took: on Retina this must read scale=2.0 and a
-                // drawable = 2× the point size. scale=1.0 here is the "nhỏ 1 góc" regression.
-                FileHandle.standardError
-                    .write(
-                        Data(
-                            "Aislopdesk[video.client]: layoutChanged layer=\(Int(layerSize.width))x\(Int(layerSize.height))pt contentsScale=\(scale) drawable=\(Int(layer.drawableSize.width))x\(Int(layer.drawableSize.height))px\n"
-                                .utf8,
-                        ),
-                    )
-            }
-        }
+        // `layerSize` is the on-screen PANE size in POINTS — the input/cursor denominator. The Metal
+        // DRAWABLE pixel size is owned by the VIEW's `layout()` now (ACTUAL-SIZE VIEWPORT: the oversized
+        // video layer is sized to the whole REMOTE WINDOW, not the pane, and translated for panning — so the
+        // drawable is window-sized, which only the view knows). The view always lays out, so the drawable is
+        // never left unset.
         // The layer geometry changed under an unchanged frame — force the next tick to render
         // (the pacer skips identical re-shows; without this arm, a resize would show a stale
         // stretch until the next content frame).
@@ -531,6 +528,20 @@ final class VideoWindowPipeline {
     func adoptLayerSize(_ size: VideoSize) {
         guard let session else { return }
         Task { await session.noteLayerSizeAdopted(size) }
+    }
+
+    /// USER RESIZE GRIP — drag START: snapshot the remote window's current size in the session as
+    /// the absolute base for this drag (see ``AislopdeskVideoClientSession/userResizeBegan()``).
+    func userResizeBegan() {
+        guard let session else { return }
+        Task { await session.userResizeBegan() }
+    }
+
+    /// USER RESIZE GRIP — drag STEP/END: forward the cumulative local-point translation so the
+    /// session computes the absolute host-window target and (debounced) requests the resize.
+    func userResize(translationX tx: Double, translationY ty: Double, final: Bool) {
+        guard let session else { return }
+        Task { await session.userResize(translationX: tx, translationY: ty, final: final) }
     }
 
     /// VNC-style zoom/pan, forwarded to the renderer (applied as a UV crop next vsync)
@@ -563,6 +574,17 @@ final class VideoWindowPipeline {
     /// The current content mode the renderer is showing (so the backing view's toggle button
     /// can reflect + flip it). Defaults to `.fit` before the renderer is up.
     var contentMode: VideoContentMode { renderer?.contentMode ?? .fit }
+
+    /// ACTUAL-SIZE VIEWPORT (2026-06-30): tell the SESSION which texture sub-rect (UV origin + size) is
+    /// currently visible in the pane, so the input encoder maps a pane click to the right host pixel. The
+    /// renderer is NOT cropped — it renders the WHOLE window; the macOS view shows a region by translating
+    /// the oversized Metal layer inside the clipping pane (compositor-smooth). `nil` ⇒ no viewport (the
+    /// stream fills the pane). Input-only; no render change here.
+    func setInputViewport(_ crop: VideoRect?) {
+        if let session {
+            Task { await session.setViewportCrop(crop) }
+        }
+    }
 
     // MARK: Input forwarding
 

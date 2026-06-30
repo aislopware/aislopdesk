@@ -91,6 +91,11 @@ public struct VideoWindowView: View {
     /// (and `nil` on teardown), routed to `pipeline.key(...)` — the same secure-input-aware path the
     /// keyboard uses. `(keyCode, down, shift)`. `nil` ⇒ no canvas wants the sink (preview/standalone).
     let onKeyInjectorReady: ((((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?) -> Void)?
+    /// RESIZE GRIP: the live view publishes a resize-drive closure here once its session exists (and
+    /// `nil` on teardown), so the pane's bottom-right grip can drive an absolute host-window resize.
+    /// The closure is `(phase, tx, ty)` — phase `0` = drag began, `1` = changed, `2` = ended; `tx`/`ty`
+    /// are the cumulative drag translation in LOCAL pane points. `nil` ⇒ no canvas to receive the sink.
+    let onResizeInjectorReady: ((((_ phase: UInt8, _ tx: Double, _ ty: Double) -> Void)?) -> Void)?
 
     /// The existing seam signature (title-only): renders the Metal-backed view chrome
     /// without a live connection. Kept so `VideoWindowFactory` callers compile.
@@ -103,6 +108,7 @@ public struct VideoWindowView: View {
         onCanvasScroll = { _ in }
         onStreamNativeSize = nil
         onKeyInjectorReady = nil
+        onResizeInjectorReady = nil
     }
 
     /// Live remote-window view: brings up the orchestrator against `connection`. `isActive` /
@@ -117,6 +123,7 @@ public struct VideoWindowView: View {
         onCanvasScroll: @escaping (CGSize) -> Void = { _ in },
         onStreamNativeSize: ((_ target: CGSize, _ current: CGSize) -> Void)? = nil,
         onKeyInjectorReady: ((((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?) -> Void)? = nil,
+        onResizeInjectorReady: ((((_ phase: UInt8, _ tx: Double, _ ty: Double) -> Void)?) -> Void)? = nil,
     ) {
         self.title = title
         self.connection = connection
@@ -126,60 +133,31 @@ public struct VideoWindowView: View {
         self.onCanvasScroll = onCanvasScroll
         self.onStreamNativeSize = onStreamNativeSize
         self.onKeyInjectorReady = onKeyInjectorReady
+        self.onResizeInjectorReady = onResizeInjectorReady
     }
 
     /// Owns the control bridge for this view's lifetime; the backing view wires its closures.
     @StateObject private var controls = VideoPaneControls()
 
     public var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            MetalVideoLayerView(
-                connection: connection,
-                controls: controls,
-                isActive: isActive,
-                inputEnabled: inputEnabled,
-                onActivate: onActivate,
-                onCanvasScroll: onCanvasScroll,
-                onStreamNativeSize: onStreamNativeSize,
-                onKeyInjectorReady: onKeyInjectorReady,
-            )
-            // FILL THE PANE. Without this the bare representable does not claim the
-            // ZStack's space, so the `.bottomTrailing` alignment pins the Metal view as a
-            // small island in the BOTTOM-RIGHT corner (the "nhỏ 1 góc" bug) — and clicks
-            // across the rest of the pane then miss it (the "toạ độ sai" bug). Mirrors the
-            // PROVEN terminal seam (`TerminalScreenView`), which puts this frame directly
-            // on the renderer view inside its ZStack. The overlay below stays the small
-            // bottom-trailing control cluster.
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityLabel(Text("Remote GUI window: \(title)"))
-            if connection != nil {
-                controlOverlay
-            }
-        }
-    }
-
-    /// fit/fill toggle (+ a zoom-reset that appears only while zoomed), bottom-right.
-    private var controlOverlay: some View {
-        HStack(spacing: 6) {
-            if controls.zoomed {
-                Button(action: { controls.resetZoom() }) {
-                    Image(systemName: "1.magnifyingglass").padding(6)
-                }
-                .help("Reset zoom (1×)")
-            }
-            Button(action: { controls.toggleFill() }) {
-                Image(systemName: controls.mode == .fill
-                    ? "arrow.down.right.and.arrow.up.left"
-                    : "arrow.up.left.and.arrow.down.right")
-                    .padding(6)
-            }
-            .help(controls.mode == .fill ? "Fit — xem trọn cửa sổ"
-                : "Fill — phủ kín pane (giữ tỉ lệ, cắt mép)")
-        }
-        .buttonStyle(.plain)
-        .foregroundColor(.white)
-        .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
-        .padding(10)
+        // FILL THE PANE. Without this frame the bare representable does not claim space, so it shrinks to a
+        // small island and clicks across the rest of the pane miss it. Mirrors the proven terminal seam.
+        // No control overlay any more: the ACTUAL-SIZE viewport auto-anchors to the window top-left and the
+        // edge-pan navigates — there is no zoom to reset, so the old 1× button (which collided with the
+        // resize grip) is gone.
+        MetalVideoLayerView(
+            connection: connection,
+            controls: controls,
+            isActive: isActive,
+            inputEnabled: inputEnabled,
+            onActivate: onActivate,
+            onCanvasScroll: onCanvasScroll,
+            onStreamNativeSize: onStreamNativeSize,
+            onKeyInjectorReady: onKeyInjectorReady,
+            onResizeInjectorReady: onResizeInjectorReady,
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityLabel(Text("Remote GUI window: \(title)"))
     }
 }
 
@@ -204,6 +182,7 @@ struct MetalVideoLayerView: NSViewRepresentable {
     var onCanvasScroll: (CGSize) -> Void = { _ in }
     var onStreamNativeSize: ((CGSize, CGSize) -> Void)?
     var onKeyInjectorReady: ((((UInt16, Bool, Bool) -> Void)?) -> Void)?
+    var onResizeInjectorReady: ((((UInt8, Double, Double) -> Void)?) -> Void)?
 
     func makeNSView(context _: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()
@@ -219,6 +198,10 @@ struct MetalVideoLayerView: NSViewRepresentable {
         // backing view clears it on `deactivate`.
         view.onKeyInjectorReady = onKeyInjectorReady
         view.publishKeyInjector()
+        // RESIZE GRIP: publish a resize-drive sink routed to THIS view's pipeline (the session's
+        // resize guard no-ops until streaming, so publishing now is safe). Cleared on `deactivate`.
+        view.onResizeInjectorReady = onResizeInjectorReady
+        view.publishResizeInjector()
         // BUG-2 probe: a recreate (makeNSView) on focus change — vs an in-place updateNSView — would reset
         // isActive to its `true` default mid-stream; logging it distinguishes "stale Bool" from "recreate".
         videoViewDbg("makeNSView (CREATED) isActive=\(isActive)")
@@ -241,6 +224,10 @@ struct MetalVideoLayerView: NSViewRepresentable {
         if inputGateFlipped {
             nsView.onKeyInjectorReady = onKeyInjectorReady
             nsView.publishKeyInjector()
+            // RESIZE GRIP: the seam binds a nil resize sink while read-only (like the key sink), so a
+            // read-only flip must re-publish to withdraw / restore the grip's drive.
+            nsView.onResizeInjectorReady = onResizeInjectorReady
+            nsView.publishResizeInjector()
         }
     }
 
@@ -291,6 +278,10 @@ final class MetalLayerBackedView: NSView {
     /// teardown), so the pane's "Paste as Keystrokes" can drive `pipeline.key(...)` — the same
     /// secure-input-aware key path the keyboard uses. Set by the representable before `activate`.
     var onKeyInjectorReady: ((((UInt16, Bool, Bool) -> Void)?) -> Void)?
+    /// RESIZE GRIP: the canvas publishes a resize-drive sink through this (and `nil` on teardown), so the
+    /// pane's bottom-right grip can drive an absolute host-window resize. `(phase, tx, ty)` — phase `0`
+    /// began / `1` changed / `2` ended; `tx`/`ty` = cumulative drag translation in LOCAL pane points.
+    var onResizeInjectorReady: ((((UInt8, Double, Double) -> Void)?) -> Void)?
 
     /// Hands the canvas a key-injection closure routed to THIS view's pipeline (Shift folded into the
     /// modifiers; `pipeline.key` no-ops until the session is up). Idempotent — safe to call on every
@@ -301,27 +292,68 @@ final class MetalLayerBackedView: NSView {
         }
     }
 
-    // ── Local view navigation (macOS): pinch-zoom (+ pan-when-zoomed) via the RESPONDER
-    //    `magnify`/`scrollWheel` methods — NOT gesture recognizers. A recognizer on this
-    //    layer-backed view swallowed the `mouseUp` of a trackpad three-finger-drag, leaving
-    //    the remote button stuck down. The fit/fill toggle + zoom-reset live in a SwiftUI
-    //    OVERLAY (see `VideoPaneControls`), not AppKit subviews, so they never perturb this
-    //    view's geometry or its mouse-event delivery.
-    private var zoom: CGFloat = 1
-    private var pan: CGPoint = .zero
+    /// Hands the canvas a resize-drive closure routed to THIS view's pipeline. Phase `0` snapshots the
+    /// drag base; `1`/`2` forward the cumulative translation (the session maps it to an absolute target
+    /// and debounce-requests the resize). `self` weak so a torn-down view resizes nothing.
+    func publishResizeInjector() {
+        onResizeInjectorReady? { [weak self] phase, tx, ty in
+            guard let self else { return }
+            switch phase {
+            case 0: pipeline.userResizeBegan()
+            case 2: pipeline.userResize(translationX: tx, translationY: ty, final: true)
+            default: pipeline.userResize(translationX: tx, translationY: ty, final: false)
+            }
+        }
+    }
+
     /// Bridge to the SwiftUI control overlay; the SwiftUI view owns it. Set by the
     /// representable before `activate`.
     weak var controls: VideoPaneControls?
 
+    // ── ACTUAL-SIZE VIEWPORT (RealVNC-mobile, 2026-06-30). The host sends + the client decodes the WHOLE
+    //    window every frame; the renderer draws the whole window at its native resolution into `videoLayer`,
+    //    which is sized to the window's POINT size and added as a SUBLAYER of this view's clipping backing
+    //    layer. The pane is a fixed viewport: we PAN by translating `videoLayer` (a compositor move — smooth,
+    //    no per-frame reshader) instead of cropping the texture. Edge-hover drives the translation. The
+    //    visible sub-rect is reported to the session as a `viewportCrop` so a pane click maps to the right
+    //    host pixel. Window point size arrives via `onDecodedPointsChanged`.
+    /// The host window's current POINT size. `nil` until the first decoded frame (then the layer is sized).
+    private var streamPoints: VideoSize?
+    /// The viewport's top-left offset INTO the window, in WINDOW POINTS (top-left origin, +y down). `(0,0)`
+    /// = the window's top-left corner (default). Clamped to `[0, max(0, window − pane)]`; pan moves it.
+    private var panOffset: CGPoint = .zero
+    /// Whether the user has explicitly PANNED (edge-pan). Until then the offset stays at the window top-left
+    /// (the default anchor, not centred); the 1× reset clears it.
+    private var viewportTouched = false
+
+    // ── EDGE-PAN (RealVNC-mobile): nudging the pointer into a pane edge auto-translates the video layer
+    //    toward that edge so you can reach off-screen window content without a scroll gesture. Driven by a
+    //    `.common`-mode timer (a default-mode timer would freeze during event tracking). Inert when the
+    //    window fits inside the pane.
+    private var edgePanTimer: Timer?
+    private var edgePanVelocity: CGPoint = .zero
+    /// Last pointer position in this view's coordinates (AppKit, origin bottom-left) — re-forwarded each
+    /// edge-pan tick so the host cursor follows into the newly revealed region while the content scrolls.
+    private var lastPointerView: CGPoint = .zero
+    /// Pane-edge band width (points) within which the pointer triggers an auto-pan.
+    private static let edgePanThreshold: CGFloat = 44
+    /// Full-penetration pan speed (WINDOW POINTS per second) at the pane border.
+    private static let edgePanPointsPerSec: Double = 1600
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        // The video layer is an oversized SUBLAYER (sized to the whole remote window) of a CLIPPING backing
+        // layer, so we can translate it for panning while the pane masks the overflow. (It used to BE the
+        // backing layer, filling the pane.)
         wantsLayer = true
-        layer = videoLayer
+        let host = CALayer()
+        host.masksToBounds = true
+        host.addSublayer(videoLayer)
+        layer = host
     }
 
     @available(*, unavailable)
     required init?(coder _: NSCoder) { fatalError("not supported") }
-    override func makeBackingLayer() -> CALayer { videoLayer }
 
     func activate(connection: VideoWindowConnection?) {
         // 1:1 PANE SNAP — wire BEFORE pipeline.activate: the session decides pane-follows-stream
@@ -336,9 +368,16 @@ final class MetalLayerBackedView: NSView {
         // captured window (visible flip) — so the pointer shape tracks the remote with no RTT lag.
         pipeline.onServerCursorVisibilityChanged = { [weak self] _ in self?.applyLocalCursor() }
         pipeline.onRemoteCursorChanged = { [weak self] in self?.applyLocalCursor() }
-        // Wire the SwiftUI overlay's buttons to THIS view's pipeline (live connection only).
+        // ACTUAL-SIZE VIEWPORT: learn the host window's point size, size the video layer to it, lay out.
+        pipeline.onDecodedPointsChanged = { [weak self] points in
+            guard let self else { return }
+            streamPoints = points
+            needsLayout = true
+            layoutVideoLayer()
+        }
+        // Wire the SwiftUI overlay's buttons to THIS view's pipeline (live connection only). The fit/fill
+        // toggle was removed (the ACTUAL-SIZE viewport auto-drives content mode), so only the 1× reset wires.
         if connection != nil, let controls {
-            controls.onToggleFill = { [weak self] in self?.applyToggleFill() }
             controls.onResetZoom = { [weak self] in self?.applyResetZoom() }
             controls.mode = pipeline.contentMode
         }
@@ -348,6 +387,7 @@ final class MetalLayerBackedView: NSView {
         if pointerInside { NSCursor.arrow.set() } // restore the arrow before the pipeline tears down
         pointerInside = false
         onKeyInjectorReady?(nil) // PASTE AS KEYSTROKES: drop the stale sink before teardown
+        onResizeInjectorReady?(nil) // RESIZE GRIP: drop the stale sink before teardown
         pipeline.deactivate()
     }
 
@@ -390,25 +430,63 @@ final class MetalLayerBackedView: NSView {
 
     override func layout() {
         super.layout()
-        // macOS layer-HOSTING views (we assign `layer = videoLayer`) do NOT get contentsScale
-        // auto-promoted to the window's backing scale — only layer-BACKED views do. A hosted
-        // CAMetalLayer therefore stays at contentsScale 1.0, so `layoutChanged` computes
-        // drawableSize = points × 1 (half-res on a 2× display) and the undersized drawable is
-        // presented into a CORNER of the pane (the "nhỏ 1 góc" bug — and it also throws the
-        // click mapping off, since input assumes the video fills the layer). Set the scale from
-        // the window's backingScaleFactor BEFORE `layoutChanged` reads it. Never hardcode 2 (1×
-        // external displays / Sidecar); fall back to the last good value so a window==nil
-        // teardown layout never drops back to 1×. (Mirrors the iOS `layoutSubviews` site below.)
-        let scale = window?.backingScaleFactor ?? videoLayer.contentsScale
-        videoLayer.contentsScale = scale
-        // Own the drawable's PIXEL size here in the VIEW, which ALWAYS lays out — NOT only in
-        // the pipeline, which sets it solely once a renderer exists. `layout()` runs BEFORE
-        // `activate()` builds the renderer, and on a stable size no relayout follows, so the
-        // pipeline-only path left `drawableSize` unset for the whole session (proven by the
-        // absent `layoutChanged` debug line) → an upscaled/blurry frame. Setting it directly
-        // every pass mirrors the proven `GhosttyLayerBackedView.layout()`.
-        videoLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        layer?.masksToBounds = true // clip the oversized video sublayer to the pane
+        layoutVideoLayer()
+        // session.layerSize = the PANE point size (the input/cursor denominator). The DRAWABLE pixel size is
+        // owned by `layoutVideoLayer()` (window-sized), so the pipeline no longer touches it.
         pipeline.layoutChanged(layerSize: VideoSize(width: Double(bounds.width), height: Double(bounds.height)))
+    }
+
+    /// ACTUAL-SIZE VIEWPORT: size + position the oversized video sublayer. It is sized to the remote
+    /// window's POINT size (so the renderer draws the WHOLE window at native res into a window-sized
+    /// drawable), and positioned so the visible pane shows the region at `panOffset` (top-left anchored by
+    /// default). Pure compositor geometry — panning later just moves this layer, no reshader. Falls back to
+    /// filling the pane until the window size is known.
+    private func layoutVideoLayer() {
+        // layer-HOSTING views (we assign `layer`) are NOT auto-promoted to the window's backing scale, so set
+        // contentsScale from `backingScaleFactor` (never hardcode 2 — 1× externals/Sidecar); fall back to the
+        // last good value so a window==nil teardown layout never drops to 1×.
+        let scale = window?.backingScaleFactor ?? videoLayer.contentsScale
+        layer?.contentsScale = scale
+        videoLayer.contentsScale = scale
+        // No implicit position/size animation — panning sets these directly each tick.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard let win = streamPoints, win.width > 1, win.height > 1, bounds.width > 1, bounds.height > 1 else {
+            // No stream geometry yet → fill the pane (the renderer aspect-fits the first frames).
+            videoLayer.frame = bounds
+            videoLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+            return
+        }
+        let ww = CGFloat(win.width), wh = CGFloat(win.height)
+        // Clamp the pan offset to the overflow on each axis (0 when the window fits → top-left anchored).
+        let maxX = Swift.max(0, ww - bounds.width)
+        let maxY = Swift.max(0, wh - bounds.height)
+        if !viewportTouched { panOffset = .zero }
+        panOffset.x = Swift.min(Swift.max(panOffset.x, 0), maxX)
+        panOffset.y = Swift.min(Swift.max(panOffset.y, 0), maxY)
+        // Position (parent layer is bottom-left origin): origin.x = −panOffset.x; origin.y places the window
+        // TOP at the pane top and reveals lower content as panOffset.y grows (derived for y-down panOffset).
+        videoLayer.frame = CGRect(x: -panOffset.x, y: bounds.height - wh + panOffset.y, width: ww, height: wh)
+        videoLayer.drawableSize = CGSize(width: ww * scale, height: wh * scale)
+        publishInputViewport()
+    }
+
+    /// Report the currently-visible texture sub-rect (UV) to the session so a pane click maps to the right
+    /// host pixel. `origin = panOffset / window`, `size = pane / window` (size may exceed 1 when the window
+    /// is smaller than the pane — `normalize` then clamps a click outside the window, which is correct).
+    private func publishInputViewport() {
+        guard let win = streamPoints, win.width > 1, win.height > 1 else { pipeline.setInputViewport(nil)
+            return
+        }
+        pipeline.setInputViewport(VideoRect(
+            x: Double(panOffset.x) / win.width,
+            y: Double(panOffset.y) / win.height,
+            width: Double(bounds.width) / win.width,
+            height: Double(bounds.height) / win.height,
+        ))
+        controls?.zoomed = viewportTouched
     }
 
     /// Fires on window-attach and when the view moves between Retina/non-Retina displays.
@@ -421,30 +499,93 @@ final class MetalLayerBackedView: NSView {
         needsLayout = true
     }
 
-    // MARK: Local navigation (zoom/pan) — responder methods, never gesture recognizers
+    // MARK: Local navigation (pan) — responder methods, never gesture recognizers
 
-    /// Trackpad pinch. `NSEvent.magnification` is the INCREMENTAL delta for this event, so
-    /// `zoom *= (1 + magnification)` accumulates across the pinch. Drives the SAME pipeline
-    /// zoom transform the host-input encoder inverts. Using the responder method (not
-    /// `NSMagnificationGestureRecognizer`) leaves mouse click/drag delivery untouched.
-    override func magnify(with event: NSEvent) {
-        zoom = min(max(zoom * (1 + event.magnification), 1), 8)
-        if zoom <= 1.001 { pan = .zero }
-        pipeline.setZoom(zoom, pan: pan)
-        controls?.zoomed = zoom > 1.001
-    }
+    /// Trackpad pinch is unused in the ACTUAL-SIZE viewport (the window already shows at its native size;
+    /// the pane is a fixed viewport you pan, not a zoom surface). Left as a no-op so a stray pinch can't
+    /// perturb geometry. (Edge-hover does the navigation.)
+    override func magnify(with _: NSEvent) {}
 
-    private func applyToggleFill() {
-        let next: VideoContentMode = (pipeline.contentMode == .fit) ? .fill : .fit
-        pipeline.setContentMode(next)
-        controls?.mode = next
-    }
-
+    /// 1× reset → re-anchor the viewport to the window's TOP-LEFT.
     private func applyResetZoom() {
-        zoom = 1
-        pan = .zero
-        pipeline.setZoom(1, pan: .zero)
-        controls?.zoomed = false
+        viewportTouched = false
+        panOffset = .zero
+        stopEdgePan()
+        needsLayout = true
+        layoutVideoLayer()
+    }
+
+    /// Whether there is window content beyond the pane to pan to (the window is larger than the pane on at
+    /// least one axis). Gates edge-pan.
+    private var isNavigable: Bool {
+        guard let win = streamPoints else { return false }
+        return win.width > Double(bounds.width) + 1 || win.height > Double(bounds.height) + 1
+    }
+
+    // MARK: Edge-pan (translate the oversized video layer when the pointer hugs a pane edge)
+
+    /// Recompute the edge-pan velocity from the pointer's distance to each edge and (re)arm/stop the
+    /// drive timer. `p` is in this view's coordinates (AppKit, origin bottom-left). Inert when the window
+    /// fits the pane.
+    private func updateEdgePan(at p: CGPoint) {
+        lastPointerView = p
+        edgePanVelocity = computeEdgePanVelocity(at: p)
+        if edgePanVelocity == .zero {
+            stopEdgePan()
+        } else if edgePanTimer == nil {
+            // `.common` mode so the timer keeps firing during mouse-tracking / gesture runloop modes.
+            let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.stepEdgePan() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            edgePanTimer = timer
+        }
+    }
+
+    private func stopEdgePan() {
+        edgePanVelocity = .zero
+        edgePanTimer?.invalidate()
+        edgePanTimer = nil
+    }
+
+    /// Signed pan velocity (WINDOW POINTS/sec) for a pointer at `p`. Each axis ramps linearly from 0 at the
+    /// band's inner edge to ``edgePanPointsPerSec`` at the pane border. Sign is in the `panOffset` basis
+    /// (top-left, y-down): right edge → +x (reveal right); the view's BOTTOM (small AppKit y) → +y (reveal
+    /// the window's bottom).
+    private func computeEdgePanVelocity(at p: CGPoint) -> CGPoint {
+        guard isNavigable, bounds.width > 1, bounds.height > 1 else { return .zero }
+        let t = Self.edgePanThreshold
+        let maxV = Self.edgePanPointsPerSec
+        func ramp(_ depth: CGFloat) -> Double { min(max(Double(depth) / Double(t), 0), 1) * maxV }
+        var v = CGPoint.zero
+        if p.x < t { v.x = -ramp(t - p.x) } else if p.x > bounds.width - t { v.x = ramp(p.x - (bounds.width - t)) }
+        if p.y < t { v.y = ramp(t - p.y) } else if p.y > bounds.height - t { v.y = -ramp(p.y - (bounds.height - t)) }
+        return v
+    }
+
+    /// One 60 Hz edge-pan step: advance ``panOffset`` (window points) by `velocity · dt`, clamp to the
+    /// overflow `[0, window − pane]`, re-lay-out the video layer (a compositor translate), and re-forward
+    /// the (edge-pinned) pointer so the host cursor walks into the revealed region.
+    private func stepEdgePan() {
+        guard isNavigable, edgePanVelocity != .zero, let win = streamPoints else { stopEdgePan()
+            return
+        }
+        let dt = 1.0 / 60.0
+        let maxX = Swift.max(0, win.width - Double(bounds.width))
+        let maxY = Swift.max(0, win.height - Double(bounds.height))
+        let nx = min(max(Double(panOffset.x) + Double(edgePanVelocity.x) * dt, 0), maxX)
+        let ny = min(max(Double(panOffset.y) + Double(edgePanVelocity.y) * dt, 0), maxY)
+        let xDone = edgePanVelocity
+            .x == 0 || (edgePanVelocity.x < 0 && nx <= 0) || (edgePanVelocity.x > 0 && nx >= maxX)
+        let yDone = edgePanVelocity
+            .y == 0 || (edgePanVelocity.y < 0 && ny <= 0) || (edgePanVelocity.y > 0 && ny >= maxY)
+        panOffset = CGPoint(x: nx, y: ny)
+        viewportTouched = true // explicit edge-pan → stop re-anchoring to top-left
+        layoutVideoLayer() // compositor translate (smooth) + republish input viewport
+        if isActive, inputEnabled {
+            pipeline.mouseMove(VideoPoint(x: Double(lastPointerView.x), y: Double(bounds.height - lastPointerView.y)))
+        }
+        if xDone, yDone { stopEdgePan() }
     }
 
     // MARK: Input forwarding (view space → normalised → host)
@@ -468,7 +609,10 @@ final class MetalLayerBackedView: NSView {
     // Only the ACTIVE pane tracks hover (the "only the active pane swallows pointer" rule). A non-active
     // pane ignores hover so it never injects a stray remote mouse-move; you must click it first.
     override func mouseMoved(with event: NSEvent) {
-        guard isActive, inputEnabled else { return } // read-only ⇒ no remote mouse-move (E21 WI-3)
+        guard isActive else { return }
+        // Edge-pan is local view-nav (moves the zoomed crop) — runs even on a read-only pane; inert at 1×.
+        updateEdgePan(at: convert(event.locationInWindow, from: nil))
+        guard inputEnabled else { return } // read-only ⇒ no remote mouse-move (E21 WI-3)
         pipeline.mouseMove(viewPoint(event))
     }
 
@@ -546,24 +690,11 @@ final class MetalLayerBackedView: NSView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        // Zoomed in (local crop): a two-finger scroll pans the LOCAL view so you can reach the off-screen
-        // parts of the zoomed window. This is the ONE case where a scroll stays INSIDE the pane, and it is
-        // independent of canvas focus. (At 1× the renderer clamps panLimit to 0, so a local pan is inert
-        // anyway — fall through to the canvas pan below.)
-        if zoom > 1.001 {
-            let invZoom = 1.0 / Double(zoom)
-            pan.x = CGFloat(min(
-                max(Double(pan.x) - Double(event.scrollingDeltaX) / Double(max(bounds.width, 1)) * invZoom, -0.5),
-                0.5,
-            ))
-            pan.y = CGFloat(min(
-                max(Double(pan.y) - Double(event.scrollingDeltaY) / Double(max(bounds.height, 1)) * invZoom, -0.5),
-                0.5,
-            ))
-            pipeline.setZoom(zoom, pan: pan)
-            return
-        }
-        // SCROLL ROUTING (1× zoom) — gated on EXPLICIT canvas focus (`isActive == store.isFocused(id)`),
+        // ACTUAL-SIZE viewport: a two-finger scroll FORWARDS to the remote (scrolls the editor) — it is NOT
+        // hijacked to pan the viewport. Moving the viewport is the EDGE-PAN's job (hover-to-edge, RealVNC
+        // model). So there is no local crop-pan branch here.
+        //
+        // SCROLL ROUTING — gated on EXPLICIT canvas focus (`isActive == store.isFocused(id)`),
         // the desktop model the user asked for ("khi focus vào pane gui rồi, pane gui phải nuốt scroll"):
         //   • FOCUSED pane   → forward the scroll to the REMOTE window (you clicked in, you're scrolling
         //     its content). Forwarding is a UDP send — no `@Observable` mutation, so it never blocks the
@@ -686,6 +817,7 @@ final class MetalLayerBackedView: NSView {
 
     override func mouseExited(with _: NSEvent) {
         pointerInside = false
+        stopEdgePan() // pointer left the pane → stop auto-scrolling the crop
         NSCursor.arrow.set() // leaving the pane → restore the normal pointer
     }
 
@@ -701,7 +833,12 @@ final class MetalLayerBackedView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { window?.makeFirstResponder(self) }
+        // FOCUS-STEALING FIX: only grab first responder when THIS pane is the ACTIVE one and we are not
+        // already the responder. An unconditional makeFirstResponder on every NSView mount let the
+        // LAST-mounted video pane steal the keyboard regardless of workspace focus (and thrash the
+        // responder on tab switches). Mirrors the terminal pane's `isFocusedPane` guard.
+        guard isActive, let window, window.firstResponder !== self else { return }
+        window.makeFirstResponder(self)
     }
 
     /// Restore the arrow when the view leaves its window (drag-out / pane close): a teardown that skipped
@@ -710,6 +847,7 @@ final class MetalLayerBackedView: NSView {
         super.viewWillMove(toWindow: newWindow)
         if newWindow == nil { if pointerInside { NSCursor.arrow.set() }
             pointerInside = false
+            stopEdgePan() // teardown — never leave a timer firing on a detached view
         }
     }
 
@@ -767,6 +905,9 @@ struct MetalVideoLayerView: UIViewRepresentable {
     // Signature parity with the macOS representable (the shared `VideoWindowView.body` passes it).
     // iOS has no host-key-injection sink (paste-as-keystrokes is macOS-only), so this is unused here.
     var onKeyInjectorReady: ((((UInt16, Bool, Bool) -> Void)?) -> Void)?
+    // Signature parity with the macOS representable. iOS resizes the remote window via pinch, not a
+    // grip drag forwarded to the host, so the resize sink is accepted + ignored here.
+    var onResizeInjectorReady: ((((UInt8, Double, Double) -> Void)?) -> Void)?
 
     func makeUIView(context _: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()

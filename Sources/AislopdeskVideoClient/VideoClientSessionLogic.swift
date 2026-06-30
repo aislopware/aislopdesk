@@ -476,7 +476,22 @@ public struct InputEventEncoder: Sendable {
         zoom: Double = 1,
         pan: VideoPoint = VideoPoint(x: 0, y: 0),
         mode: VideoContentMode = .fit,
+        viewportCrop: VideoRect? = nil,
     ) -> VideoPoint {
+        // ACTUAL-SIZE VIEWPORT (per-axis 1:1 crop, 2026-06-30): when the macOS pane shows the remote window
+        // at its actual point size, the renderer maps a texture sub-rect `viewportCrop` (UV origin + size,
+        // per-axis) onto the WHOLE drawable (fit = (1,1), no letterbox / scalar-zoom). The inverse is a
+        // plain per-axis affine — view fraction → UV — that matches the renderer's `crop.xy + uv·crop.zw`
+        // exactly, so a click lands on the right host pixel even with independent H/V scales. Additive +
+        // default-nil ⇒ the fit/zoom/pan path below (golden-pinned, byte-identical) is untouched.
+        if let crop = viewportCrop {
+            let u = layerSize.width > 0 ? viewPoint.x / layerSize.width : 0
+            let v = layerSize.height > 0 ? viewPoint.y / layerSize.height : 0
+            // keep mul+add separate — FMA breaks bit-exact parity
+            let sx = crop.origin.x + u * crop.size.width
+            let sy = crop.origin.y + v * crop.size.height
+            return VideoPoint(x: min(max(sx, 0), 1), y: min(max(sy, 0), 1))
+        }
         let r = AspectFit.displayedVideoRect(viewSize: layerSize, videoNativeSize: videoNativeSize, mode: mode)
         // 0..1 over the DISPLAYED (un-zoomed) video rect; degenerate rect → 0.
         let u = r.size.width > 0 ? (viewPoint.x - r.origin.x) / r.size.width : 0
@@ -507,6 +522,7 @@ public struct InputEventEncoder: Sendable {
         zoom: Double = 1,
         pan: VideoPoint = VideoPoint(x: 0, y: 0),
         mode: VideoContentMode = .fit,
+        viewportCrop: VideoRect? = nil,
     ) -> InputEvent {
         .mouseMove(
             normalized: Self
@@ -517,6 +533,7 @@ public struct InputEventEncoder: Sendable {
                     zoom: zoom,
                     pan: pan,
                     mode: mode,
+                    viewportCrop: viewportCrop,
                 ),
             tag: takeTag(),
         )
@@ -532,6 +549,7 @@ public struct InputEventEncoder: Sendable {
         zoom: Double = 1,
         pan: VideoPoint = VideoPoint(x: 0, y: 0),
         mode: VideoContentMode = .fit,
+        viewportCrop: VideoRect? = nil,
     ) -> InputEvent {
         .mouseDown(
             button: button,
@@ -543,6 +561,7 @@ public struct InputEventEncoder: Sendable {
                     zoom: zoom,
                     pan: pan,
                     mode: mode,
+                    viewportCrop: viewportCrop,
                 ),
             clickCount: clickCount,
             modifiers: modifiers,
@@ -560,6 +579,7 @@ public struct InputEventEncoder: Sendable {
         zoom: Double = 1,
         pan: VideoPoint = VideoPoint(x: 0, y: 0),
         mode: VideoContentMode = .fit,
+        viewportCrop: VideoRect? = nil,
     ) -> InputEvent {
         .mouseUp(
             button: button,
@@ -571,6 +591,7 @@ public struct InputEventEncoder: Sendable {
                     zoom: zoom,
                     pan: pan,
                     mode: mode,
+                    viewportCrop: viewportCrop,
                 ),
             clickCount: clickCount,
             modifiers: modifiers,
@@ -590,6 +611,7 @@ public struct InputEventEncoder: Sendable {
         zoom: Double = 1,
         pan: VideoPoint = VideoPoint(x: 0, y: 0),
         mode: VideoContentMode = .fit,
+        viewportCrop: VideoRect? = nil,
     ) -> InputEvent {
         .mouseDrag(
             button: button,
@@ -601,6 +623,7 @@ public struct InputEventEncoder: Sendable {
                     zoom: zoom,
                     pan: pan,
                     mode: mode,
+                    viewportCrop: viewportCrop,
                 ),
             clickCount: clickCount,
             modifiers: modifiers,
@@ -620,6 +643,7 @@ public struct InputEventEncoder: Sendable {
         zoom: Double = 1,
         pan: VideoPoint = VideoPoint(x: 0, y: 0),
         mode: VideoContentMode = .fit,
+        viewportCrop: VideoRect? = nil,
     ) -> InputEvent {
         .scroll(
             dx: dx,
@@ -632,6 +656,7 @@ public struct InputEventEncoder: Sendable {
                     zoom: zoom,
                     pan: pan,
                     mode: mode,
+                    viewportCrop: viewportCrop,
                 ),
             scrollPhase: scrollPhase,
             momentumPhase: momentumPhase,

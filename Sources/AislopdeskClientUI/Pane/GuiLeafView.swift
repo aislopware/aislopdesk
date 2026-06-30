@@ -42,6 +42,9 @@ struct GuiLeafView: View {
     let store: WorkspaceStore
     /// This pane's id — the activation + focus key.
     let paneID: PaneID
+    /// RESIZE GRIP: tracks whether a grip drag is in progress so the first `.onChanged` emits the
+    /// drag-began phase (snapshots the host-window base in the session) exactly once.
+    @State private var resizeDragging = false
     /// E21 WI-4 (ES-E21-2): the app-global connection host (`ConnectionTarget.host`) for the bottom status
     /// bar's right field — empty when not yet connected / unknown (the strip then omits it). Passed down from
     /// ``PaneContainer`` (which already resolves the same value for the terminal leaf).
@@ -151,7 +154,19 @@ struct GuiLeafView: View {
         } else {
             switch display {
             case .live:
+                // FULL-PANE video: the live surface fills the pane edge-to-edge so the Metal view's
+                // tracking area covers the whole pane and the pointer→host coordinate mapping is correct
+                // everywhere (an inset/gutter left a dead background border OUTSIDE the tracking area, so
+                // the host cursor went stale and clicks near the edge mismapped). The stream `.fit`-letter-
+                // boxes inside; the remote window keeps its own size (no host-follow resize — see
+                // `AislopdeskVideoClientSession.windowFollowsPane`).
+                //
+                // RESIZE GRIP: a small bottom-right handle whose drag resizes the REMOTE app window to an
+                // absolute target (the proper, stable replacement for dragging the window's own corner —
+                // which slips once the pointer mapping is accurate). It's anchored to the PANE corner, so
+                // the live letterbox reflow can't move it out from under the cursor.
                 liveSurface
+                    .overlay(alignment: .bottomTrailing) { resizeGrip }
             case .entryForm:
                 if let model {
                     RemoteWindowPickerView(model: model, onActivate: { store.focusPaneTree(paneID) })
@@ -184,8 +199,40 @@ struct GuiLeafView: View {
                     onCanvasScroll: { _ in },
                     onStreamNativeSize: nil,
                     bindKeyInjector: { [weak model] sink in model?.keyInjector = sink },
+                    bindResizeInjector: { [weak model] sink in model?.resizeInjector = sink },
                 ),
             )
+        }
+    }
+
+    /// RESIZE GRIP — the bottom-right drag handle. Shown only once the live session has published a
+    /// resize sink (``RemoteWindowModel/canResizeWindow``; withheld while read-only). A drag emits the
+    /// cumulative LOCAL-point translation to the session, which maps it through the `.fit` inverse to an
+    /// absolute host-window target and debounce-requests the resize on settle.
+    @ViewBuilder private var resizeGrip: some View {
+        if let model, model.canResizeWindow {
+            Image(systemSymbol: .arrowUpLeftAndArrowDownRight)
+                .font(.system(size: Otty.Typeface.small, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 20, height: 20)
+                .background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall))
+                .padding(3)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 1, coordinateSpace: .local)
+                        .onChanged { value in
+                            if !resizeDragging {
+                                resizeDragging = true
+                                model.resizeInjector?(0, 0, 0) // phase 0: began → snapshot base
+                            }
+                            model.resizeInjector?(1, Double(value.translation.width), Double(value.translation.height))
+                        }
+                        .onEnded { value in
+                            model.resizeInjector?(2, Double(value.translation.width), Double(value.translation.height))
+                            resizeDragging = false
+                        },
+                )
+                .help("Kéo để đổi kích thước cửa sổ remote")
         }
     }
 

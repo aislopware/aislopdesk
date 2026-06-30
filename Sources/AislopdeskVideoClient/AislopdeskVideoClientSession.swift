@@ -76,6 +76,7 @@ public actor AislopdeskVideoClientSession {
             zoom: zoom,
             pan: pan,
             mode: contentMode,
+            viewportCrop: viewportCrop,
         )
         dbg("\(kind) view=(\(Int(viewPoint.x)),\(Int(viewPoint.y))) "
             + "layer=\(Int(layerSize.width))x\(Int(layerSize.height)) "
@@ -146,6 +147,14 @@ public actor AislopdeskVideoClientSession {
         /// which alpha-masks everything OUTSIDE the rects (a popup overhanging the window floats over
         /// the canvas instead of a black bar). An EMPTY list clears the mask. `nil` ⇒ no renderer.
         public var applyContentMask: (@Sendable ([MaskRect]) -> Void)?
+        /// ACTUAL-SIZE VIEWPORT (2026-06-30, RealVNC-mobile): fired UNCONDITIONALLY whenever the decoded
+        /// size changes (first frame + every host-/grip-driven resize) carrying the HOST WINDOW's POINT
+        /// size — the SAME value ``notifyStreamNativePoints`` carries, but WITHOUT the 1:1-pane-snap
+        /// semantics (which resizes the pane). The macOS view uses it to auto-pick a zoom that renders the
+        /// remote window at its ACTUAL point size inside a FIXED pane viewport (edge-pan reaches the
+        /// overflow), so a tiled GUI pane no longer scales the whole window to fit. `nil` ⇒ no view wants
+        /// it (iOS uses manual pinch; standalone has no canvas) → byte-identical to before.
+        public var notifyDecodedPoints: (@Sendable (VideoSize) -> Void)?
         @preconcurrency
         public init(
             submitDecodedFrame: @escaping @Sendable (CVImageBuffer) -> Void,
@@ -159,6 +168,7 @@ public actor AislopdeskVideoClientSession {
             notePlayoutJitter: (@Sendable (Double) -> Void)? = nil,
             applyScrollOffset: (@Sendable (Int16, Int16, UInt16, UInt16) -> Void)? = nil,
             applyContentMask: (@Sendable ([MaskRect]) -> Void)? = nil,
+            notifyDecodedPoints: (@Sendable (VideoSize) -> Void)? = nil,
         ) {
             self.submitDecodedFrame = submitDecodedFrame
             self.applyCursor = applyCursor
@@ -171,6 +181,7 @@ public actor AislopdeskVideoClientSession {
             self.notePlayoutJitter = notePlayoutJitter
             self.applyScrollOffset = applyScrollOffset
             self.applyContentMask = applyContentMask
+            self.notifyDecodedPoints = notifyDecodedPoints
         }
     }
 
@@ -251,6 +262,12 @@ public actor AislopdeskVideoClientSession {
     /// (kept in lock-step with the renderer via ``setContentMode(_:)`` — the pipeline calls
     /// both). Default `.fit`.
     private var contentMode: VideoContentMode = .fit
+    /// ACTUAL-SIZE VIEWPORT (per-axis 1:1 crop, 2026-06-30). When non-nil the macOS pane renders the remote
+    /// window at its actual point size: the renderer maps this texture sub-rect (UV origin + size, per-axis)
+    /// onto the WHOLE drawable, OVERRIDING the fit/zoom/pan path. Stored so the input encoder inverts the
+    /// EXACT SAME per-axis crop (clicks land right). `nil` ⇒ the scalar fit/zoom/pan path (unchanged). Kept
+    /// in lock-step with `renderer.viewportCrop` via ``setViewportCrop(_:)`` (the pipeline calls both).
+    private var viewportCrop: VideoRect?
     /// The most recent host cursor position, re-applied whenever the scale changes so
     /// a layout/resize re-places the overlay without waiting for the next cursor packet.
     private var lastCursorUpdate: CursorUpdate?
@@ -284,6 +301,20 @@ public actor AislopdeskVideoClientSession {
     /// The last layer size seen, so a no-op layout pass (same size) does not reset the settle
     /// clock (which would prevent the size from ever settling under repeated identical passes).
     private var lastSeenSize: VideoSize?
+    /// USER RESIZE GRIP: the remote window's POINT size captured at the grip-drag START, so each
+    /// drag step computes an ABSOLUTE target from a stable base (not accumulating drift). `nil` ⇒
+    /// no drag in progress.
+    private var userResizeBase: VideoSize?
+    /// Wall-clock of the last grip resize actually SENT, so a live drag emits at a steady throttle
+    /// (≈ ``userResizeMinInterval``) instead of flooding the host with one AX-resize per drag frame —
+    /// the window resizes LIVE as you drag (not only on release) without overrunning the host.
+    private var lastUserResizeEmit = Date.distantPast
+    /// Min gap between live grip resize requests (≈16/s) — smooth enough to feel live, light enough
+    /// that the host's AX window resize keeps up.
+    private static let userResizeMinInterval: TimeInterval = 0.06
+    /// Smallest remote-window point size the resize grip will request (so a drag can't collapse the
+    /// window to nothing); the host app's own min size still wins above this.
+    private static let minResizePoints: Double = 160
     /// The capture size the host acked for an in-session resize, staged until a decoded
     /// `CVPixelBuffer` actually arrives at it (frame-gated adoption). `nil` ⇒ none pending.
     private var pendingCaptureSize: VideoSize?
@@ -383,6 +414,13 @@ public actor AislopdeskVideoClientSession {
     /// output in the NetworkStats report. PURE TELEMETRY: the host's gradient cut path is its own
     /// default-OFF gate (`AISLOPDESK_ABR_GRAD`), so with this on the host merely logs trend fields.
     private static let trendEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_TREND"] != "0"
+    /// WINDOW-FOLLOWS-PANE (host-follow resize), DEFAULT-OFF. When the pane is resized the client used
+    /// to emit a `resizeRequest` so the host AX-resized its real window to match — but with in-place
+    /// (no-VD) capture the user wants the remote window to KEEP its own size; the pane just fits/letter-
+    /// boxes the fixed stream (and edge-pans when zoomed). Only `AISLOPDESK_GUI_WINDOW_FOLLOWS_PANE=1`
+    /// re-enables the old host-follow behaviour.
+    private static let windowFollowsPane =
+        ProcessInfo.processInfo.environment["AISLOPDESK_GUI_WINDOW_FOLLOWS_PANE"] == "1"
     /// The newest `hostSendTsMillis` OBSERVED on a video fragment (0 = none / telemetry off). An
     /// OPAQUE token the client echoes back; never compared against the client clock.
     private var latestHostSendTs: UInt32 = 0
@@ -607,7 +645,9 @@ public actor AislopdeskVideoClientSession {
             "setLayerSize → \(Int(size.width))x\(Int(size.height)) (native=\(Int(decodedSize.width))x\(Int(decodedSize.height)))",
         )
         reapplyCursor()
-        maybeRequestResize(for: size)
+        // Host-follow resize is OFF by default (the remote window keeps its own size; see
+        // `windowFollowsPane`). The layer size above still updates the cursor scale + input mapping.
+        if Self.windowFollowsPane { maybeRequestResize(for: size) }
     }
 
     /// 1:1 PANE SNAP: the view snapped its pane so the stream renders pixel-for-pixel (`size` =
@@ -619,6 +659,63 @@ public actor AislopdeskVideoClientSession {
     public func noteLayerSizeAdopted(_ size: VideoSize) {
         resizeDebounce.noteAdopted(size)
         dbg("resize: pane snapped to 1:1 — debounce rebased on \(Int(size.width))x\(Int(size.height)) (no request)")
+    }
+
+    /// USER RESIZE GRIP — drag START. Snapshots the remote window's CURRENT point size as the base
+    /// for the drag. `decodedSize` holds the live host-window point size (kept fresh by `noteDecoded`,
+    /// incl. host-initiated resizes), so it IS the current window size; capture it so every step maps
+    /// an absolute target from a stable origin.
+    public func userResizeBegan() {
+        userResizeBase = decodedSize
+        dbg("resize-grip: began at base \(Int(decodedSize.width))x\(Int(decodedSize.height))pt")
+    }
+
+    /// USER RESIZE GRIP — drag STEP. `tx`/`ty` are the cumulative drag translation in LOCAL pane
+    /// points (SwiftUI: +x right, +y down). Convert to host points through the EXACT inverse of the
+    /// `.fit` letterbox (host-points-per-local-point = base / displayedVideoRect), add to the base,
+    /// clamp to a sane minimum, and route the absolute target through the SAME settle debounce as a
+    /// host-follow resize (so the host AX-resizes once the drag pauses/ends, not on every step). The
+    /// grip is anchored to the PANE corner (not the streamed window corner), so the live letterbox
+    /// reflow from `noteDecoded` never makes it slip — the instability that made corner-dragging the
+    /// window's own handle impossible.
+    public func userResize(translationX tx: Double, translationY ty: Double, final: Bool) {
+        defer { if final { userResizeBase = nil } }
+        guard stateMachine.mediaFlowing, let base = userResizeBase, base.width > 1, base.height > 1 else { return }
+        // keep mul/div + add separate (no FMA) — host-points per local-point, then add the delta.
+        let gx: Double
+        let gy: Double
+        if let crop = viewportCrop, layerSize.width > 1, layerSize.height > 1 {
+            // ACTUAL-SIZE viewport: the displayed scale is the per-axis crop — host-points per local-point =
+            // (crop UV size · window points) / pane points. At 1:1 this is ≈1; a pinch-zoomed crop shrinks
+            // it (one drag point = fewer host points), so the grip stays faithful to what's on screen.
+            gx = crop.size.width * decodedSize.width / layerSize.width
+            gy = crop.size.height * decodedSize.height / layerSize.height
+        } else {
+            let r = AspectFit.displayedVideoRect(viewSize: layerSize, videoNativeSize: decodedSize, mode: contentMode)
+            guard r.size.width > 1, r.size.height > 1 else { return }
+            // `displayedVideoRect` is the UN-zoomed letterbox/cover rect; the .fit fallback auto-zooms the
+            // stream (renderer crops by `zoom`), so the on-screen content is `displayedRect·zoom`. Divide the
+            // gain by `zoom` so one drag point maps to one host point at the displayed scale.
+            let z = Double.maximum(1, zoom)
+            gx = base.width / r.size.width / z
+            gy = base.height / r.size.height / z
+        }
+        let target = VideoSize(
+            width: Double.maximum(Self.minResizePoints, base.width + tx * gx),
+            height: Double.maximum(Self.minResizePoints, base.height + ty * gy),
+        )
+        // LIVE resize (the "no feedback until release" fix): emit directly as the drag moves, throttled to
+        // ~16/s, so the remote window visibly resizes UNDER the drag instead of only on release. The final
+        // step always emits the settled size (bypassing the throttle) so the end size is never dropped.
+        let now = Date()
+        if !final, now.timeIntervalSince(lastUserResizeEmit) < Self.userResizeMinInterval { return }
+        guard target != resizeDebounce.lastRequested else { return } // nothing changed → don't respam
+        lastUserResizeEmit = now
+        let epoch = resizeDebounce.noteRequested(target)
+        dbg(
+            "resize-grip: \(final ? "final" : "live") → resizeRequest \(Int(target.width))x\(Int(target.height)) epoch=\(epoch)",
+        )
+        transport.send(VideoControlMessage.resizeRequest(desired: target, epoch: epoch).encode(), on: .control)
     }
 
     /// Drives the in-session resize debounce on a layer-size change (env-gated). A real size
@@ -708,6 +805,14 @@ public actor AislopdeskVideoClientSession {
     public func setContentMode(_ mode: VideoContentMode) {
         contentMode = mode
         dbg("setContentMode → \(mode)")
+        reapplyCursor()
+    }
+
+    /// ACTUAL-SIZE VIEWPORT: store the per-axis 1:1 crop so the input encoder inverts the SAME transform
+    /// the renderer applies. `nil` restores the scalar fit/zoom/pan mapping. The pipeline calls this in
+    /// lock-step with `renderer.viewportCrop`. Re-places the cursor (no-op on macOS — local shape).
+    public func setViewportCrop(_ crop: VideoRect?) {
+        viewportCrop = crop
         reapplyCursor()
     }
 
@@ -1085,6 +1190,22 @@ public actor AislopdeskVideoClientSession {
                 pixelSize: decoded, captureScale: streamCaptureScale ?? 1,
             )
             gui.notifyStreamNativePoints?(nativePoints)
+            // ACTUAL-SIZE VIEWPORT: surface the host window's POINT size to the view UNCONDITIONALLY (no
+            // snap coupling) so the macOS pane can auto-zoom the stream to 1:1 inside a fixed viewport.
+            gui.notifyDecodedPoints?(nativePoints)
+            // HOST-INITIATED RESIZE denominator refresh (the "cursor lệch khi resize" fix):
+            // `decodedSize` is the aspect-fit DENOMINATOR the pointer/cursor mapping inverts, but it is
+            // otherwise only adopted on a CLIENT-initiated resize ack (`pendingCaptureSize`, below). When
+            // the remote window is resized by ANY other means — the user dragging the window's own corner,
+            // an app-driven resize — no ack is pending, so the denominator would stay STALE at the old
+            // size while the renderer already draws the new frame, and `InputEventEncoder.normalize`
+            // letterboxes against the wrong aspect → clicks land offset (worse the more the aspect
+            // changed). Adopt the live native point size as the denominator whenever NO client resize is
+            // in flight, so input/cursor mapping always matches what is on screen.
+            if pendingCaptureSize == nil, nativePoints.width > 0, nativePoints.height > 0 {
+                decodedSize = nativePoints
+                reapplyCursor()
+            }
         }
         guard let pending = pendingCaptureSize else { return }
         // Adopt only when the decoded buffer is the genuinely-NEW size (aspect match AND a real
@@ -1234,6 +1355,7 @@ public actor AislopdeskVideoClientSession {
             zoom: zoom,
             pan: pan,
             mode: contentMode,
+            viewportCrop: viewportCrop,
         ))
     }
 
@@ -1254,6 +1376,7 @@ public actor AislopdeskVideoClientSession {
             zoom: zoom,
             pan: pan,
             mode: contentMode,
+            viewportCrop: viewportCrop,
         ))
     }
 
@@ -1274,6 +1397,7 @@ public actor AislopdeskVideoClientSession {
             zoom: zoom,
             pan: pan,
             mode: contentMode,
+            viewportCrop: viewportCrop,
         )
         for _ in 0..<Self.redundantUpCount { sendInput(up) }
     }
@@ -1298,6 +1422,7 @@ public actor AislopdeskVideoClientSession {
             zoom: zoom,
             pan: pan,
             mode: contentMode,
+            viewportCrop: viewportCrop,
         ))
     }
 
@@ -1321,6 +1446,7 @@ public actor AislopdeskVideoClientSession {
             zoom: zoom,
             pan: pan,
             mode: contentMode,
+            viewportCrop: viewportCrop,
         ))
     }
 
@@ -1452,7 +1578,13 @@ public actor AislopdeskVideoClientSession {
         // window's POINT size, fired from `noteDecoded` on the first frame), so the host window
         // is never disturbed at connect — "pane resizes to match the virtual display", not the
         // other way around.
-        if gui.notifyStreamNativePoints == nil,
+        // KEEP-ORIGINAL-SIZE (no-VD in-place capture, task #4): the connect-time host-follow negotiation
+        // AX-resizes the remote window to the pane's size for a 1:1 sharp capture — but with in-place
+        // capture the user wants the remote window to KEEP its own size (the pane just `.fit`-letterboxes
+        // it and pinch-zoom/edge-pan reach detail). Left on, it also BOUNCED the window back to the pane
+        // size right after a manual corner-drag resize, fighting the user. So it now runs ONLY when the
+        // host-follow opt-in (`windowFollowsPane`) is set; default-off keeps the window untouched.
+        if Self.windowFollowsPane, gui.notifyStreamNativePoints == nil,
            abs(layerSize.width - captureSize.width) >= 8 || abs(layerSize.height - captureSize.height) >= 8
         {
             dbg(

@@ -97,6 +97,7 @@ struct ClientAppMain {
                     onCanvasScroll: paneContext.onCanvasScroll,
                     onStreamNativeSize: paneContext.onStreamNativeSize,
                     onKeyInjectorReady: paneContext.onKeyInjectorReady,
+                    onResizeInjectorReady: paneContext.onResizeInjectorReady,
                 ))
             }
             return AnyView(VideoWindowView(title: descriptor.title))
