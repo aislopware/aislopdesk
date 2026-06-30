@@ -92,7 +92,9 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         //    inset-grouped/rounded selection, which is the "native SwiftUI rounded corners" look we are
         //    replacing. A plain item lets `NavigatorColumn` paint otty's flat warm panel + white-card rows.
         //    Holding priority above the content's default so window-resize grows the content, not the sidebar.
-        let navigator = NSHostingController(rootView: NavigatorColumn(store: store, preferences: preferences))
+        let navigator = NSHostingController(rootView: NavigatorColumn(
+            store: store, preferences: preferences, connection: connection, onConnect: onConnect,
+        ))
         let sidebarItem = NSSplitViewItem(viewController: navigator)
         sidebarItem.minimumThickness = Self.defaultSidebarWidth
         sidebarItem.maximumThickness = 360

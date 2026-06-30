@@ -214,7 +214,9 @@ public struct WorkspaceRootView: View {
             columnVisibility: sidebarColumnVisibility,
             preferredCompactColumn: detailsCompactColumnBinding,
         ) {
-            NavigatorColumn(store: store, preferences: preferencesStore)
+            NavigatorColumn(
+                store: store, preferences: preferencesStore, connection: connection, onConnect: openConnect,
+            )
         } content: {
             ContentColumn(store: store, connection: connection, chrome: chrome)
         } detail: {

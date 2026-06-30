@@ -296,6 +296,20 @@ final class RustCodecWireVectorTests: XCTestCase {
         XCTAssertEqual(try VideoControlMessage.decode(Data(emptyExpected)), empty)
     }
 
+    /// `displayMax` (type 15): `[type][maxWidth u16][maxHeight u16]` — the captured window's display
+    /// bounds in POINTS, so the client's "Resize…" popover caps its fields. A hand-computed vector pins
+    /// the field order (width before height) + big-endian byte order across a refactor.
+    func testVideoControlDisplayMaxWireVector() throws {
+        let msg = VideoControlMessage.displayMax(width: 1920, height: 1080)
+        let expected: [UInt8] = [
+            0x0F, // type = displayMax
+            0x07, 0x80, // maxWidth  = 1920
+            0x04, 0x38, // maxHeight = 1080
+        ]
+        XCTAssertEqual(Array(msg.encode()), expected)
+        XCTAssertEqual(try VideoControlMessage.decode(Data(expected)), msg)
+    }
+
     // MARK: fuzz — arbitrary bytes must never crash the Rust-backed decoders.
 
     func testDecodersNeverCrashOnRandomBytes() {

@@ -213,6 +213,44 @@ final class VideoClientStateMachineTests: XCTestCase {
         XCTAssertTrue(sm.handleControl(.contentMask([MaskRect(x: 0, y: 0, width: 1, height: 1)])).isEmpty)
     }
 
+    // MARK: Display max — host→client resize-ceiling report (host-window-resize feature)
+
+    func testDisplayMaxWhileStreamingEmitsApplyDisplayMax() {
+        var sm = makeSM()
+        _ = sm.start()
+        _ = sm.handleControl(.helloAck(
+            accepted: true,
+            streamID: 1,
+            captureWidth: 800,
+            captureHeight: 600,
+            windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600),
+            fullRange: false,
+        ))
+        XCTAssertEqual(
+            sm.handleControl(.displayMax(width: 1920, height: 1080)),
+            [.applyDisplayMax(VideoSize(width: 1920, height: 1080))],
+        )
+        XCTAssertEqual(sm.state, .streaming, "a display-max report does not change session state")
+    }
+
+    func testDisplayMaxIgnoredWhenNotStreamingOrDegenerate() {
+        var sm = makeSM()
+        _ = sm.start()
+        // Pre-streaming: a stray display-max is inert.
+        XCTAssertEqual(sm.state, .connecting)
+        XCTAssertTrue(sm.handleControl(.displayMax(width: 1920, height: 1080)).isEmpty)
+        // Streaming but a degenerate zero dimension is dropped (never pin the popover cap to 0).
+        _ = sm.handleControl(.helloAck(
+            accepted: true,
+            streamID: 1,
+            captureWidth: 800,
+            captureHeight: 600,
+            windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600),
+            fullRange: false,
+        ))
+        XCTAssertTrue(sm.handleControl(.displayMax(width: 0, height: 1080)).isEmpty)
+    }
+
     func testResizeRequestNeverActedOnByClient() {
         // The client never RECEIVES a resizeRequest (host→client only is resizeAck) — defensive.
         var sm = makeSM()

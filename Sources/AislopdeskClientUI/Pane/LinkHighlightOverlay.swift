@@ -5,8 +5,9 @@
 // it runs the pure ``TerminalLinkDetector`` over the live VISIBLE viewport rows (the WI-2
 // ``TerminalViewportSnapshotting`` seam) and draws a 1pt accent underline under every detected path / URL /
 // `file://` / `mailto:` span, mapped to points by the WI-2 ``TerminalCellMetrics`` (`full-path-hover.png`'s
-// `CREDITS.md` underline). The hover full-path preview itself is published by the renderer into the status bar
-// (``TerminalViewModel/hoveredLinkFullPath`` → ``StatusBarStrip``); this overlay only paints the underlines.
+// `CREDITS.md` underline). The renderer still resolves the hovered link's full path into the now-DORMANT
+// ``TerminalViewModel/hoveredLinkFullPath`` seam (its status-bar consumer was removed); this overlay only
+// paints the underlines.
 //
 // Honest ceiling: a headless / `BuildStatusPlaceholderView` surface does NOT conform to
 // ``TerminalViewportSnapshotting`` (the real surface hangs without a window server — CLAUDE.md rule #6), so

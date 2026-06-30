@@ -54,15 +54,62 @@ public final class RemoteWindowModel {
     /// model→store coupling — the model never learns the read-only state; the seam withholds the sink.
     public var keyInjector: ((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?
 
-    /// RESIZE GRIP: the live ``VideoWindowView`` publishes this once its session exists (and clears it,
-    /// `nil`, on teardown / when the pane is read-only). The pane's bottom-right grip calls it to drive an
-    /// absolute host-window resize. `(phase, tx, ty)` — phase `0` = drag began, `1` = changed, `2` = ended;
-    /// `tx`/`ty` = cumulative drag translation in LOCAL pane points. `nil` ⇒ no live sink (no grip shown).
-    public var resizeInjector: ((_ phase: UInt8, _ tx: Double, _ ty: Double) -> Void)?
+    /// RESIZE (numeric popover): the live ``VideoWindowView`` publishes this once its session exists (and
+    /// clears it, `nil`, on teardown / when the pane is read-only). The pane's "Resize…" popover calls it
+    /// to request an ABSOLUTE host-window POINT size; `(width, height)`. `nil` ⇒ no live sink (no button).
+    public var resizeInjector: ((_ width: Double, _ height: Double) -> Void)?
 
-    /// Whether the resize grip should be live: streaming AND a resize sink is wired (withheld while
-    /// read-only). `GuiLeafView` gates the grip overlay on this.
+    /// Whether the resize control should be live: streaming AND a resize sink is wired (withheld while
+    /// read-only). `GuiLeafView` gates the "Resize…" button on this.
     public var canResizeWindow: Bool { active != nil && resizeInjector != nil }
+
+    /// The remote window's CURRENT POINT size, pushed by the live ``VideoWindowView`` on the first decoded
+    /// frame and on every host-/popover-driven resize (via ``noteWindowGeometry(currentW:currentH:maxW:maxH:)``).
+    /// `nil` until the first frame. The "Resize…" popover pre-fills its width/height fields from it.
+    public private(set) var windowPointSize: CGSize?
+    /// The MAX resizable POINT size the host reported for the remote window (its display bounds), pushed by
+    /// the live ``VideoWindowView`` once the host's `displayMax` lands. `nil` until known — the popover then
+    /// leaves its fields uncapped (the host still clamps server-side). The host's resize-to-display-origin
+    /// makes this maximum actually reachable.
+    public private(set) var windowMaxPointSize: CGSize?
+
+    /// HOST-WINDOW RESIZE: the live view pushes the window's current + max resizable POINT sizes here. The
+    /// current size pre-fills the popover; the max (once known) caps its fields. A zero/absent max leaves the
+    /// max un-set (uncapped) — and once known it persists (a later zero-max push never clears it).
+    public func noteWindowGeometry(currentW: Double, currentH: Double, maxW: Double, maxH: Double) {
+        if currentW > 0, currentH > 0 { windowPointSize = CGSize(width: currentW, height: currentH) }
+        if maxW > 0, maxH > 0 { windowMaxPointSize = CGSize(width: maxW, height: maxH) }
+    }
+
+    /// Request an ABSOLUTE host-window POINT size from the "Resize…" popover (no-op when no sink is wired —
+    /// the pane is not streaming or is read-only). The host clamps to the window's achievable min/max and
+    /// re-anchors the window at its display origin so an up-to-display-max size takes.
+    public func resizeWindow(toWidth width: Double, height: Double) {
+        resizeInjector?(width, height)
+    }
+
+    /// VIEWPORT CONTROLS (client-side zoom + pan-lock): the live ``VideoWindowView`` publishes this once its
+    /// session exists (and clears it, `nil`, on teardown). The pane's bottom CONTROL bar drives it to zoom the
+    /// actual-size video sublayer in/out and to freeze the edge-hover auto-pan. These are pure CLIENT
+    /// compositor ops (they never touch the host), so — UNLIKE ``resizeInjector`` — the sink is NOT withheld
+    /// while the pane is read-only. The argument is a raw command byte (``ViewportCommand``) — a `UInt8` keeps
+    /// the app-target ``VideoWindowView`` decoupled from this module, exactly like ``resizeInjector``'s phase.
+    public var viewportInjector: ((_ command: UInt8) -> Void)?
+
+    /// Whether the footer viewport controls (zoom / lock) are live: streaming AND a viewport sink is wired.
+    public var canControlViewport: Bool { active != nil && viewportInjector != nil }
+
+    /// The client-viewport commands carried by ``viewportInjector`` as their raw `UInt8` (the structural-byte
+    /// contract shared with the app-target ``VideoWindowView``, which switches on the same values).
+    public enum ViewportCommand: UInt8, Sendable {
+        case zoomIn = 0
+        case zoomOut = 1
+        case reset = 2
+        case toggleLock = 3
+    }
+
+    /// Drive one client-viewport ``ViewportCommand`` through the live ``viewportInjector`` (no-op when no sink).
+    public func sendViewport(_ command: ViewportCommand) { viewportInjector?(command.rawValue) }
 
     /// Whether a paste-as-keystrokes is possible right now: streaming AND a live key sink is wired. A
     /// read-only pane has no sink (the seam withholds it, see ``keyInjector``), so this is `false` there.

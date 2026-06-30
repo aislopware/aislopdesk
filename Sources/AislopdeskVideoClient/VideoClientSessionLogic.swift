@@ -80,6 +80,10 @@ public struct VideoClientStateMachine: Sendable {
         /// overhanging the window floats over the canvas instead of a black bar). An EMPTY list
         /// clears the mask (whole frame opaque — the contracted/default state).
         case applyContentMask([MaskRect])
+        /// Adopt the host's reported MAXIMUM resizable POINT size (the bounds of the display the captured
+        /// window sits on). The session stores it and forwards it to the view → the "Resize…" popover caps
+        /// its width/height fields at it. Purely informational — no capture/decode effect.
+        case applyDisplayMax(VideoSize)
     }
 
     /// `start()` was called: send the hello, move to `.connecting`.
@@ -146,6 +150,12 @@ public struct VideoClientStateMachine: Sendable {
             // inert.
             guard state == .streaming else { return [] }
             return [.applyContentMask(rects)]
+        case let .displayMax(w, h):
+            // Host→client max resizable point size (the window's display bounds). Only meaningful while
+            // streaming; a stray/late report after teardown is inert. Zero/degenerate dimensions are
+            // dropped (the popover then stays uncapped) rather than pinning the field max to 0.
+            guard state == .streaming, w >= 1, h >= 1 else { return [] }
+            return [.applyDisplayMax(VideoSize(width: Double(w), height: Double(h)))]
         case .hello,
              .resizeRequest,
              .keepalive,

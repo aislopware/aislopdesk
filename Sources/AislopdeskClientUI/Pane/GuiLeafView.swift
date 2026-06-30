@@ -42,13 +42,10 @@ struct GuiLeafView: View {
     let store: WorkspaceStore
     /// This pane's id — the activation + focus key.
     let paneID: PaneID
-    /// RESIZE GRIP: tracks whether a grip drag is in progress so the first `.onChanged` emits the
-    /// drag-began phase (snapshots the host-window base in the session) exactly once.
-    @State private var resizeDragging = false
-    /// E21 WI-4 (ES-E21-2): the app-global connection host (`ConnectionTarget.host`) for the bottom status
-    /// bar's right field — empty when not yet connected / unknown (the strip then omits it). Passed down from
-    /// ``PaneContainer`` (which already resolves the same value for the terminal leaf).
-    var host: String = ""
+    /// "LOCK POSITION" button state — mirrored locally so the footer lock icon reflects on/off. The actual
+    /// edge-pan freeze lives in the video view (toggled via ``RemoteWindowModel/sendViewport(_:)``); this stays
+    /// in sync 1:1 with the toggle and resets with the pane.
+    @State private var panLocked = false
 
     /// The pane's remote-window model (picker/open/close/keyInjector). `nil` for a non-video handle.
     private var model: RemoteWindowModel? { live?.remoteWindow }
@@ -69,21 +66,16 @@ struct GuiLeafView: View {
         VStack(spacing: 0) {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // E21 WI-4 (ES-E21-2): the SAME flat ≤20pt bottom status bar a terminal leaf carries, so a focused
-            // `.remoteGUI` / `.systemDialog` pane is a first-class peer with the host + kind label visible. The
-            // pure ``StatusBarContent`` model gives a video pane an EMPTY cwd and OMITS the exit badge
-            // (``StatusBarContent/exitBadge(lastCommand:kind:)`` returns `.none` for a non-terminal kind), so only
-            // the "remote" / "dialog" label + the host render. `model: nil` (a video pane has no
-            // ``TerminalViewModel`` — the badge then follows the kind alone) and `hoverFullPath: nil` (no ⌘-hover
-            // links on a video surface). Gated `!staticMirror && !hideStatusBar`, exactly like ``TerminalLeafView``.
-            if showStatusBar {
-                StatusBarStrip(
-                    model: nil,
-                    cwd: nil,
-                    kind: paneKind,
-                    host: host,
-                    hoverFullPath: nil,
-                )
+                // Inner padding so the remote surface doesn't sit flush against the pane edges / the split
+                // divider (issue: "thêm padding vào các pane"). The Metal-hosting view is sized to this PADDED
+                // frame, so its pointer→host coordinate mapping (relative to the view bounds) stays consistent.
+                .padding(Otty.Metric.space2)
+            // WINDOW-PANE CONTROL BAR (issue 5): the bottom bar carries the window CONTROLS — resize (moved out
+            // of the pane CONTENT into the footer), lock-position (freeze the edge-hover auto-pan), and zoom
+            // in / out / reset — NOT a status strip. Host + connection state now live ONCE in the sidebar
+            // header, so a video pane no longer duplicates them here. Shown only while the live surface is up.
+            if showControlBar {
+                GuiPaneControlBar(model: model, panLocked: $panLocked)
             }
         }
         .background(NativePaneColor.terminalBackground)
@@ -132,19 +124,11 @@ struct GuiLeafView: View {
         !staticMirror && isReadOnly
     }
 
-    /// E21 WI-4: whether the bottom status bar mounts on this video pane — NOT the static-mirror snapshot path
-    /// and the `Hide Status Bar` setting (``SettingsKey/hideStatusBarEnabled``) off. Mirrors ``TerminalLeafView``'s
-    /// gate minus the terminal-model requirement (a video pane has no `terminalModel`), so the strip rides the
-    /// live surface, the in-pane picker AND the cap-gated placeholder — the host + kind label apply in all three.
-    private var showStatusBar: Bool {
-        !staticMirror && !SettingsKey.hideStatusBarEnabled
-    }
-
-    /// E21 WI-4: the pane's kind for the status-bar label — the live session's kind once it materializes, else
-    /// the spec's kind from the store (so a not-yet-live `.systemDialog` still reads "dialog"), defaulting to
-    /// `.remoteGUI` (the only kinds routed to this leaf are `.remoteGUI` / `.systemDialog`).
-    private var paneKind: PaneKind {
-        live?.kind ?? store.tree.activeSession?.specs[paneID]?.kind ?? .remoteGUI
+    /// Whether the bottom CONTROL bar mounts on this video pane — only while the LIVE surface is up (a live
+    /// descriptor exists) and NOT on the static-mirror snapshot path. The bar's controls (resize / lock / zoom)
+    /// are meaningful only against a live stream, so the picker / cap-gated placeholder states show no footer.
+    private var showControlBar: Bool {
+        !staticMirror && model?.active != nil
     }
 
     @ViewBuilder private var content: some View {
@@ -154,19 +138,13 @@ struct GuiLeafView: View {
         } else {
             switch display {
             case .live:
-                // FULL-PANE video: the live surface fills the pane edge-to-edge so the Metal view's
-                // tracking area covers the whole pane and the pointer→host coordinate mapping is correct
-                // everywhere (an inset/gutter left a dead background border OUTSIDE the tracking area, so
-                // the host cursor went stale and clicks near the edge mismapped). The stream `.fit`-letter-
-                // boxes inside; the remote window keeps its own size (no host-follow resize — see
-                // `AislopdeskVideoClientSession.windowFollowsPane`).
-                //
-                // RESIZE GRIP: a small bottom-right handle whose drag resizes the REMOTE app window to an
-                // absolute target (the proper, stable replacement for dragging the window's own corner —
-                // which slips once the pointer mapping is accurate). It's anchored to the PANE corner, so
-                // the live letterbox reflow can't move it out from under the cursor.
+                // The live surface fills its (now padded) leaf rect: the Metal-hosting view is sized to that
+                // rect, so its tracking area + pointer→host coordinate mapping (relative to the view bounds)
+                // stays correct across the whole surface. The stream `.fit`-letterboxes inside; the remote
+                // window keeps its own size (no host-follow resize — see
+                // `AislopdeskVideoClientSession.windowFollowsPane`). The resize affordance is no longer an
+                // in-content corner grip — it moved to the bottom CONTROL bar (`GuiPaneControlBar`).
                 liveSurface
-                    .overlay(alignment: .bottomTrailing) { resizeGrip }
             case .entryForm:
                 if let model {
                     RemoteWindowPickerView(model: model, onActivate: { store.focusPaneTree(paneID) })
@@ -200,39 +178,16 @@ struct GuiLeafView: View {
                     onStreamNativeSize: nil,
                     bindKeyInjector: { [weak model] sink in model?.keyInjector = sink },
                     bindResizeInjector: { [weak model] sink in model?.resizeInjector = sink },
+                    // VIEWPORT CONTROLS (issue 5): zoom / pan-lock — pure CLIENT compositor ops, so the seam
+                    // binds this sink even on a read-only pane (unlike the host-affecting key/resize sinks).
+                    bindViewportInjector: { [weak model] sink in model?.viewportInjector = sink },
+                    // HOST-WINDOW RESIZE: the live view pushes the window's current + max point sizes so the
+                    // "Resize…" popover pre-fills + caps its fields (informational; not read-only-gated).
+                    onWindowGeometry: { [weak model] cw, ch, mw, mh in
+                        model?.noteWindowGeometry(currentW: cw, currentH: ch, maxW: mw, maxH: mh)
+                    },
                 ),
             )
-        }
-    }
-
-    /// RESIZE GRIP — the bottom-right drag handle. Shown only once the live session has published a
-    /// resize sink (``RemoteWindowModel/canResizeWindow``; withheld while read-only). A drag emits the
-    /// cumulative LOCAL-point translation to the session, which maps it through the `.fit` inverse to an
-    /// absolute host-window target and debounce-requests the resize on settle.
-    @ViewBuilder private var resizeGrip: some View {
-        if let model, model.canResizeWindow {
-            Image(systemSymbol: .arrowUpLeftAndArrowDownRight)
-                .font(.system(size: Otty.Typeface.small, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 20, height: 20)
-                .background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall))
-                .padding(3)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 1, coordinateSpace: .local)
-                        .onChanged { value in
-                            if !resizeDragging {
-                                resizeDragging = true
-                                model.resizeInjector?(0, 0, 0) // phase 0: began → snapshot base
-                            }
-                            model.resizeInjector?(1, Double(value.translation.width), Double(value.translation.height))
-                        }
-                        .onEnded { value in
-                            model.resizeInjector?(2, Double(value.translation.width), Double(value.translation.height))
-                            resizeDragging = false
-                        },
-                )
-                .help("Kéo để đổi kích thước cửa sổ remote")
         }
     }
 
@@ -254,6 +209,144 @@ struct GuiLeafView: View {
     private func placeholderLabel(_ state: RemoteGUIDisplay) -> String {
         if state == .gated { return "Video paused — too many live streams" }
         return live?.kind == .systemDialog ? "system dialog" : "remote window"
+    }
+}
+
+/// The bottom CONTROL bar for a LIVE window pane (issue 5): the window controls that used to clutter the pane
+/// CONTENT — a "Resize…" button (opens a numeric size popover; replaced the old fiddly DRAG grip), a "lock
+/// position" toggle (freezes the edge-hover auto-pan), and zoom out / reset / in (client-side compositor zoom
+/// of the actual-size viewport). A flat strip flush along the pane bottom, separated from the surface by a
+/// single top hairline (otty flat design — never a floating card). The resize button is gated on a live
+/// host-resize sink (``RemoteWindowModel/canResizeWindow``, withheld while read-only); the zoom/lock controls
+/// on a live viewport sink (``RemoteWindowModel/canControlViewport``, live even while read-only — pure client ops).
+private struct GuiPaneControlBar: View {
+    let model: RemoteWindowModel?
+    /// Mirrors the pane's "lock position" state so the lock icon reflects on/off (the freeze itself lives in
+    /// the video view; this toggles 1:1 with the `.toggleLock` command).
+    @Binding var panLocked: Bool
+
+    /// Whether the numeric "Resize…" size popover is open.
+    @State private var showResizePopover = false
+
+    var body: some View {
+        HStack(spacing: Otty.Metric.space1) {
+            if let model, model.canResizeWindow {
+                OttyPlateButton(symbol: .arrowUpLeftAndArrowDownRight, help: "Resize remote window…") {
+                    showResizePopover = true
+                }
+                .popover(isPresented: $showResizePopover, arrowEdge: .bottom) {
+                    RemoteWindowSizePopover(model: model, isPresented: $showResizePopover)
+                }
+            }
+            Spacer(minLength: Otty.Metric.space2)
+            if let model, model.canControlViewport {
+                OttyPlateButton(symbol: .minusMagnifyingglass, help: "Zoom out") { model.sendViewport(.zoomOut) }
+                OttyPlateButton(symbol: .arrowCounterclockwise, help: "Actual size (reset zoom + position)") {
+                    model.sendViewport(.reset)
+                }
+                OttyPlateButton(symbol: .plusMagnifyingglass, help: "Zoom in") { model.sendViewport(.zoomIn) }
+                OttyPlateButton(
+                    symbol: panLocked ? .lockFill : .lockOpen,
+                    help: panLocked ? "Unlock viewport (resume edge-pan)" : "Lock viewport position (freeze edge-pan)",
+                    tint: panLocked ? Otty.State.accent : Otty.Text.icon,
+                ) {
+                    panLocked.toggle()
+                    model.sendViewport(.toggleLock)
+                }
+            }
+        }
+        .padding(.horizontal, Otty.Metric.space2)
+        .frame(height: Otty.Metric.paneHeaderHeight)
+        .frame(maxWidth: .infinity)
+        .background(Otty.Surface.card) // FLAT: bar background == pane background
+        .overlay(alignment: .top) {
+            Rectangle().fill(Otty.Line.divider).frame(height: Otty.Metric.hairline)
+        }
+    }
+}
+
+/// The numeric size popover (issue: "bỏ kéo resize, thay bằng popup set size bằng số") — set the remote
+/// window's POINT size by typing width/height instead of dragging a grip. Native SwiftUI controls (per the
+/// "native popups" directive): the fields pre-fill at the window's CURRENT size and cap at the host-reported
+/// display MAX (``RemoteWindowModel/windowMaxPointSize``); "Maximize" jumps to that max (reachable because the
+/// host re-anchors the window at its display origin). Apply requests an absolute host-window resize.
+private struct RemoteWindowSizePopover: View {
+    let model: RemoteWindowModel
+    @Binding var isPresented: Bool
+
+    @State private var width: Double = 0
+    @State private var height: Double = 0
+
+    /// UI floor (the session clamps to its own min too); fall back to a generous ceiling until the host
+    /// reports the real display max.
+    private static let minSide: Double = 240
+    private static let fallbackMax: Double = 8192
+
+    private var maxW: Double { Swift.max(
+        Self.minSide,
+        model.windowMaxPointSize.map { Double($0.width) } ?? Self.fallbackMax,
+    ) }
+    private var maxH: Double { Swift.max(
+        Self.minSide,
+        model.windowMaxPointSize.map { Double($0.height) } ?? Self.fallbackMax,
+    ) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Otty.Metric.space3) {
+            Text("Resize remote window")
+                .font(.system(size: Otty.Typeface.body, weight: .semibold))
+                .foregroundStyle(Otty.Text.primary)
+            axisRow("Width", value: $width, range: Self.minSide...maxW)
+            axisRow("Height", value: $height, range: Self.minSide...maxH)
+            if let mx = model.windowMaxPointSize {
+                Text("Display max \(Int(mx.width)) × \(Int(mx.height)) pt")
+                    .font(.system(size: Otty.Typeface.footnote))
+                    .foregroundStyle(Otty.Text.secondary)
+            }
+            HStack(spacing: Otty.Metric.space2) {
+                if model.windowMaxPointSize != nil {
+                    Button("Maximize") { width = maxW
+                        height = maxH
+                    }
+                }
+                Spacer()
+                Button("Cancel") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Apply") { apply() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(Otty.Metric.space4)
+        .frame(width: 280)
+        .onAppear {
+            let cur = model.windowPointSize ?? CGSize(width: 1280, height: 800)
+            width = clamp(Double(cur.width), Self.minSide, maxW)
+            height = clamp(Double(cur.height), Self.minSide, maxH)
+        }
+    }
+
+    private func axisRow(_ label: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
+        HStack(spacing: Otty.Metric.space2) {
+            Text(label)
+                .frame(width: 52, alignment: .leading)
+                .foregroundStyle(Otty.Text.secondary)
+            TextField(label, value: value, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 92)
+            Stepper(label, value: value, in: range, step: 20)
+                .labelsHidden()
+            Text("pt").foregroundStyle(Otty.Text.secondary)
+        }
+        .font(.system(size: Otty.Typeface.body))
+    }
+
+    private func apply() {
+        model.resizeWindow(toWidth: clamp(width, Self.minSide, maxW), height: clamp(height, Self.minSide, maxH))
+        isPresented = false
+    }
+
+    private func clamp(_ v: Double, _ lo: Double, _ hi: Double) -> Double {
+        Swift.min(Swift.max(v, lo), Swift.max(lo, hi))
     }
 }
 #endif

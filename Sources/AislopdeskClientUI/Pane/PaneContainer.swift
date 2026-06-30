@@ -113,9 +113,6 @@ struct PaneContainer: View {
                 staticMirror: staticMirror,
                 store: store,
                 paneID: paneID,
-                // E21 WI-4 (ES-E21-2): feed the bottom status bar's host field — the app-global connection
-                // target persisted on the active session (same value the terminal leaf reads below).
-                host: store.tree.activeSession?.connection?.host ?? "",
             )
         } else {
             TerminalLeafView(
@@ -212,9 +209,36 @@ struct PaneContainer: View {
                 terminalModel: live?.terminalModel,
                 overlayCoordinator: overlayCoordinator,
             ))
-            // Focus is conveyed ONLY by dimming the unfocused panes (otty's `⌘D` split treatment) — no ring.
-            .opacity(isFocused ? 1 : Otty.Anim.unfocusedPaneOpacity)
+            // FOCUS = a small FILLED accent triangle tucked into the active pane's TOP-LEFT corner (Warp-style,
+            // the KEPT marker after the box/bracket/underline/dot/top-bar iterations). `Otty.State.accent`,
+            // faded in only while focused; the unfocused panes render at FULL opacity (no dim — it washed out
+            // live content). `allowsHitTesting(false)` so taps / the divider gesture pass through. OUTERMOST
+            // overlay → above the resize-scrim + drop-zone overlays (KEPT exactly as-is — re-render logic).
+            .overlay(alignment: .topLeading) {
+                PaneFocusCorner(size: Otty.Metric.focusCornerSize)
+                    .fill(Otty.State.accent)
+                    .opacity(isFocused ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
             .animation(Otty.Anim.standard, value: isFocused)
+    }
+}
+
+/// The active-pane focus marker: a small FILLED right-triangle in the TOP-LEFT corner (Warp-style) — the
+/// two legs run along the top + left pane edges, the hypotenuse cuts across. Sized by `size` (leg length),
+/// auto-capped at the smaller pane side so a tiny pane keeps it.
+private struct PaneFocusCorner: Shape {
+    /// Leg length (points) of the corner triangle.
+    var size: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let s = Swift.min(size, Swift.min(rect.width, rect.height))
+        var p = Path()
+        p.move(to: CGPoint(x: rect.minX, y: rect.minY)) // the corner
+        p.addLine(to: CGPoint(x: rect.minX + s, y: rect.minY)) // along the top edge
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.minY + s)) // along the left edge
+        p.closeSubpath()
+        return p
     }
 }
 #endif

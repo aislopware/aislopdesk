@@ -529,6 +529,12 @@ before any media flows. `[UInt8 type][body]`, big-endian:
   per §9 / §4.)
 - The host starts capture/encode **only on an accepted `hello`**; a duplicate `hello` is re-acked
   idempotently. Either side sends `bye` for a clean teardown.
+- Beyond the handshake the control channel also carries additive host→client info messages, each an
+  unknown type an old peer simply drops: `resizeAck` (5), `streamCadence` (10), `scrollOffset` (13),
+  `contentMask` (14), and **`displayMax` (15)** = `UInt16 maxWidthPt` + `UInt16 maxHeightPt`, the max
+  POINT size the captured window can reach (the bounds of its display, or the parked VD). The host
+  sends it once at capture start, paired with its resize-to-display-origin step, so the client's
+  "Resize…" popover can cap its width/height fields at a size the remote can actually adopt.
 
 ## 9.3 Video frame datagrams — `FrameFragment` (video channel)
 

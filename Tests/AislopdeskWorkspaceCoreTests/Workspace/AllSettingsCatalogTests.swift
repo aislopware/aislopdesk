@@ -91,7 +91,7 @@ final class AllSettingsCatalogTests: XCTestCase {
             // E14/K13 (IPC guards on the agent-control ctl socket — Advanced)
             SettingsKey.ipcAllowSendKeys, SettingsKey.ipcAllowSensitiveSessions,
             // Appearance (New Tab Position — tab-setting.png — + chrome orphans + density)
-            SettingsKey.newTabPositionKey, SettingsKey.showBlockDividers, SettingsKey.hideStatusBar,
+            SettingsKey.newTabPositionKey, SettingsKey.showBlockDividers,
             SettingsKey.density,
             // Agents
             SettingsKey.autoSwitchLayouts, SettingsKey.recordClipboardHistory,
@@ -118,7 +118,7 @@ final class AllSettingsCatalogTests: XCTestCase {
             AllSettingsCatalog.entries.first { $0.key == key }?.bucket
         }
         for key in [
-            SettingsKey.hideStatusBar, SettingsKey.showBlockDividers, SettingsKey.systemDialogPanes,
+            SettingsKey.showBlockDividers, SettingsKey.systemDialogPanes,
             SettingsKey.autoSwitchLayouts, SettingsKey.recordClipboardHistory,
             SettingsKey.copyOnSelect, SettingsKey.scrollMultiplier,
         ] {
@@ -201,7 +201,7 @@ final class AllSettingsCatalogTests: XCTestCase {
     /// font, theme, and keybinding choices intact."
     ///
     /// Revert-to-fail: before the data-loss fix, `resetAdvancedOnly()` reset the ENTIRE global toggle set, so
-    /// `copyOnSelect` / `oscNotifications` / `hideStatusBar` / `autoSwitchLayouts` were wrongly cleared — the
+    /// `copyOnSelect` / `oscNotifications` / `showBlockDividers` / `autoSwitchLayouts` were wrongly cleared — the
     /// four `…Enabled` "preserved" asserts below fail on the un-fixed code.
     func testResetAdvancedOnlyPreservesAppearanceFontKeybindings() {
         let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil, applyOnInit: false)
@@ -215,11 +215,11 @@ final class AllSettingsCatalogTests: XCTestCase {
         // These are NON-default values that a Reset-Advanced-Only must NOT destroy.
         UserDefaults.standard.set(true, forKey: SettingsKey.copyOnSelect) // Controls (default Off)
         UserDefaults.standard.set(false, forKey: SettingsKey.oscNotifications) // Shell (default On)
-        UserDefaults.standard.set(true, forKey: SettingsKey.hideStatusBar) // Appearance (default Off)
+        UserDefaults.standard.set(false, forKey: SettingsKey.showBlockDividers) // Appearance (default On)
         UserDefaults.standard.set(false, forKey: SettingsKey.autoSwitchLayouts) // Agents (default On)
         XCTAssertTrue(SettingsKey.copyOnSelectEnabled)
         XCTAssertFalse(SettingsKey.oscNotificationsEnabled)
-        XCTAssertTrue(SettingsKey.hideStatusBarEnabled)
+        XCTAssertFalse(SettingsKey.showBlockDividersEnabled)
         XCTAssertFalse(SettingsKey.autoSwitchLayoutsEnabled)
 
         store.resetAdvancedOnly()
@@ -235,26 +235,26 @@ final class AllSettingsCatalogTests: XCTestCase {
         // Tab-reachable toggles PRESERVED — the data-loss fix. None of these is advanced-only.
         XCTAssertTrue(SettingsKey.copyOnSelectEnabled, "Controls toggle survives Reset-Advanced-Only")
         XCTAssertFalse(SettingsKey.oscNotificationsEnabled, "Shell toggle survives Reset-Advanced-Only")
-        XCTAssertTrue(SettingsKey.hideStatusBarEnabled, "Appearance toggle survives Reset-Advanced-Only")
+        XCTAssertFalse(SettingsKey.showBlockDividersEnabled, "Appearance toggle survives Reset-Advanced-Only")
         XCTAssertFalse(SettingsKey.autoSwitchLayoutsEnabled, "Agents toggle survives Reset-Advanced-Only")
     }
 
     /// "Reset All Settings" returns EVERYTHING to defaults — the typed models AND a flipped global orphan
-    /// toggle (`hideStatusBar`). Revert-to-fail: before WI-1 extended `resetAll()`, the `Defaults.Keys`
-    /// toggle survived a reset.
-    func testResetAllClearsEverythingIncludingOrphanToggle() {
+    /// toggle (`showBlockDividers`, default ON). Revert-to-fail: before WI-1 extended `resetAll()`, the
+    /// `Defaults.Keys` toggle survived a reset.
+    func testResetAllRestoresOrphanToggleToDefault() {
         let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil, applyOnInit: false)
         store.terminal = TerminalPreferences(fontSize: 18)
         store.appearance = AppearancePreferences(theme: .dark)
-        UserDefaults.standard.set(true, forKey: SettingsKey.hideStatusBar)
-        XCTAssertTrue(SettingsKey.hideStatusBarEnabled)
+        UserDefaults.standard.set(false, forKey: SettingsKey.showBlockDividers) // flip OFF the default-ON toggle
+        XCTAssertFalse(SettingsKey.showBlockDividersEnabled)
 
         store.resetAll()
 
         XCTAssertEqual(store.terminal, TerminalPreferences())
         XCTAssertEqual(store.appearance, AppearancePreferences())
         XCTAssertTrue(store.rawOverrides.isEmpty)
-        XCTAssertFalse(SettingsKey.hideStatusBarEnabled, "Reset All clears the orphan toggle")
+        XCTAssertTrue(SettingsKey.showBlockDividersEnabled, "Reset All restores the orphan toggle to its default")
     }
 
     /// "Reset All Settings" returns the keys the old 23-entry hand-list MISSED — the ~35 advanced + Controls +

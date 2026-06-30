@@ -231,42 +231,39 @@ struct SettingsView: View {
     @State private var sidebarQuery: String = ""
 
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar
-            Rectangle()
-                .fill(Otty.Line.divider)
-                .frame(width: Otty.Metric.hairline)
+        // NATIVE macOS settings chrome (issue 1: "settings layout/component đang không native"): a native
+        // `NavigationSplitView` with a system `List(selection:)` sidebar + native `.searchable`, and the
+        // already-native `Form`-based section content as the detail — instead of the bespoke two-column
+        // `HStack` + custom `SettingsSidebarRow` buttons. The window appearance is pinned to the active theme
+        // (light/dark) so the native controls render consistently with the workspace (the scene also applies
+        // `.preferredColorScheme(Otty.colorScheme)`).
+        NavigationSplitView {
+            List(selection: selectionBinding) {
+                ForEach(filteredSections) { section in
+                    Label(section.title, systemImage: section.systemImage)
+                        .tag(section)
+                }
+            }
+            .navigationSplitViewColumnWidth(
+                min: 200, ideal: Otty.Metric.settingsSidebarWidth, max: 320,
+            )
+            .searchable(text: $sidebarQuery, placement: .sidebar, prompt: "Search")
+        } detail: {
             content(for: selectedSection)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .background(Otty.Surface.window)
         }
         .frame(minWidth: 720, minHeight: 480)
-        .background(Otty.Surface.window)
+        #if os(macOS)
+            // Pin the Settings NSWindow to the theme appearance (macOS only — iOS has no NSWindow; its settings
+            // surface is the separate `SettingsSheet`, which adopts `.preferredColorScheme` directly).
+            .background { SettingsWindowAppearancePinner(isLight: Otty.theme.isLight) }
+        #endif
     }
 
-    /// The left navigator: the search pill pinned at the top, then the (filtered) icon+label section rows.
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space2) {
-            SettingsSidebarSearchField(text: $sidebarQuery)
-                .padding(.horizontal, Otty.Metric.space2)
-                .padding(.top, Otty.Metric.space3)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(filteredSections) { section in
-                        SettingsSidebarRow(
-                            section: section,
-                            isSelected: section == selectedSection,
-                            action: { selectedSection = section },
-                        )
-                    }
-                }
-                .padding(.horizontal, Otty.Metric.space2)
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(width: Otty.Metric.settingsSidebarWidth)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(Otty.Surface.sidebar)
+    /// Bridges the non-optional ``selectedSection`` to the optional selection a `List` single-selection binding
+    /// needs (a `nil` set — e.g. a sidebar deselect — is ignored, keeping a section always shown in the detail).
+    private var selectionBinding: Binding<SettingsSection?> {
+        Binding(get: { selectedSection }, set: { if let new = $0 { selectedSection = new } })
     }
 
     /// The section rows the navigator shows — every section, or the title-substring matches when the pill has
@@ -284,79 +281,22 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Sidebar navigator pieces (search pill + icon+label rows)
+// MARK: - Settings window appearance pin
 
-/// The rounded SEARCH PILL pinned at the top of the navigator (otty's top-left sidebar field). A leading
-/// magnifying-glass + a plain `TextField` on the inset element surface, clipped to a `Capsule` with a
-/// hairline border. Filters which section rows show; see `SettingsView.filteredSections`.
-private struct SettingsSidebarSearchField: View {
-    @Binding var text: String
-
-    var body: some View {
-        HStack(spacing: Otty.Metric.space2) {
-            Image(systemSymbol: .magnifyingglass)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.tertiary)
-            TextField("Search", text: $text)
-                .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.base))
-                .foregroundStyle(Otty.Text.primary)
-        }
-        .padding(.horizontal, Otty.Metric.space3)
-        .padding(.vertical, Otty.Metric.space2)
-        .background(Otty.Surface.element, in: Capsule())
-        .overlay(Capsule().strokeBorder(Otty.Line.subtle, lineWidth: 1))
+#if os(macOS)
+/// Pins the Settings `NSWindow`'s appearance to the active Otty theme (light/dark), so the native settings
+/// chrome + any AppKit-hosted control renders consistently with the workspace — not the OS default. `isLight`
+/// is passed IN (read from `Otty.theme.isLight` in `SettingsView.body`), so a LIVE theme switch re-renders the
+/// view → re-runs `updateNSView` → re-pins, with NO `NotificationCenter` observer to leak. The scene's
+/// `.preferredColorScheme(Otty.colorScheme)` covers the pure-SwiftUI side; this covers the window itself.
+private struct SettingsWindowAppearancePinner: NSViewRepresentable {
+    let isLight: Bool
+    func makeNSView(context _: Context) -> NSView { NSView() }
+    func updateNSView(_ nsView: NSView, context _: Context) {
+        nsView.window?.appearance = NSAppearance(named: isLight ? .aqua : .darkAqua)
     }
 }
-
-/// One navigator row: a leading SF Symbol + the section title, with otty's idle/hover/selected styling (the
-/// selected row is the signature elevated card; hover is a flat plate). Mirrors `OttySidebarRow` but binds a
-/// `SettingsSection` (whose `systemImage` is a plain SF-Symbol String, not an `SFSymbol`).
-private struct SettingsSidebarRow: View {
-    let section: SettingsSection
-    let isSelected: Bool
-    let action: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: Otty.Metric.space2) {
-                Image(systemName: section.systemImage)
-                    .font(.system(size: Otty.Metric.iconSize))
-                    .foregroundStyle(isSelected ? Otty.Text.primary : Otty.Text.icon)
-                    .frame(width: 20)
-                Text(section.title)
-                    .font(.system(size: Otty.Typeface.body))
-                    .foregroundStyle(isSelected ? Otty.Text.primary : Otty.Text.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, Otty.Metric.space2)
-            .padding(.vertical, Otty.Metric.space2)
-            .background { rowBackground }
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .animation(Otty.Anim.smallFade, value: hovering)
-        .animation(Otty.Anim.smallFade, value: isSelected)
-    }
-
-    @ViewBuilder private var rowBackground: some View {
-        let shape = RoundedRectangle(cornerRadius: Otty.Metric.radiusTab, style: .continuous)
-        if isSelected {
-            shape
-                .fill(Otty.Surface.selectedCard)
-                .overlay(shape.strokeBorder(Otty.Line.card, lineWidth: 1))
-                .shadow(color: .black.opacity(0.04), radius: 2, y: 1)
-        } else if hovering {
-            shape.fill(Otty.State.hover)
-        } else {
-            Color.clear
-        }
-    }
-}
+#endif
 
 // MARK: - Shared per-section content (one dispatch for the macOS navigator + the iOS sheet)
 
@@ -1531,7 +1471,6 @@ private struct AppearanceSettingsTab: View {
     // both macOS + iPad). The decision is the pure `SidebarAutoHidePolicy`; WI-7 drives `chrome.sidebarCollapsed`.
     @Default(.autoHideTabsPanel) private var autoHideTabsPanel
     @Default(.showBlockDividers) private var showBlockDividers
-    @Default(.hideStatusBar) private var hideStatusBar
     #if os(macOS)
     // E19/A29 window-size (otty `window-size`) — macOS-only: the initial dimensions are an `NSWindow`
     // concept (iOS has no resizable window), so the keys are bound only where the `Window` section renders.
@@ -1660,7 +1599,6 @@ private struct AppearanceSettingsTab: View {
 
             ottyFormSection("Chrome") {
                 Toggle("Show command dividers", isOn: $showBlockDividers)
-                Toggle("Hide status bar", isOn: $hideStatusBar)
             }
 
             // DOCK ICON (E14/K5/K8 — M2): otty homes these under **Appearance** (Visual spec,

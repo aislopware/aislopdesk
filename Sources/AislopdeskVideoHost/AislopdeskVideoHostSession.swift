@@ -1366,6 +1366,36 @@ public actor AislopdeskVideoHostSession {
         )
     }
 
+    /// HOST-WINDOW RESIZE (2026-06-30): report the captured window's MAXIMUM resizable POINT size so the
+    /// client's "Resize…" popover can cap its width/height fields at a size the remote can actually adopt
+    /// (paired with the AX resize-to-display-origin in ``WindowGeometryWatcher/resizeWindow(toPoints:)``).
+    /// Sent once at capture start; an old client drops the unknown type. No-op once the media flow has
+    /// stopped, or on a degenerate (zero) size.
+    private func sendDisplayMax() {
+        guard stateMachine.mediaFlowing else { return }
+        let maxPoints = resolveDisplayMaxPoints()
+        let w = UInt16(clamping: Int(maxPoints.width.rounded()))
+        let h = UInt16(clamping: Int(maxPoints.height.rounded()))
+        guard w >= 1, h >= 1 else { return }
+        dbg("→ sending displayMax \(w)x\(h)pt")
+        transport.send(scheduler.scheduleControl(.displayMax(width: w, height: h)).bytes, on: .control)
+    }
+
+    /// The captured window's max resizable POINT size: the parked-VD point bounds when set (the existing
+    /// resize ceiling), else the CG bounds of the display the window currently sits on, else the window's
+    /// own current size (degenerate fallback — never reports 0). Pure pick math lives in
+    /// ``WindowDisplayResolver``; only the live display enumeration is impure.
+    private func resolveDisplayMaxPoints() -> VideoSize {
+        if let limit = resizePointLimit { return limit }
+        let frame = window.frame
+        if let display = WindowDisplayResolver.display(
+            forWindowFrame: frame, displays: WindowDisplayResolver.activeDisplayBounds(),
+        ) {
+            return VideoSize(width: Double(display.width), height: Double(display.height))
+        }
+        return VideoSize(width: Double(frame.width), height: Double(frame.height))
+    }
+
     /// WF-8 self-audit fix: invalidate the LTR acked-set + frame map whenever a FRESH encoder /
     /// `VTCompressionSession` is installed (initial bring-up + both resize rebuild paths — the
     /// WF-8 counterpart of ``seedCongestionController``, called at the SAME install sites so the
@@ -1405,6 +1435,9 @@ public actor AislopdeskVideoHostSession {
             // streamCadence message is the single cadence truth even before any governed step.
             // OFF ⇒ no message at all (byte-identical wire).
             if Self.fpsGovernorEnabled { sendStreamCadence(UInt16(clamping: governedFps)) }
+            // HOST-WINDOW RESIZE: announce the window's display max so the client's resize popover caps
+            // its fields. Additive (old clients drop the unknown type); sent once per capture bring-up.
+            sendDisplayMax()
         case .stopCapture:
             dbg("effect stopCapture")
             await teardownLiveComponents()

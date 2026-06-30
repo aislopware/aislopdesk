@@ -585,6 +585,9 @@ public struct AislopdeskClientApp: App {
                     FirstLaunchView(model: firstLaunchModel, store: preferences)
                         .agentHooksController(agentHooks)
                         .tint(Otty.State.accent)
+                        // Adopt the active theme's light/dark like every other surface (issue 1) — without it
+                        // the sheet inherited the OS appearance and could render light over a dark workspace.
+                        .preferredColorScheme(Otty.colorScheme)
                 }
                 .task {
                     presentFirstLaunch = FirstLaunchModel.shouldPresent(

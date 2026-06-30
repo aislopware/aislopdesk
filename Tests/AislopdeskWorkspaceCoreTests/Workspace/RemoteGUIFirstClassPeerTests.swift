@@ -11,7 +11,7 @@ import XCTest
 /// the PATH-2 UDP video path) must be a first-class peer in *every* clone surface E1–E20 shipped. There is no
 /// otty analog / no screenshot — the standard is the existing aislopdesk surfaces. This suite is the
 /// developer-facing peer-enumeration pin: it asserts the model entry points the per-WI fixes ride on
-/// (`newRemoteWindowTab`, `OpenQuicklyModel.openedItems`, `StatusBarContent.make`/`paneKindLabel`,
+/// (`newRemoteWindowTab`, `OpenQuicklyModel.openedItems`,
 /// `WorkspaceTreeOps.toggleFloating`, `WorkspaceTreeOps.splitPane`, `WorkspaceStore.isReadOnly`) all ADMIT /
 /// HANDLE `.remoteGUI` with no kind-dropping `switch`/guard.
 ///
@@ -160,22 +160,6 @@ final class RemoteGUIFirstClassPeerTests: XCTestCase {
             videoRow.subtitle, videoRow.title,
             "F2: the subtitle must not echo the title — the Opened row reads window-title / host-app, two lines",
         )
-    }
-
-    // MARK: - ES-E21-2 / WI-4 — the status-bar model labels the video pane
-
-    /// `StatusBarContent.make`/`paneKindLabel` already handle `.remoteGUI` correctly: the right-edge label is
-    /// "remote", there is no shell-exit badge (`.none`), and the cwd field is empty (a video pane reports no
-    /// working directory). Passes on un-fixed code — the WI-4 gap is purely that the strip is not MOUNTED on a
-    /// video leaf (a `GuiLeafView` view concern, code-reviewed), not that the model mis-handles the kind.
-    func testStatusBarModelLabelsTheRemoteWindowPane() {
-        let content = StatusBarContent.make(cwd: nil, lastCommand: nil, kind: .remoteGUI, host: "mac-studio")
-        XCTAssertEqual(content.paneKind, "remote", "a focused `.remoteGUI` pane labels as 'remote'")
-        XCTAssertEqual(content.exit, .none, "a video pane has no shell-exit concept")
-        XCTAssertEqual(content.cwdDisplay, "", "a video pane reports no cwd")
-        XCTAssertEqual(content.host, "mac-studio")
-        // The auto system-dialog video pane is labelled too (kind-generic, total mapping).
-        XCTAssertEqual(StatusBarContent.paneKindLabel(.systemDialog), "dialog")
     }
 
     // MARK: - ES-E21-2 / WI-3 — read-only is kind-generic on the video pane

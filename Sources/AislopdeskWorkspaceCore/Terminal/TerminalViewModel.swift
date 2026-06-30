@@ -947,10 +947,11 @@ public final class TerminalViewModel {
     public var linkHighlightActive = false
 
     /// The resolved absolute path (or raw text, when it cannot be resolved purely — a `~`-path, a bare URL)
-    /// of the detected link the pointer is ⌘-hovering (ES-E10-4), or `nil` when not hovering one. Drives the
-    /// bottom status bar's left-field override (``StatusBarContent/make`` `hoverFullPath`, `full-path-hover.png`).
-    /// Set by the macOS renderer's `mouseMoved`/`flagsChanged` hit-test; cleared on ⌘ release / pointer-exit /
-    /// a move off any link. OBSERVABLE so the status strip updates as the pointer moves. Never set on iOS.
+    /// of the detected link the pointer is ⌘-hovering (ES-E10-4), or `nil` when not hovering one. Set by the
+    /// macOS renderer's `mouseMoved`/`flagsChanged` hit-test; cleared on ⌘ release / pointer-exit / a move off
+    /// any link. DORMANT SEAM: its only consumer was the per-pane status bar's left-field full-path preview,
+    /// which was removed with the status strip — the renderer still resolves it (cheaply, only while ⌘ is held
+    /// over a terminal) so a future hover-preview can read it. Never set on iOS.
     public var hoveredLinkFullPath: String?
 
     /// The pane's last-known working directory (OSC 7 `PaneSpec.lastKnownCwd`), mirrored here by the leaf so the

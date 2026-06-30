@@ -98,6 +98,8 @@ struct ClientAppMain {
                     onStreamNativeSize: paneContext.onStreamNativeSize,
                     onKeyInjectorReady: paneContext.onKeyInjectorReady,
                     onResizeInjectorReady: paneContext.onResizeInjectorReady,
+                    onViewportInjectorReady: paneContext.onViewportInjectorReady,
+                    onWindowGeometryReady: paneContext.onWindowGeometryChanged,
                 ))
             }
             return AnyView(VideoWindowView(title: descriptor.title))

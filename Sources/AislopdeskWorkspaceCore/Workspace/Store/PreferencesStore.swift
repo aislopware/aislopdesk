@@ -413,7 +413,7 @@ public final class PreferencesStore {
         // Controls — system dialog + secure input
         .systemDialogPanes, .autoSecureInput, .secureInputIndicator,
         // Appearance
-        .newTabPosition, .showBlockDividers, .hideStatusBar, .autoHideTabsPanel,
+        .newTabPosition, .showBlockDividers, .autoHideTabsPanel,
         .dockIconAnimateProgress, .dockIconErrorBadge,
         // Agents
         .autoSwitchLayouts, .recordClipboardHistory,

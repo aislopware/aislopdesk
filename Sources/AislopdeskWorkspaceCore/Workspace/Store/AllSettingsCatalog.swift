@@ -28,7 +28,7 @@ public enum AllSettingsCatalog {
             ///
             /// NOTE: this bucket is a pure RENDERING hint for the All-Settings list ("inline editor vs
             /// jump-to-tab button") — it is NOT a "reset bucket". Many `.advancedOnly`-rendered keys (e.g.
-            /// `copyOnSelect`, `oscNotifications`, `hideStatusBar`) ALSO have a dedicated tab and are
+            /// `copyOnSelect`, `oscNotifications`, `showBlockDividers`) ALSO have a dedicated tab and are
             /// therefore tab-reachable, so they are PRESERVED by ``PreferencesStore/resetAdvancedOnly()``.
             /// Do not conflate "rendered inline here" with "is an advanced-only key" — the reset scope lives
             /// in ``PreferencesStore``, not in this bucket.
@@ -579,15 +579,6 @@ public enum AllSettingsCatalog {
             bucket: .advancedOnly,
             keywords: "block divider command header terminal sticky shell",
         ),
-        SettingEntry(
-            key: SettingsKey.hideStatusBar,
-            label: "Hide Status Bar",
-            description: "Hide the bottom pane status bar so the chrome recedes.",
-            defaultText: "Off",
-            bucket: .advancedOnly,
-            keywords: "status bar hide chrome appearance bottom strip",
-        ),
-
         // otty homes the DOCK ICON group under **Appearance** (terminal-features__progress-state.md). macOS-only
         // NSDockTile behaviour (inert on iOS); the live toggles live under Appearance → Dock Icon, so the
         // searchable All Settings rows JUMP there (M2 — `hasDedicatedTab` → `appearance`) rather than rendering
@@ -739,7 +730,7 @@ public enum AllSettingsCatalog {
         SettingsKey.titleReport, SettingsKey.clipboardShellControlled, SettingsKey.ipcAllowSendKeys,
         SettingsKey.ipcAllowSensitiveSessions, SettingsKey.autoProgressCommands,
         // Appearance + Agents
-        SettingsKey.newTabPositionKey, SettingsKey.showBlockDividers, SettingsKey.hideStatusBar,
+        SettingsKey.newTabPositionKey, SettingsKey.showBlockDividers,
         SettingsKey.autoSwitchLayouts, SettingsKey.recordClipboardHistory,
     ]
 

@@ -58,6 +58,48 @@ final class RemoteWindowModelTests: XCTestCase {
         XCTAssertNil(m.active)
     }
 
+    // MARK: Host-window resize (numeric popover) — absolute resize sink + geometry mirror
+
+    /// `resizeWindow(toWidth:height:)` drives the published resize sink with the ABSOLUTE point size (the
+    /// popover's Apply path) — replacing the old `(phase,tx,ty)` drag. No sink wired ⇒ a silent no-op.
+    func testResizeWindowDrivesInjectorWithAbsoluteSize() {
+        let m = RemoteWindowModel(target: { self.target }, windowID: "1")
+        var requested: CGSize?
+        m.resizeInjector = { w, h in requested = CGSize(width: w, height: h) }
+        m.resizeWindow(toWidth: 1440, height: 900)
+        XCTAssertEqual(requested, CGSize(width: 1440, height: 900))
+        m.resizeInjector = nil
+        m.resizeWindow(toWidth: 800, height: 600) // no sink ⇒ no-op, must not crash
+    }
+
+    /// `canResizeWindow` (the "Resize…" button gate) requires BOTH a live stream and a wired sink — so a
+    /// read-only pane (sink withheld) or a not-yet-streaming pane hides the button.
+    func testCanResizeWindowRequiresActiveAndSink() {
+        let m = RemoteWindowModel(target: { self.target }, windowID: "1")
+        XCTAssertFalse(m.canResizeWindow, "no active stream, no sink")
+        m.resizeInjector = { _, _ in }
+        XCTAssertFalse(m.canResizeWindow, "sink but no active stream")
+        m.open()
+        XCTAssertTrue(m.canResizeWindow, "active stream + sink ⇒ resizable")
+    }
+
+    /// `noteWindowGeometry` mirrors the live window size (popover pre-fill) and the host display max
+    /// (popover cap). A zero/unknown max leaves the cap unset; once a real max lands it PERSISTS — a later
+    /// zero-max push (a fresh decoded-points before the next report) must not clear it.
+    func testNoteWindowGeometryMirrorsCurrentAndPersistsMax() {
+        let m = RemoteWindowModel(target: { self.target }, windowID: "1")
+        XCTAssertNil(m.windowPointSize)
+        XCTAssertNil(m.windowMaxPointSize)
+        m.noteWindowGeometry(currentW: 1280, currentH: 800, maxW: 0, maxH: 0)
+        XCTAssertEqual(m.windowPointSize, CGSize(width: 1280, height: 800))
+        XCTAssertNil(m.windowMaxPointSize, "a zero max leaves the popover uncapped")
+        m.noteWindowGeometry(currentW: 1280, currentH: 800, maxW: 1920, maxH: 1080)
+        XCTAssertEqual(m.windowMaxPointSize, CGSize(width: 1920, height: 1080))
+        m.noteWindowGeometry(currentW: 1600, currentH: 1000, maxW: 0, maxH: 0)
+        XCTAssertEqual(m.windowPointSize, CGSize(width: 1600, height: 1000), "current tracks the live size")
+        XCTAssertEqual(m.windowMaxPointSize, CGSize(width: 1920, height: 1080), "max persists once known")
+    }
+
     // MARK: Paste-as-keystrokes read-only / teardown gate (E21 WI-3 · F5-paste-leak)
 
     /// **F5 — a read-only lock landing MID-PASTE must withhold the remaining keystrokes.** The read-only

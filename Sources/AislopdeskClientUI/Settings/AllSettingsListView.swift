@@ -54,7 +54,6 @@ struct AllSettingsListView: View {
     @Default(.scrollMultiplier) private var scrollMultiplier
     @Default(.systemDialogPanes) private var systemDialogPanes
     @Default(.showBlockDividers) private var showBlockDividers
-    @Default(.hideStatusBar) private var hideStatusBar
     @Default(.autoSwitchLayouts) private var autoSwitchLayouts
     @Default(.recordClipboardHistory) private var recordClipboardHistory
     // E8 WI-3: the remaining Controls / Mouse / Scroll knobs + the OSC-52 read/write access pickers (otty
@@ -251,7 +250,6 @@ struct AllSettingsListView: View {
         case SettingsKey.scrollOnOutput: boolControl($scrollOnOutput)
         case SettingsKey.systemDialogPanes: boolControl($systemDialogPanes)
         case SettingsKey.showBlockDividers: boolControl($showBlockDividers)
-        case SettingsKey.hideStatusBar: boolControl($hideStatusBar)
         case SettingsKey.autoSwitchLayouts: boolControl($autoSwitchLayouts)
         case SettingsKey.recordClipboardHistory: boolControl($recordClipboardHistory)
         // OSC-52 clipboard access gates (allow / deny / ask) — otty's Advanced → All Settings home; feed the

@@ -675,17 +675,29 @@ final class GhosttyLayerBackedView: NSView {
     private var surface: GhosttySurface?
     weak var model: TerminalViewModel?
 
-    /// Whether THIS pane is the workspace's focused pane (set by `GhosttyMetalLayerView`). Drives the
-    /// keyboard FIRST RESPONDER only — render-focus (`surface.setFocus(true)`) is kept ON for every
-    /// visible pane in `attach()` so an unfocused split sibling keeps repainting. On a change to `true`
-    /// the pane claims first responder; on `false` it does NOT resign (a sibling claiming FR resigns it).
+    /// Whether THIS pane is the workspace's focused pane (set by `GhosttyMetalLayerView`). Drives TWO things:
+    /// (1) the keyboard FIRST RESPONDER (only the focused pane takes the keyboard); and (2) libghostty's
+    /// render FOCUS — an unfocused pane is `setFocus(false)` so ghostty draws its HOLLOW, non-blinking cursor
+    /// (focused = the solid block) exactly like ghostty's own split panes. Forwarding unfocus does NOT freeze
+    /// the pane: new host output still presents via the content-driven `onContentChanged → requestPresent`
+    /// path (focus-INDEPENDENT — `drawFrame` never early-returns on unfocus, it only stops ghostty's INTERNAL
+    /// blink/auto-draw), so an unfocused split sibling keeps repainting — and now idles ghostty's render
+    /// thread when unfocused (a CPU win). On a change to `true` the pane claims first responder; on `false`
+    /// it does NOT resign the keyboard (a sibling claiming FR resigns it).
     var isFocusedPane: Bool = true {
-        didSet { if isFocusedPane != oldValue { applyKeyboardFocus() } }
+        didSet {
+            guard isFocusedPane != oldValue else { return }
+            // Forward render focus → ghostty's hollow (unfocused) / solid (focused) cursor, then present
+            // ONCE so the cursor style flips immediately (the cursor change alone is not a content event).
+            surface?.setFocus(isFocusedPane)
+            requestPresent()
+            applyKeyboardFocus()
+        }
     }
 
-    /// Claims the keyboard first responder iff this is the focused pane and on-window. Never resigns
-    /// here (the sibling that becomes focused makes ITSELF first responder, which resigns this one) and
-    /// never touches `surface.setFocus` (render-focus stays on for repaint — the multi-pane fix).
+    /// Claims the keyboard first responder iff this is the focused pane and on-window. Never resigns here
+    /// (the sibling that becomes focused makes ITSELF first responder, which resigns this one). Render focus
+    /// is driven SEPARATELY by the `isFocusedPane` didSet (forwarded to `surface.setFocus`), not here.
     private func applyKeyboardFocus() {
         guard isFocusedPane else { return }
         // Defer off the SwiftUI update/commit pass: makeFirstResponder synchronously tears down + sets up
@@ -790,10 +802,10 @@ final class GhosttyLayerBackedView: NSView {
             requestPresent(8)   // prime the initial glyph flush
             // Claim the keyboard ONLY if this is the workspace's focused pane. In a multi-pane split
             // every pane used to call `makeFirstResponder` on mount, so the LAST-mounted pane stole the
-            // keyboard regardless of `store.focusedPane` (focus-stealing bug). Render-liveness is
-            // SEPARATE: `attach()` keeps `surface.setFocus(true)` on every visible pane (an unfocused
-            // libghostty surface idles its renderer and freezes — hardware-confirmed), so unfocused
-            // split siblings still repaint; only the keyboard FR is gated. Deferred so the window is key.
+            // keyboard regardless of `store.focusedPane` (focus-stealing bug). Render focus now FOLLOWS the
+            // workspace focus (`attach()` → `surface.setFocus(isFocusedPane)`): an unfocused pane shows
+            // ghostty's hollow non-blinking cursor but STILL repaints output via the content-driven present
+            // path (`onContentChanged → requestPresent`), so it never freezes. Deferred so the window is key.
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isFocusedPane, let window = self.window else { return }
                 window.makeFirstResponder(self)
@@ -841,7 +853,12 @@ final class GhosttyLayerBackedView: NSView {
         // attachSurface(_:) (not `model.surface = surface`) so the model REPLAYS its retained byte
         // ring into a rebuilt surface (tab switch / reshape). No-op replay when unchanged.
         if let surface { model.attachSurface(surface) }
-        surface?.setFocus(true)
+        // Render focus FOLLOWS the workspace focus (not always-on): the focused pane gets the solid block
+        // cursor, an unfocused split sibling ghostty's hollow non-blinking cursor. Unfocused panes still
+        // repaint host output via the content-driven present path above, so this never freezes them; it
+        // also lets ghostty idle an unfocused pane's render thread (CPU win). The `isFocusedPane` didSet
+        // re-forwards this on every focus change (with a `requestPresent` to flip the cursor style at once).
+        surface?.setFocus(isFocusedPane)
         // Resize-END → RE-ANCHOR the settle present burst to the release moment. The host `TIOCSWINSZ`
         // is DEFERRED to release, so its SIGWINCH-driven redraw bytes land ~1 RTT AFTER the layout-
         // anchored burst (armed by the last `layout()`) may have already expired — and the final layout
@@ -1316,8 +1333,9 @@ final class GhosttyLayerBackedView: NSView {
     // MARK: Link highlight (E10 WI-5 — ⌘-hold underline + full-path hover)
 
     /// Track the ⌘ modifier so the ``LinkHighlightOverlay`` underlines every detected path/URL while ⌘ is held
-    /// (ES-E10-1) and the bottom status bar previews the ⌘-hovered link's full path (ES-E10-4). Releasing ⌘
-    /// clears both. macOS only — iOS has no ⌘ modifier, so `linkHighlightActive` is never set there and the
+    /// (ES-E10-1) and the ⌘-hovered link's full path is resolved into the now-dormant `hoveredLinkFullPath`
+    /// seam (ES-E10-4 — its status-bar preview was removed). Releasing ⌘ clears both. macOS only — iOS has no
+    /// ⌘ modifier, so `linkHighlightActive` is never set there and the
     /// overlay stays inert. Setting the OBSERVABLE model state from this NSEvent handler is safe (it is NOT an
     /// `updateNSView`/AttributeGraph pass), so it cannot trigger the infinite-render loop `surface` documents.
     override func flagsChanged(with event: NSEvent) {
@@ -1337,7 +1355,8 @@ final class GhosttyLayerBackedView: NSView {
     /// E10 WI-5 (ES-E10-4): the ⌘-hover full-path preview. While ⌘ is held (`linkHighlightActive`), link
     /// detection is on, and the surface is NOT a mouse-reporting TUI (alt screen — don't fight vim/tmux/htop),
     /// hit-test the detected links in the VISIBLE viewport against the pointer cell and publish the resolved
-    /// path to ``TerminalViewModel/hoveredLinkFullPath`` (the status bar's left-field override). A move off any
+    /// path to the now-dormant ``TerminalViewModel/hoveredLinkFullPath`` seam (its status-bar consumer was
+    /// removed). A move off any
     /// link, a released ⌘, or a pointer-exit clears it. All the math + detection live in the PURE, headless-
     /// tested ``TerminalViewModel/hoveredLinkPath(rows:cwd:schemes:metrics:pointX:pointY:)``; this is the thin
     /// actuator that feeds it the live `viewportTextRows()` + WI-2 `cellMetrics()`. `point` is in the surface's
@@ -2211,12 +2230,13 @@ final class GhosttyLayerBackedView: NSView {
     }
 
     override func resignFirstResponder() -> Bool {
-        // DO NOT drop libghostty render-focus here. Losing the KEYBOARD first responder to a sibling
-        // pane must NOT idle this surface's renderer — an unfocused libghostty surface stops presenting
-        // and FREEZES on its last frame (hardware-confirmed), which is exactly the multi-pane
-        // "unfocused pane goes stale" bug. Render-focus is kept ON for every visible pane (set in
-        // `attach()`); only the keyboard moves to the newly-focused pane. (A pane truly leaving the
-        // screen is `detach()`'d, which closes the surface — so it never needs an unfocus here.)
+        // DO NOT touch libghostty render-focus here. Render focus is driven by `isFocusedPane` (the
+        // WORKSPACE focus, set by the representable) — NOT by the AppKit responder chain — so when a sibling
+        // becomes the workspace-focused pane THIS pane's `isFocusedPane` flips false and its didSet forwards
+        // `setFocus(false)` (ghostty's hollow cursor). Dropping focus HERE instead would also unfocus the
+        // surface when the whole window merely resigns key (⌘-Tab away), wrongly hollowing the active pane's
+        // cursor. An unfocused pane still repaints via the content-driven present path, so it does NOT freeze
+        // (a pane truly leaving the screen is `detach()`'d, which closes the surface).
         return super.resignFirstResponder()
     }
 
@@ -2277,17 +2297,20 @@ final class GhosttyLayerBackedView: NSView {
 /// `UIViewRepresentable` host backing the `CAMetalLayer` that owns the `GhosttySurface`.
 struct GhosttyMetalLayerView: UIViewRepresentable {
     let model: TerminalViewModel
-    /// Signature parity with the macOS sibling. iOS keyboard focus is owned by `TerminalInputHost`
-    /// (doc 17 §2.5), and every visible surface stays render-focused, so this is currently inert here.
+    /// The pane's workspace focus. iOS keyboard focus is owned by `TerminalInputHost` (doc 17 §2.5), but this
+    /// now drives libghostty's render FOCUS so an unfocused pane shows ghostty's hollow non-blinking cursor —
+    /// parity with the macOS sibling.
     var isFocused: Bool = true
 
     func makeUIView(context: Context) -> GhosttyLayerBackedView {
         let view = GhosttyLayerBackedView()
+        view.isFocusedPane = isFocused
         view.attach(model: model)
         return view
     }
 
     func updateUIView(_ uiView: GhosttyLayerBackedView, context: Context) {
+        uiView.isFocusedPane = isFocused
         uiView.attach(model: model)
     }
 
@@ -2308,6 +2331,18 @@ final class GhosttyLayerBackedView: UIView {
 
     private var surface: GhosttySurface?
     private weak var model: TerminalViewModel?
+    /// Whether THIS pane is the workspace's focused pane (set by the representable). Drives libghostty's
+    /// render FOCUS so an unfocused pane shows ghostty's hollow non-blinking cursor (focused = solid block),
+    /// matching the macOS sibling. Forwarding unfocus does NOT freeze the pane — output still presents via
+    /// the content-driven `onContentChanged → requestPresent` path; only ghostty's internal blink/auto-draw
+    /// idles. (iOS keyboard focus is owned by `TerminalInputHost`, doc 17 §2.5 — only render-focus is here.)
+    var isFocusedPane: Bool = true {
+        didSet {
+            guard isFocusedPane != oldValue else { return }
+            surface?.setFocus(isFocusedPane)
+            requestPresent()
+        }
+    }
     /// Drives libghostty's renderer thread each display tick via `ghostty_surface_draw_now`.
     /// REQUIRED for glyphs: libghostty rasterizes glyphs + rebuilds foreground cells lazily
     /// on its render thread; without a steady tick the synchronous `feed`-time draw can
@@ -2522,7 +2557,10 @@ final class GhosttyLayerBackedView: UIView {
         if let surface {
             model.attachSurface(surface)
         }
-        surface?.setFocus(true)
+        // Render focus follows the workspace focus (not always-on): focused = solid block cursor, unfocused
+        // = ghostty's hollow non-blinking cursor. Unfocused panes still repaint via the content-driven
+        // present path, so this never freezes them (the didSet re-forwards on every focus change).
+        surface?.setFocus(isFocusedPane)
         requestPresent(8)   // prime the initial glyph flush / flush the replay (mirrors macOS)
 
         // Start the render-thread pacing tick (idempotent). 60 fps is plenty for a

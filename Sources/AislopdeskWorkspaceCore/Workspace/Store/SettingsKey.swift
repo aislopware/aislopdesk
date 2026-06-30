@@ -237,13 +237,11 @@ public enum SettingsKey {
     /// key ``DSThemeStore`` reads at init + on a Settings change) so the picker, persistence, and the live
     /// `DSScale`/height tokens all agree on one source.
     public static let density = "appearance.density"
-    /// Whether the bottom ``PaneStatusBar`` is hidden (the chrome recedes toward pure terminal). Default OFF.
-    public static let hideStatusBar = "appearance.hideStatusBar"
     /// Whether the per-block sticky command divider/header is shown over terminal panes. Default ON.
     public static let showBlockDividers = "terminal.showBlockDividers"
     // E14/K5/K8 (terminal-features__progress-state.md "DOCK ICON" group). macOS-only NSDockTile behaviour;
     // the keys still compile + round-trip on iOS, where the feature is inert (no Dock). Fire-time
-    // `Defaults.Keys` flags, never folded into a typed prefs model → golden-safe (like `hideStatusBar`).
+    // `Defaults.Keys` flags, never folded into a typed prefs model → golden-safe (like `showBlockDividers`).
     /// otty "Animate Dock Icon During Progress" (`dock-icon-animate-progress`) — animate the macOS Dock tile
     /// while ANY session reports an OSC 9;4 in-progress / indeterminate state (default OFF; macOS-only). Read
     /// by the macOS ``DockProgressController`` via the pure ``DockTintPolicy``.
@@ -541,10 +539,6 @@ public enum SettingsKey {
     /// host ctl-socket sensitive-session guard. Host-enforced via `HostEnvironment.ipcAllowSensitiveSessions()`.
     /// Read at fire-time.
     public static var ipcAllowSensitiveSessionsEnabled: Bool { Defaults[.ipcAllowSensitiveSessions] }
-
-    /// Whether the bottom status bar is hidden (default OFF — the strip shows unless the user hides it).
-    /// Read at fire-time so a Settings change applies on the next render.
-    public static var hideStatusBarEnabled: Bool { Defaults[.hideStatusBar] }
 
     /// Whether the per-block command divider/header is shown (default ON). Read at fire-time.
     public static var showBlockDividersEnabled: Bool { Defaults[.showBlockDividers] }
@@ -918,7 +912,6 @@ public extension Defaults.Keys {
     // host enforces its own copy via AISLOPDESK_IPC_ALLOW_SEND_KEYS / _SENSITIVE on the next launch.
     static let ipcAllowSendKeys = Key<Bool>(SettingsKey.ipcAllowSendKeys, default: false)
     static let ipcAllowSensitiveSessions = Key<Bool>(SettingsKey.ipcAllowSensitiveSessions, default: false)
-    static let hideStatusBar = Key<Bool>(SettingsKey.hideStatusBar, default: false)
     static let showBlockDividers = Key<Bool>(SettingsKey.showBlockDividers, default: true)
     // E14/K5/K8 Dock-icon toggles (macOS-only NSDockTile; the keys compile + round-trip on iOS, inert there).
     // Fire-time flags, never folded into a typed prefs model → golden-safe. Animate default OFF, error-tint ON.

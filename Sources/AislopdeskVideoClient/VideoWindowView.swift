@@ -91,11 +91,19 @@ public struct VideoWindowView: View {
     /// (and `nil` on teardown), routed to `pipeline.key(...)` — the same secure-input-aware path the
     /// keyboard uses. `(keyCode, down, shift)`. `nil` ⇒ no canvas wants the sink (preview/standalone).
     let onKeyInjectorReady: ((((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?) -> Void)?
-    /// RESIZE GRIP: the live view publishes a resize-drive closure here once its session exists (and
-    /// `nil` on teardown), so the pane's bottom-right grip can drive an absolute host-window resize.
-    /// The closure is `(phase, tx, ty)` — phase `0` = drag began, `1` = changed, `2` = ended; `tx`/`ty`
-    /// are the cumulative drag translation in LOCAL pane points. `nil` ⇒ no canvas to receive the sink.
-    let onResizeInjectorReady: ((((_ phase: UInt8, _ tx: Double, _ ty: Double) -> Void)?) -> Void)?
+    /// RESIZE (numeric popover): the live view publishes a resize-drive closure here once its session
+    /// exists (and `nil` on teardown), so the pane's "Resize…" popover can request an ABSOLUTE
+    /// host-window POINT size. The closure is `(width, height)` in host points. `nil` ⇒ no canvas.
+    let onResizeInjectorReady: ((((_ width: Double, _ height: Double) -> Void)?) -> Void)?
+    /// VIEWPORT CONTROLS: the live view publishes a client-viewport command closure here once its session
+    /// exists (and `nil` on teardown), so the pane's control bar can drive zoom / pan-lock. The closure
+    /// carries a raw command byte (`RemoteWindowModel.ViewportCommand`). `nil` ⇒ no canvas / iOS.
+    let onViewportInjectorReady: ((((_ command: UInt8) -> Void)?) -> Void)?
+    /// HOST-WINDOW RESIZE: the live view pushes the window's current + MAX resizable POINT sizes here
+    /// whenever either changes (first decoded frame / host displayMax report), so the "Resize…" popover
+    /// pre-fills its fields at the current size and caps them at the remote max. `(curW, curH, maxW,
+    /// maxH)`; a zero max means "not yet known" (the popover then leaves the field uncapped). `nil` ⇒ none.
+    let onWindowGeometryReady: ((_ curW: Double, _ curH: Double, _ maxW: Double, _ maxH: Double) -> Void)?
 
     /// The existing seam signature (title-only): renders the Metal-backed view chrome
     /// without a live connection. Kept so `VideoWindowFactory` callers compile.
@@ -109,6 +117,8 @@ public struct VideoWindowView: View {
         onStreamNativeSize = nil
         onKeyInjectorReady = nil
         onResizeInjectorReady = nil
+        onViewportInjectorReady = nil
+        onWindowGeometryReady = nil
     }
 
     /// Live remote-window view: brings up the orchestrator against `connection`. `isActive` /
@@ -123,7 +133,9 @@ public struct VideoWindowView: View {
         onCanvasScroll: @escaping (CGSize) -> Void = { _ in },
         onStreamNativeSize: ((_ target: CGSize, _ current: CGSize) -> Void)? = nil,
         onKeyInjectorReady: ((((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?) -> Void)? = nil,
-        onResizeInjectorReady: ((((_ phase: UInt8, _ tx: Double, _ ty: Double) -> Void)?) -> Void)? = nil,
+        onResizeInjectorReady: ((((_ width: Double, _ height: Double) -> Void)?) -> Void)? = nil,
+        onViewportInjectorReady: ((((_ command: UInt8) -> Void)?) -> Void)? = nil,
+        onWindowGeometryReady: ((_ curW: Double, _ curH: Double, _ maxW: Double, _ maxH: Double) -> Void)? = nil,
     ) {
         self.title = title
         self.connection = connection
@@ -134,6 +146,8 @@ public struct VideoWindowView: View {
         self.onStreamNativeSize = onStreamNativeSize
         self.onKeyInjectorReady = onKeyInjectorReady
         self.onResizeInjectorReady = onResizeInjectorReady
+        self.onViewportInjectorReady = onViewportInjectorReady
+        self.onWindowGeometryReady = onWindowGeometryReady
     }
 
     /// Owns the control bridge for this view's lifetime; the backing view wires its closures.
@@ -155,6 +169,8 @@ public struct VideoWindowView: View {
             onStreamNativeSize: onStreamNativeSize,
             onKeyInjectorReady: onKeyInjectorReady,
             onResizeInjectorReady: onResizeInjectorReady,
+            onViewportInjectorReady: onViewportInjectorReady,
+            onWindowGeometryReady: onWindowGeometryReady,
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityLabel(Text("Remote GUI window: \(title)"))
@@ -182,7 +198,9 @@ struct MetalVideoLayerView: NSViewRepresentable {
     var onCanvasScroll: (CGSize) -> Void = { _ in }
     var onStreamNativeSize: ((CGSize, CGSize) -> Void)?
     var onKeyInjectorReady: ((((UInt16, Bool, Bool) -> Void)?) -> Void)?
-    var onResizeInjectorReady: ((((UInt8, Double, Double) -> Void)?) -> Void)?
+    var onResizeInjectorReady: ((((Double, Double) -> Void)?) -> Void)?
+    var onViewportInjectorReady: ((((UInt8) -> Void)?) -> Void)?
+    var onWindowGeometryReady: ((Double, Double, Double, Double) -> Void)?
 
     func makeNSView(context _: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()
@@ -192,6 +210,9 @@ struct MetalVideoLayerView: NSViewRepresentable {
         view.onActivate = onActivate
         view.onCanvasScroll = onCanvasScroll
         view.onStreamNativeSize = onStreamNativeSize // before activate — its nil-ness picks snap vs host-follow
+        // HOST-WINDOW RESIZE: before activate so the first decoded-points / displayMax callback can publish
+        // the window geometry (current + max) straight to the model.
+        view.onWindowGeometryReady = onWindowGeometryReady
         view.activate(connection: connection)
         // PASTE AS KEYSTROKES: publish a key-injection sink routed to THIS view's pipeline (the
         // `pipeline.key` guard no-ops until the session is up, so publishing now is safe). The
@@ -202,6 +223,11 @@ struct MetalVideoLayerView: NSViewRepresentable {
         // resize guard no-ops until streaming, so publishing now is safe). Cleared on `deactivate`.
         view.onResizeInjectorReady = onResizeInjectorReady
         view.publishResizeInjector()
+        // VIEWPORT CONTROLS: publish the client zoom / pan-lock command sink (pure compositor ops on THIS
+        // view — no host round-trip). NOT read-only-gated, so it is never withdrawn on a lock flip. Cleared
+        // on `deactivate`.
+        view.onViewportInjectorReady = onViewportInjectorReady
+        view.publishViewportInjector()
         // BUG-2 probe: a recreate (makeNSView) on focus change — vs an in-place updateNSView — would reset
         // isActive to its `true` default mid-stream; logging it distinguishes "stale Bool" from "recreate".
         videoViewDbg("makeNSView (CREATED) isActive=\(isActive)")
@@ -220,6 +246,11 @@ struct MetalVideoLayerView: NSViewRepresentable {
         nsView.onActivate = onActivate
         nsView.onCanvasScroll = onCanvasScroll
         nsView.onStreamNativeSize = onStreamNativeSize
+        // VIEWPORT CONTROLS: keep the bind closure current (the model persists per pane, so the published
+        // sink stays valid — no re-publish needed; it is not read-only-gated).
+        nsView.onViewportInjectorReady = onViewportInjectorReady
+        // HOST-WINDOW RESIZE: keep the geometry push current (model persists per pane).
+        nsView.onWindowGeometryReady = onWindowGeometryReady
         nsView.activate(connection: connection)
         if inputGateFlipped {
             nsView.onKeyInjectorReady = onKeyInjectorReady
@@ -278,10 +309,18 @@ final class MetalLayerBackedView: NSView {
     /// teardown), so the pane's "Paste as Keystrokes" can drive `pipeline.key(...)` — the same
     /// secure-input-aware key path the keyboard uses. Set by the representable before `activate`.
     var onKeyInjectorReady: ((((UInt16, Bool, Bool) -> Void)?) -> Void)?
-    /// RESIZE GRIP: the canvas publishes a resize-drive sink through this (and `nil` on teardown), so the
-    /// pane's bottom-right grip can drive an absolute host-window resize. `(phase, tx, ty)` — phase `0`
-    /// began / `1` changed / `2` ended; `tx`/`ty` = cumulative drag translation in LOCAL pane points.
-    var onResizeInjectorReady: ((((UInt8, Double, Double) -> Void)?) -> Void)?
+    /// RESIZE (numeric popover): the canvas publishes a resize-drive sink through this (and `nil` on
+    /// teardown), so the pane's "Resize…" popover can request an ABSOLUTE host-window POINT size.
+    /// `(width, height)` in host points.
+    var onResizeInjectorReady: ((((Double, Double) -> Void)?) -> Void)?
+    /// HOST-WINDOW RESIZE: the canvas publishes a geometry SINK through this — the view pushes the window's
+    /// current + max resizable POINT sizes whenever either changes so the "Resize…" popover pre-fills +
+    /// caps its fields. `(curW, curH, maxW, maxH)`; a zero max = "not yet known". Set by the representable.
+    var onWindowGeometryReady: ((Double, Double, Double, Double) -> Void)?
+    /// VIEWPORT CONTROLS: the canvas publishes a client-viewport command sink through this (and `nil` on
+    /// teardown), so the pane's bottom control bar drives zoom / pan-lock. The byte is `RemoteWindowModel.
+    /// ViewportCommand` (0 zoom-in / 1 zoom-out / 2 reset / 3 toggle-lock). Set by the representable.
+    var onViewportInjectorReady: ((((UInt8) -> Void)?) -> Void)?
 
     /// Hands the canvas a key-injection closure routed to THIS view's pipeline (Shift folded into the
     /// modifiers; `pipeline.key` no-ops until the session is up). Idempotent — safe to call on every
@@ -292,18 +331,53 @@ final class MetalLayerBackedView: NSView {
         }
     }
 
-    /// Hands the canvas a resize-drive closure routed to THIS view's pipeline. Phase `0` snapshots the
-    /// drag base; `1`/`2` forward the cumulative translation (the session maps it to an absolute target
-    /// and debounce-requests the resize). `self` weak so a torn-down view resizes nothing.
+    /// Hands the canvas a resize-drive closure routed to THIS view's pipeline: an ABSOLUTE host-window
+    /// POINT size the session debounce-requests. `self` weak so a torn-down view resizes nothing.
     func publishResizeInjector() {
-        onResizeInjectorReady? { [weak self] phase, tx, ty in
-            guard let self else { return }
-            switch phase {
-            case 0: pipeline.userResizeBegan()
-            case 2: pipeline.userResize(translationX: tx, translationY: ty, final: true)
-            default: pipeline.userResize(translationX: tx, translationY: ty, final: false)
-            }
+        onResizeInjectorReady? { [weak self] width, height in
+            self?.pipeline.userResizeTo(width: width, height: height)
         }
+    }
+
+    /// Hands the canvas a client-viewport command closure routed to THIS view (zoom the compositor sublayer /
+    /// freeze the edge-pan). `self` weak so a torn-down view does nothing. Idempotent.
+    func publishViewportInjector() {
+        onViewportInjectorReady? { [weak self] command in self?.handleViewportCommand(command) }
+    }
+
+    /// Apply one viewport command from the footer control bar (the `RemoteWindowModel.ViewportCommand` byte:
+    /// 0 zoom-in / 1 zoom-out / 2 reset / 3 toggle-lock).
+    private func handleViewportCommand(_ command: UInt8) {
+        switch command {
+        case 0: applyZoom(1.25) // zoom in one step
+        case 1: applyZoom(1.0 / 1.25) // zoom out one step
+        case 2: applyResetZoom() // 1× + re-anchor top-left
+        case 3: // toggle "lock position" (freeze edge-pan)
+            panLocked.toggle()
+            if panLocked { stopEdgePan() }
+        default: break
+        }
+    }
+
+    /// Multiply ``clientZoom`` by `factor` (clamped to `[0.25, 4]`, snapped to 1× near unity) and re-anchor so
+    /// the PANE CENTRE stays fixed across the zoom — you zoom toward the middle of what you're looking at. A
+    /// no-op until the host window's point size is known (`streamPoints`).
+    private func applyZoom(_ factor: CGFloat) {
+        guard let win = streamPoints, win.width > 1, win.height > 1 else { return }
+        let oldZoom = clientZoom
+        var newZoom = Swift.min(Swift.max(clientZoom * factor, 0.25), 4.0)
+        if abs(newZoom - 1) < 0.06 { newZoom = 1.0 } // snap near 1× so repeated steps settle exactly to actual-size
+        guard newZoom != oldZoom else { return }
+        // The displayed window size is native × zoom; keep the pane-centre texture fraction constant.
+        let oldDW = CGFloat(win.width) * oldZoom, oldDH = CGFloat(win.height) * oldZoom
+        let centreFracX = (panOffset.x + bounds.width / 2) / Swift.max(oldDW, 1)
+        let centreFracY = (panOffset.y + bounds.height / 2) / Swift.max(oldDH, 1)
+        clientZoom = newZoom
+        let newDW = CGFloat(win.width) * newZoom, newDH = CGFloat(win.height) * newZoom
+        panOffset.x = centreFracX * newDW - bounds.width / 2
+        panOffset.y = centreFracY * newDH - bounds.height / 2
+        needsLayout = true
+        layoutVideoLayer() // clamps panOffset to the new overflow + republishes the input viewport
     }
 
     /// Bridge to the SwiftUI control overlay; the SwiftUI view owns it. Set by the
@@ -319,12 +393,24 @@ final class MetalLayerBackedView: NSView {
     //    host pixel. Window point size arrives via `onDecodedPointsChanged`.
     /// The host window's current POINT size. `nil` until the first decoded frame (then the layer is sized).
     private var streamPoints: VideoSize?
+    /// HOST-WINDOW RESIZE: the host-reported MAX resizable POINT size (its display bounds). `nil` until the
+    /// host's `displayMax` lands; the "Resize…" popover leaves its fields uncapped until then.
+    private var displayMaxPoints: VideoSize?
     /// The viewport's top-left offset INTO the window, in WINDOW POINTS (top-left origin, +y down). `(0,0)`
     /// = the window's top-left corner (default). Clamped to `[0, max(0, window − pane)]`; pan moves it.
     private var panOffset: CGPoint = .zero
     /// Whether the user has explicitly PANNED (edge-pan). Until then the offset stays at the window top-left
     /// (the default anchor, not centred); the 1× reset clears it.
     private var viewportTouched = false
+    /// CLIENT ZOOM factor (1.0 = actual-size, >1 zoomed-in, <1 minified), driven by the footer zoom controls.
+    /// Pure COMPOSITOR scale: the video sublayer FRAME is scaled by this while the drawable stays at the
+    /// native window pixel size (CA scales the native-res texture — no reshader, no host round-trip). Clamped
+    /// to `[0.25, 4]`; the 1× reset clears it. The decoded frame is native-res, so zoom-in magnifies
+    /// (interpolated beyond native) and zoom-out minifies crisply.
+    private var clientZoom: CGFloat = 1.0
+    /// PAN LOCK ("lock position"): when true the edge-hover auto-pan is FROZEN — the viewport stays put even as
+    /// the pointer nudges the pane edges. Toggled by the footer lock control; clears its timer on engage.
+    private var panLocked = false
 
     // ── EDGE-PAN (RealVNC-mobile): nudging the pointer into a pane edge auto-translates the video layer
     //    toward that edge so you can reach off-screen window content without a scroll gesture. Driven by a
@@ -374,6 +460,14 @@ final class MetalLayerBackedView: NSView {
             streamPoints = points
             needsLayout = true
             layoutVideoLayer()
+            publishWindowGeometry() // the popover's current-size pre-fill tracks the live window size
+        }
+        // HOST-WINDOW RESIZE: learn the captured window's display max so the "Resize…" popover caps its
+        // fields at a size the remote can actually adopt.
+        pipeline.onDisplayMaxChanged = { [weak self] points in
+            guard let self else { return }
+            displayMaxPoints = points
+            publishWindowGeometry()
         }
         // Wire the SwiftUI overlay's buttons to THIS view's pipeline (live connection only). The fit/fill
         // toggle was removed (the ACTUAL-SIZE viewport auto-drives content mode), so only the 1× reset wires.
@@ -383,11 +477,21 @@ final class MetalLayerBackedView: NSView {
         }
     }
 
+    /// HOST-WINDOW RESIZE: push the window's current + max resizable POINT sizes to the canvas (→ model)
+    /// so the "Resize…" popover pre-fills its fields at the current size and caps them at the remote max.
+    /// A zero max (display max not yet reported) tells the model to leave the field uncapped. No-op until
+    /// the current size is known (first decoded frame) or when no canvas wired the sink.
+    private func publishWindowGeometry() {
+        guard let cur = streamPoints else { return }
+        onWindowGeometryReady?(cur.width, cur.height, displayMaxPoints?.width ?? 0, displayMaxPoints?.height ?? 0)
+    }
+
     func deactivate() {
         if pointerInside { NSCursor.arrow.set() } // restore the arrow before the pipeline tears down
         pointerInside = false
         onKeyInjectorReady?(nil) // PASTE AS KEYSTROKES: drop the stale sink before teardown
         onResizeInjectorReady?(nil) // RESIZE GRIP: drop the stale sink before teardown
+        onViewportInjectorReady?(nil) // VIEWPORT CONTROLS: drop the stale zoom/lock sink before teardown
         pipeline.deactivate()
     }
 
@@ -459,17 +563,20 @@ final class MetalLayerBackedView: NSView {
             videoLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
             return
         }
-        let ww = CGFloat(win.width), wh = CGFloat(win.height)
-        // Clamp the pan offset to the overflow on each axis (0 when the window fits → top-left anchored).
-        let maxX = Swift.max(0, ww - bounds.width)
-        let maxY = Swift.max(0, wh - bounds.height)
-        if !viewportTouched { panOffset = .zero }
+        // The DISPLAYED window size is the native point size × the client zoom (a compositor scale of the
+        // sublayer FRAME); the drawable stays at the NATIVE pixel size below, so CA scales the native-res
+        // texture — no reshader. `dw`/`dh` drive the frame + the pan clamp; `win` drives the drawable.
+        let dw = CGFloat(win.width) * clientZoom, dh = CGFloat(win.height) * clientZoom
+        // Clamp the pan offset to the overflow on each axis (0 when the zoomed window fits → top-left anchored).
+        let maxX = Swift.max(0, dw - bounds.width)
+        let maxY = Swift.max(0, dh - bounds.height)
+        if !viewportTouched, clientZoom == 1 { panOffset = .zero } // only auto-anchor at the untouched 1× default
         panOffset.x = Swift.min(Swift.max(panOffset.x, 0), maxX)
         panOffset.y = Swift.min(Swift.max(panOffset.y, 0), maxY)
         // Position (parent layer is bottom-left origin): origin.x = −panOffset.x; origin.y places the window
         // TOP at the pane top and reveals lower content as panOffset.y grows (derived for y-down panOffset).
-        videoLayer.frame = CGRect(x: -panOffset.x, y: bounds.height - wh + panOffset.y, width: ww, height: wh)
-        videoLayer.drawableSize = CGSize(width: ww * scale, height: wh * scale)
+        videoLayer.frame = CGRect(x: -panOffset.x, y: bounds.height - dh + panOffset.y, width: dw, height: dh)
+        videoLayer.drawableSize = CGSize(width: CGFloat(win.width) * scale, height: CGFloat(win.height) * scale)
         publishInputViewport()
     }
 
@@ -480,13 +587,17 @@ final class MetalLayerBackedView: NSView {
         guard let win = streamPoints, win.width > 1, win.height > 1 else { pipeline.setInputViewport(nil)
             return
         }
+        // The visible sub-rect is reported in TEXTURE (native-window) fractions. With zoom the displayed window
+        // is native × zoom, so divide the display-space pan offset / pane size by the DISPLAYED size `dw`/`dh`
+        // (= native × zoom) — equivalent to dividing the texture-space offset by the native size.
+        let dw = win.width * Double(clientZoom), dh = win.height * Double(clientZoom)
         pipeline.setInputViewport(VideoRect(
-            x: Double(panOffset.x) / win.width,
-            y: Double(panOffset.y) / win.height,
-            width: Double(bounds.width) / win.width,
-            height: Double(bounds.height) / win.height,
+            x: Double(panOffset.x) / dw,
+            y: Double(panOffset.y) / dh,
+            width: Double(bounds.width) / dw,
+            height: Double(bounds.height) / dh,
         ))
-        controls?.zoomed = viewportTouched
+        controls?.zoomed = viewportTouched || clientZoom != 1
     }
 
     /// Fires on window-attach and when the view moves between Retina/non-Retina displays.
@@ -506,9 +617,10 @@ final class MetalLayerBackedView: NSView {
     /// perturb geometry. (Edge-hover does the navigation.)
     override func magnify(with _: NSEvent) {}
 
-    /// 1× reset → re-anchor the viewport to the window's TOP-LEFT.
+    /// 1× reset → restore actual-size zoom AND re-anchor the viewport to the window's TOP-LEFT.
     private func applyResetZoom() {
         viewportTouched = false
+        clientZoom = 1
         panOffset = .zero
         stopEdgePan()
         needsLayout = true
@@ -529,6 +641,10 @@ final class MetalLayerBackedView: NSView {
     /// fits the pane.
     private func updateEdgePan(at p: CGPoint) {
         lastPointerView = p
+        // PAN LOCK ("lock position"): the footer lock control freezes the viewport — no edge-hover auto-pan.
+        guard !panLocked else { stopEdgePan()
+            return
+        }
         edgePanVelocity = computeEdgePanVelocity(at: p)
         if edgePanVelocity == .zero {
             stopEdgePan()
@@ -905,9 +1021,11 @@ struct MetalVideoLayerView: UIViewRepresentable {
     // Signature parity with the macOS representable (the shared `VideoWindowView.body` passes it).
     // iOS has no host-key-injection sink (paste-as-keystrokes is macOS-only), so this is unused here.
     var onKeyInjectorReady: ((((UInt16, Bool, Bool) -> Void)?) -> Void)?
-    // Signature parity with the macOS representable. iOS resizes the remote window via pinch, not a
-    // grip drag forwarded to the host, so the resize sink is accepted + ignored here.
-    var onResizeInjectorReady: ((((UInt8, Double, Double) -> Void)?) -> Void)?
+    // Signature parity with the macOS representable. iOS resizes the remote window via pinch (local zoom),
+    // not a host-window resize, so the resize / viewport / geometry hooks are accepted + ignored here.
+    var onResizeInjectorReady: ((((Double, Double) -> Void)?) -> Void)?
+    var onViewportInjectorReady: ((((UInt8) -> Void)?) -> Void)?
+    var onWindowGeometryReady: ((Double, Double, Double, Double) -> Void)?
 
     func makeUIView(context _: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()

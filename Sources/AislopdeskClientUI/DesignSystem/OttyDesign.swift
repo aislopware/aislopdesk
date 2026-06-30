@@ -153,8 +153,10 @@ struct OttyTheme {
         textSecondary: Color(ottyHex: 0x888888),
         textTertiary: Color(ottyHex: 0x8A8A8A),
         icon: Color(ottyHex: 0x8A8A8A),
-        divider: .white.opacity(0.06),
-        cardBorder: .white.opacity(0.06),
+        // Derive the structure hairlines from the theme's own text tone (0xEEEEEE) rather than a flat
+        // `Color.white`, so the dark divider matches the palette instead of reading as a white outlier.
+        divider: Color(ottyHex: 0xEEEEEE).opacity(0.06),
+        cardBorder: Color(ottyHex: 0xEEEEEE).opacity(0.06),
         border: .white.opacity(0.06),
         borderActive: .white.opacity(0.15),
         hover: .white.opacity(0.05),
@@ -210,7 +212,12 @@ struct OttyTheme {
     /// Build a full ``OttyTheme`` from a Monokai ``MonokaiSeed`` — structural opacities (borders / hover /
     /// selection) are shared and keyed only on light/dark; the colour roles come from the seed.
     private static func monokai(_ s: MonokaiSeed) -> Self {
-        let line: Color = s.isLight ? .black : .white
+        // Structure tints (divider / borders / hover / selection) DERIVE from the theme palette, not a
+        // hardcoded black/white: a DARK filter seeds them from its FOREGROUND so every variant's hairline
+        // carries that filter's own hue (teal-white for Machine, warm-rose for Ristretto, cool-violet for
+        // Spectrum) instead of one flat `Color.white` outlier shared by all five — the "divider của dark
+        // theme đang màu trắng / hardcode" report. Light filters keep a near-black structure line.
+        let line = Color(ottyHex: s.isLight ? 0x000000 : s.foreground)
         return Self(
             window: Color(ottyHex: s.background),
             sidebar: Color(ottyHex: s.sidebar),
@@ -520,6 +527,10 @@ enum Otty {
         static let hairline: CGFloat = 1
         static let cardBorderWidth: CGFloat = 1
         static let dividerHoverWidth: CGFloat = 2
+        /// The active-pane focus marker: leg length (points) of the small FILLED accent triangle tucked into
+        /// the focused pane's TOP-LEFT corner (Warp-style — the kept treatment after the box / bracket /
+        /// underline / dot / top-bar iterations). REPLACING the old unfocused-dim treatment.
+        static let focusCornerSize: CGFloat = 12
 
         // Control plate (PlateIconButton)
         static let plate: CGFloat = 24
@@ -561,8 +572,6 @@ enum Otty {
         static let titlebarDwell: Double = 0.40
         /// Titlebar chrome fade-out duration (seconds) after the dwell — otty's `PanelToggleButton.hide`.
         static let titlebarFadeOut: Double = 0.20
-        /// Unfocused-pane dim opacity (`⌘D` split — non-focused panes fade to this).
-        static let unfocusedPaneOpacity: Double = 0.6
     }
 }
 

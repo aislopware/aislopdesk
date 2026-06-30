@@ -38,6 +38,16 @@ struct NavigatorColumn: View {
     /// the value via the `NavigationSplitView`, but it is still passed explicitly for parity.
     var preferences: PreferencesStore?
 
+    /// The app-global connection — drives the compact host + connection-status header pinned at the TOP of the
+    /// sidebar, ABOVE the session switcher and the TABS section. This is the ONE place the host / connection
+    /// state lives now: it is common to every pane, so it was lifted OUT of the per-pane footer (the terminal
+    /// footer is gone entirely) into this shared header. Optional so the column stays standalone-mountable in
+    /// previews / snapshot tests (a `nil` connection simply hides the header).
+    var connection: AppConnection?
+    /// Tapping the connection header opens the Connect-to-Host editor (``OverlayCoordinator/openConnect()``).
+    /// No-op default keeps the column standalone-mountable.
+    var onConnect: () -> Void = {}
+
     /// The transient sidebar search query — narrows the rows via the pure ``RailRowsBuilder/filtered`` (E6
     /// WI-5). View-local `@State`: it is a presentational filter, NOT row order (which lives on the store).
     @State private var query = ""
@@ -181,6 +191,16 @@ struct NavigatorColumn: View {
         let sections = buildSections(allRows, query: query)
         return VStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 40) // reserve the titlebar / traffic-light strip
+            // Connection header: the host + live connection status, pinned at the very top of the content area
+            // (above the session switcher AND the TABS section) because it is common to EVERY pane — the
+            // single home for the host/status cues that used to be duplicated in each pane's bottom footer.
+            // Reuses the toolbar's ``ConnectionStatusPill`` (coloured dot + host + status); tapping opens the
+            // Connect-to-Host editor. `pingMS: nil` — RTT stays in the inspector / toolbar, not the sidebar.
+            if let connection {
+                ConnectionStatusPill(connection: connection, pingMS: nil, onTap: onConnect)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+            }
             // E19 WI-5 / A32: the multi-session switcher sits ABOVE the "TABS" header (below the traffic-light
             // strip). It is additive — the tab list below still renders the ACTIVE session's tabs unchanged.
             SessionSwitcherView(store: store)

@@ -93,12 +93,23 @@ public struct RemotePaneContext {
     /// the SAME per-key `CGEvent` path the keyboard uses (`InputInjector.postKey`). The closure is
     /// `(keyCode, down, shift)`. `nil` (the standalone default) ⇒ no canvas to receive the sink.
     public var onKeyInjectorReady: ((((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?) -> Void)?
-    /// RESIZE GRIP: the live video view publishes a resize-drive closure here once its session exists (and
-    /// `nil` on teardown), so the pane's bottom-right grip drives an absolute host-window resize. The
-    /// closure is `(phase, tx, ty)` — phase `0` began / `1` changed / `2` ended; `tx`/`ty` = cumulative
-    /// drag translation in LOCAL pane points. `nil` (the standalone default) ⇒ no canvas to receive it.
-    /// Withheld (bound `nil`) while the pane is read-only (see ``videoLeaf(isActive:readOnly:...)``).
-    public var onResizeInjectorReady: ((((_ phase: UInt8, _ tx: Double, _ ty: Double) -> Void)?) -> Void)?
+    /// RESIZE (numeric popover): the live video view publishes a resize-drive closure here once its session
+    /// exists (and `nil` on teardown), so the pane's "Resize…" popover requests an ABSOLUTE host-window
+    /// POINT size. The closure is `(width, height)` in host points. `nil` (the standalone default) ⇒ no
+    /// canvas. Withheld (bound `nil`) while the pane is read-only (see ``videoLeaf(isActive:readOnly:...)``).
+    public var onResizeInjectorReady: ((((_ width: Double, _ height: Double) -> Void)?) -> Void)?
+    /// VIEWPORT CONTROLS: the live video view publishes a client-viewport command sink here once its session
+    /// exists (and `nil` on teardown), so the pane's bottom control bar drives zoom / pan-lock. The closure
+    /// carries a raw command byte (``RemoteWindowModel/ViewportCommand``: 0 zoom-in / 1 zoom-out / 2 reset /
+    /// 3 toggle-lock). Pure CLIENT compositor ops (no host input), so — unlike ``onResizeInjectorReady`` — it
+    /// is NOT withheld while read-only. `nil` (the standalone default) ⇒ no canvas to receive it.
+    public var onViewportInjectorReady: ((((_ command: UInt8) -> Void)?) -> Void)?
+    /// HOST-WINDOW RESIZE: the live video view PUSHES the remote window's current + MAX resizable POINT
+    /// sizes through this whenever either changes (first decoded frame / host displayMax report), so the
+    /// "Resize…" popover pre-fills its fields at the current size and caps them at the remote max. `(curW,
+    /// curH, maxW, maxH)`; a zero max = "not yet known" (the popover then leaves that field uncapped).
+    /// Pure informational view→model push (never reaches the host), so it is NOT read-only-gated. `nil` ⇒ none.
+    public var onWindowGeometryChanged: ((_ curW: Double, _ curH: Double, _ maxW: Double, _ maxH: Double) -> Void)?
 
     public init(
         isActive: Bool = true,
@@ -107,7 +118,9 @@ public struct RemotePaneContext {
         onCanvasScroll: @escaping (CGSize) -> Void = { _ in },
         onStreamNativeSize: ((_ target: CGSize, _ current: CGSize) -> Void)? = nil,
         onKeyInjectorReady: ((((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?) -> Void)? = nil,
-        onResizeInjectorReady: ((((_ phase: UInt8, _ tx: Double, _ ty: Double) -> Void)?) -> Void)? = nil,
+        onResizeInjectorReady: ((((_ width: Double, _ height: Double) -> Void)?) -> Void)? = nil,
+        onViewportInjectorReady: ((((_ command: UInt8) -> Void)?) -> Void)? = nil,
+        onWindowGeometryChanged: ((_ curW: Double, _ curH: Double, _ maxW: Double, _ maxH: Double) -> Void)? = nil,
     ) {
         self.isActive = isActive
         self.inputEnabled = inputEnabled
@@ -116,6 +129,8 @@ public struct RemotePaneContext {
         self.onStreamNativeSize = onStreamNativeSize
         self.onKeyInjectorReady = onKeyInjectorReady
         self.onResizeInjectorReady = onResizeInjectorReady
+        self.onViewportInjectorReady = onViewportInjectorReady
+        self.onWindowGeometryChanged = onWindowGeometryChanged
     }
 
     /// The standalone default (no canvas around it): always active, INPUT-ENABLED, no-op callbacks — for
@@ -139,7 +154,11 @@ public struct RemotePaneContext {
         onCanvasScroll: @escaping (CGSize) -> Void = { _ in },
         onStreamNativeSize: ((_ target: CGSize, _ current: CGSize) -> Void)? = nil,
         bindKeyInjector: @escaping (((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?) -> Void,
-        bindResizeInjector: @escaping (((_ phase: UInt8, _ tx: Double, _ ty: Double) -> Void)?) -> Void = { _ in },
+        bindResizeInjector: @escaping (((_ width: Double, _ height: Double) -> Void)?) -> Void = { _ in },
+        bindViewportInjector: @escaping (((_ command: UInt8) -> Void)?) -> Void = { _ in },
+        onWindowGeometry: @escaping (_ curW: Double, _ curH: Double, _ maxW: Double, _ maxH: Double)
+            -> Void = { _, _, _, _ in
+            },
     ) -> Self {
         Self(
             isActive: isActive,
@@ -148,9 +167,16 @@ public struct RemotePaneContext {
             onCanvasScroll: onCanvasScroll,
             onStreamNativeSize: onStreamNativeSize,
             onKeyInjectorReady: { sink in bindKeyInjector(readOnly ? nil : sink) },
-            // RESIZE GRIP: a read-only pane must not resize the host window — withhold the sink (bind nil),
-            // exactly like the key sink, so the grip is inert (and `GuiLeafView` hides it) while locked.
+            // RESIZE: a read-only pane must not resize the host window — withhold the sink (bind nil),
+            // exactly like the key sink, so the popover is inert (and `GuiLeafView` hides it) while locked.
             onResizeInjectorReady: { sink in bindResizeInjector(readOnly ? nil : sink) },
+            // VIEWPORT CONTROLS: zoom / pan-lock are pure CLIENT compositor ops (they never reach the host), so
+            // they stay live even on a READ-ONLY pane — bind the sink unconditionally (no read-only gate).
+            onViewportInjectorReady: { sink in bindViewportInjector(sink) },
+            // HOST-WINDOW RESIZE: the window geometry push (current + max size) is informational and never
+            // reaches the host, so it stays live even on a read-only pane (the popover is hidden anyway, but
+            // the model's size mirror stays current for when the pane is unlocked).
+            onWindowGeometryChanged: onWindowGeometry,
         )
     }
 }

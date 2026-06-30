@@ -209,6 +209,12 @@ public enum VideoControlMessage: Equatable, Sendable {
     /// whole frame is opaque (the contracted / default state). Sent on every capture-region change;
     /// inert to an old peer (unknown type → dropped).
     case contentMask([MaskRect])
+    /// Host → client: the MAXIMUM POINT size the captured window can be resized to — the bounds of the
+    /// display it sits on (or the virtual-display bounds while parked). Sent once when capture starts so
+    /// the client's "Resize…" popover can cap its width/height fields at a size the remote can actually
+    /// achieve (paired with the host's resize-to-display-origin so that maximum is reachable). Inert to an
+    /// old peer (unknown type → dropped); a client that never receives it simply leaves its fields uncapped.
+    case displayMax(width: UInt16, height: UInt16)
 
     public var messageType: UInt8 {
         switch self {
@@ -226,6 +232,7 @@ public enum VideoControlMessage: Equatable, Sendable {
         case .systemDialogList: 12
         case .scrollOffset: 13
         case .contentMask: 14
+        case .displayMax: 15
         }
     }
 
@@ -311,6 +318,9 @@ public enum VideoControlMessage: Equatable, Sendable {
                 out.appendBE(r.width)
                 out.appendBE(r.height)
             }
+        case let .displayMax(width, height):
+            out.appendBE(width)
+            out.appendBE(height)
         }
         return out
     }
@@ -431,6 +441,10 @@ public enum VideoControlMessage: Equatable, Sendable {
                 rects.append(MaskRect(x: x, y: y, width: w, height: h))
             }
             return .contentMask(rects)
+        case 15:
+            let w = try reader.readUInt16()
+            let h = try reader.readUInt16()
+            return .displayMax(width: w, height: h)
         default:
             throw VideoProtocolError.malformed("unknown video control message type \(type)")
         }

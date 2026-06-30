@@ -100,6 +100,11 @@ final class VideoWindowPipeline {
     /// viewport. Set by the view in `activate`; left `nil` on iOS (manual pinch) / standalone.
     var onDecodedPointsChanged: ((VideoSize) -> Void)?
 
+    /// HOST-WINDOW RESIZE (2026-06-30): fired on the @MainActor when the host reports the captured
+    /// window's MAXIMUM resizable POINT size (its display bounds). The macOS backing view forwards it to
+    /// the model so the "Resize…" popover caps its width/height fields. Set by the view in `activate`.
+    var onDisplayMaxChanged: ((VideoSize) -> Void)?
+
     #if os(macOS)
     /// The LOCAL `NSCursor` mirroring the host's CURRENT cursor SHAPE (Parsec model: the OS draws it at
     /// the instant local mouse position, so the pointer never lags by an RTT). `nil` until the shape
@@ -443,6 +448,11 @@ final class VideoWindowPipeline {
                 // it can auto-zoom the stream to 1:1 inside its fixed pane viewport (no-op if unbound).
                 Task { @MainActor in self?.onDecodedPointsChanged?(points) }
             },
+            notifyDisplayMax: { [weak self] points in
+                // HOST-WINDOW RESIZE: hop to main and hand the captured window's display max (points) to
+                // the view so it can cap the "Resize…" popover fields (no-op if unbound).
+                Task { @MainActor in self?.onDisplayMaxChanged?(points) }
+            },
         )
 
         let session = AislopdeskVideoClientSession(
@@ -530,18 +540,11 @@ final class VideoWindowPipeline {
         Task { await session.noteLayerSizeAdopted(size) }
     }
 
-    /// USER RESIZE GRIP — drag START: snapshot the remote window's current size in the session as
-    /// the absolute base for this drag (see ``AislopdeskVideoClientSession/userResizeBegan()``).
-    func userResizeBegan() {
+    /// USER RESIZE (numeric popover): forward an ABSOLUTE host-window POINT size so the session requests
+    /// the resize (see ``AislopdeskVideoClientSession/userResizeTo(width:height:)``).
+    func userResizeTo(width: Double, height: Double) {
         guard let session else { return }
-        Task { await session.userResizeBegan() }
-    }
-
-    /// USER RESIZE GRIP — drag STEP/END: forward the cumulative local-point translation so the
-    /// session computes the absolute host-window target and (debounced) requests the resize.
-    func userResize(translationX tx: Double, translationY ty: Double, final: Bool) {
-        guard let session else { return }
-        Task { await session.userResize(translationX: tx, translationY: ty, final: final) }
+        Task { await session.userResizeTo(width: width, height: height) }
     }
 
     /// VNC-style zoom/pan, forwarded to the renderer (applied as a UV crop next vsync)

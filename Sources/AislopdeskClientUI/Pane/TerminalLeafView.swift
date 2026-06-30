@@ -117,6 +117,12 @@ struct TerminalLeafView: View {
         VStack(spacing: 0) {
             terminalSurface
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Inner breathing room so the terminal content doesn't sit flush against the pane edges /
+                // the split divider (issue: "thêm padding vào các pane"). The `NativePaneColor.terminalBackground`
+                // on the VStack fills the inset gutter, so the pane stays flat (no card). NB this insets the
+                // libghostty surface, so the host PTY grid loses ~1 col/row each side — it reflows through the
+                // existing PaneContainer.size → resize-scrim → host TIOCSWINSZ path, no new signal needed.
+                .padding(Otty.Metric.space2)
             bottomComposer
             // E13 WI-4 (ES-E13-4): the Claude bottom bar — mounted agent-gated (`claudeStatus != .none`)
             // just ABOVE the status bar, so it reflows in below the surface exactly like the Composer. The
@@ -126,21 +132,11 @@ struct TerminalLeafView: View {
                 AgentInputFooterView(coordinator: agentFooter)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            // E10 WI-4 (ES-E10-3 / ES-E10-4): the flat ≤20pt status bar along the pane BOTTOM (the opposite
-            // edge from the E17 top-trailing pills). Gated `!staticMirror && !hideStatusBar` and only for a
-            // live terminal pane; a thin renderer over the pure ``StatusBarContent`` model.
-            if showStatusBar {
-                StatusBarStrip(
-                    model: live?.terminalModel,
-                    cwd: cwd,
-                    kind: live?.kind ?? .terminal,
-                    host: host,
-                    // E10 WI-5 (ES-E10-4): the ⌘-hovered link's resolved full path overrides the left field on
-                    // the dark sub-strip (`full-path-hover.png`). Reading this OBSERVABLE here re-renders the
-                    // strip as the renderer's `mouseMoved` hit-test updates it; `nil` at rest keeps the cwd chip.
-                    hoverFullPath: live?.terminalModel?.hoveredLinkFullPath,
-                )
-            }
+            // NO per-pane status strip on a TERMINAL pane (issue: "pane footer cho terminal không có giá trị
+            // gì lắm, nên bỏ đi"). The cwd / exit / progress cues are low-value chrome; the host + connection
+            // status — the only fields common to EVERY pane — now live ONCE in the sidebar's connection header
+            // (`NavigatorColumn` → `ConnectionStatusPill`), not duplicated per pane. The GUI/window pane keeps
+            // a bottom bar, but as a CONTROL bar (resize / lock / zoom), not a status strip.
         }
         .background(NativePaneColor.terminalBackground)
         .task(id: live?.id) { await connectIfNeeded() }
@@ -187,13 +183,6 @@ struct TerminalLeafView: View {
             }
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
-    }
-
-    /// Whether the bottom status bar mounts (E10 WI-4): a live terminal pane, NOT the static-mirror snapshot
-    /// path, and the `Hide Status Bar` setting (``SettingsKey/hideStatusBarEnabled``) off. The strip itself is
-    /// a pure renderer — this leaf-side gate is the single hide decision (so a hidden strip costs nothing).
-    private var showStatusBar: Bool {
-        !staticMirror && live?.terminalModel != nil && !SettingsKey.hideStatusBarEnabled
     }
 
     /// Whether the Claude bottom bar (E13 WI-4) mounts: a live terminal pane, NOT the static-mirror snapshot

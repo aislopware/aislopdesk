@@ -4,6 +4,36 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+/// PURE display-pick math for the host-window-resize feature (2026-06-30, unit-tested): given a
+/// window's frame and the active displays' bounds — all in CG global POINTS (top-left origin) — pick
+/// the display the window sits on. Two callers share it: the resize MAX the host reports to the client
+/// (`displayMax` = the display's point size, so the "Resize…" popover caps its fields) and the
+/// reposition-to-display-ORIGIN the host performs before an AX resize (so macOS lets the window grow to
+/// the full screen instead of clamping it at its old off-origin position).
+public enum WindowDisplayResolver {
+    /// The display whose bounds CONTAIN the window's centre; else the LARGEST display (a window off every
+    /// screen / straddling a gap falls back to the biggest); else `nil` (no displays enumerated). Uses an
+    /// ordered area comparison (never a bare `<` that mis-handles ties) and the centre (not a corner) so a
+    /// window mostly on one screen resolves to it even with a sliver overhanging a neighbour.
+    public static func display(forWindowFrame frame: CGRect, displays: [CGRect]) -> CGRect? {
+        guard !displays.isEmpty else { return nil }
+        let centre = CGPoint(x: frame.midX, y: frame.midY)
+        if let hit = displays.first(where: { $0.contains(centre) }) { return hit }
+        return displays.max(by: { ($0.width * $0.height) < ($1.width * $1.height) })
+    }
+
+    /// The CG bounds of every active display (global POINTS, top-left origin). GUI-only (reads the live
+    /// display config) but cheap + non-hanging — unlike SCStream/VT it needs no window-server session.
+    /// Returns `[]` on a query failure so callers fall back to no-clamp / no-reposition.
+    static func activeDisplayBounds() -> [CGRect] {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+        return ids.prefix(Int(count)).map { CGDisplayBounds($0) }
+    }
+}
+
 /// PURE geometry for the DIALOG-EXPAND feature (host-side, unit-tested): decide the capture region
 /// = the target window frame ∪ any associated panel windows (a file-open / print / share dialog
 /// the OS attaches to the window), so a dialog larger than the streamed window shows in full and is
@@ -387,6 +417,24 @@ public final class WindowGeometryWatcher: @unchecked Sendable {
         // windows share a frame — the prior frame-equality lookup could resize the WRONG window
         // when panes are stacked at one origin on the shared VD).
         for axWindow in axWindows where axWindowID(of: axWindow) == windowID {
+            // RESIZE-TO-ORIGIN (2026-06-30): re-anchor the window at its display's TOP-LEFT BEFORE the size
+            // write. macOS clamps an AX size-set so the window stays on-screen from its CURRENT position, so
+            // a window parked mid-screen can't grow to the full display; moving it to the display origin
+            // first lets the requested (up-to-display-max) size actually take. Best-effort — a window that
+            // refuses the position write (kAXErrorAttributeUnsupported) still gets the size write below.
+            if let live = axWindowFrame(axWindow),
+               let display = WindowDisplayResolver.display(
+                   forWindowFrame: CGRect(
+                       x: live.origin.x, y: live.origin.y, width: live.size.width, height: live.size.height,
+                   ),
+                   displays: WindowDisplayResolver.activeDisplayBounds(),
+               )
+            {
+                var origin = display.origin
+                if let posValue = AXValueCreate(.cgPoint, &origin) {
+                    _ = AXUIElementSetAttributeValue(axWindow, kAXPositionAttribute as CFString, posValue)
+                }
+            }
             var size = CGSize(width: max(1, desiredPoints.width), height: max(1, desiredPoints.height))
             guard let value = AXValueCreate(.cgSize, &size) else { return nil }
             // WRITE the new size. Tolerate (do NOT crash on) unsupported/cannot-complete —
