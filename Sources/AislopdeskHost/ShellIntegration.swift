@@ -220,7 +220,13 @@ public enum ShellIntegration {
           local __aislopdesk_exit=$?
           printf '\\033]133;D;%s\\007' "$__aislopdesk_exit"
           printf '\\033]133;A\\007'
-          PROMPT+="%{$'\\033]133;B\\007'%}"
+          # Append the B (prompt-end / command-start) mark at the END of the rendered prompt. It MUST be a
+          # STANDALONE $'…' token: the real ESC/BEL bytes are stored at assignment time. Inside DOUBLE
+          # quotes ("%{$'…'%}") zsh does NOT ANSI-C-expand $'…', so the LITERAL text $'\\033]133;B\\007'
+          # ends up in $PROMPT — visible on screen AND, wrapped in zero-width %{…%}, it corrupts zsh's
+          # column accounting. Guard with a containment test so a theme with a STATIC $PROMPT (one that
+          # does not rebuild PROMPT each precmd) does not accumulate a fresh copy on every prompt.
+          [[ $PROMPT == *$'\\033]133;B\\007'* ]] || PROMPT+=$'%{\\033]133;B\\007%}'
         }
         add-zsh-hook preexec __aislopdesk_osc133_preexec
         add-zsh-hook precmd  __aislopdesk_osc133_precmd

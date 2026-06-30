@@ -276,6 +276,13 @@ final class MuxChannelSession: @unchecked Sendable {
     /// bails if a newer resize superseded it. `Task.cancel()` cannot interrupt a task already past
     /// its `sleep`, so the generation — not cancellation alone — is what makes the LATEST size win.
     private var resizeGeneration: UInt64 = 0
+    /// LOST-PROMPT FIX: a one-shot, cancel-replace task that re-sends `SIGWINCH` (`pty.nudgeRedraw`) a
+    /// short delay AFTER a resize settles. `TIOCSWINSZ` already delivers one SIGWINCH, but that fires
+    /// WHILE the client grid is still mid-reflow, so the shell's `zle reset-prompt` redraws into a
+    /// transient grid that the final reflow then clears — leaving the prompt line blank with only a bare
+    /// cursor. A second nudge once the grid is stable forces the shell/TUI to repaint the prompt at the
+    /// final size. Owned by `resizeLock` (same discipline as `resizeDebounceTask`).
+    private var redrawNudgeTask: Task<Void, Never>?
 
     /// Called once when the child exits so the owner can drop this channel from its map.
     var onExit: (@Sendable (UInt32) -> Void)?
@@ -991,8 +998,11 @@ final class MuxChannelSession: @unchecked Sendable {
         resizeLock.lock()
         let resizeTask = resizeDebounceTask
         resizeDebounceTask = nil
+        let nudgeTask = redrawNudgeTask
+        redrawNudgeTask = nil
         resizeLock.unlock()
         resizeTask?.cancel()
+        nudgeTask?.cancel()
         // R5 rank 5: release the exit task's EOF gate (it is also cancelled above, but signalling makes
         // it return promptly rather than polling to its timeout) so teardown never lingers on the latch.
         signalEOFReached()
@@ -1089,6 +1099,25 @@ final class MuxChannelSession: @unchecked Sendable {
         pendingResize = nil
         resizeLock.unlock()
         pty.setWindowSize(cols: r.cols, rows: r.rows, pxWidth: r.px, pxHeight: r.py)
+        scheduleRedrawNudge()
+    }
+
+    /// Schedules a single delayed `SIGWINCH` (cancel-replace) so the shell repaints its prompt AFTER the
+    /// client grid has settled at the new size (see `redrawNudgeTask`). Each resize cancels the prior
+    /// pending nudge, so a drag emits exactly one nudge — at the final size. Same lock discipline as
+    /// `scheduleResize`; `nudgeRedraw` is internally fd-locked and a no-op on a closed PTY.
+    private func scheduleRedrawNudge() {
+        resizeLock.lock()
+        redrawNudgeTask?.cancel()
+        redrawNudgeTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(90))
+            } catch {
+                return // superseded by a newer resize before firing — that resize schedules its own nudge.
+            }
+            self?.pty.nudgeRedraw()
+        }
+        resizeLock.unlock()
     }
 
     // MARK: - Bounded-output-queue backpressure (lock-guarded; the value type is not Sendable)

@@ -247,10 +247,23 @@ final class AislopdeskSplitViewController: NSSplitViewController {
     /// Apply the toolbar collapse flags to the sidebar/inspector items (idempotent — only animates a real
     /// change so a steady-state update doesn't re-trigger the animation).
     func applyCollapse(sidebarCollapsed: Bool, inspectorCollapsed: Bool) {
-        if let sidebarItem, sidebarItem.isCollapsed != sidebarCollapsed {
+        let sidebarChanging = sidebarItem.map { $0.isCollapsed != sidebarCollapsed } ?? false
+        let inspectorChanging = inspectorItem.map { $0.isCollapsed != inspectorCollapsed } ?? false
+        // LOST-PROMPT FIX: `animator().isCollapsed = …` applies the FIRST collapse-animation layout frame
+        // SYNCHRONOUSLY, which fires `GhosttyLayerBackedView.layout()` and forwards an INTERMEDIATE grid
+        // size to the host BEFORE `splitViewSubviewsDidResize` (the notification) suspends forwarding. That
+        // premature SIGWINCH makes zsh run `zle reset-prompt` at the wrong width, double-firing against the
+        // final-width reset and erasing the prompt line. Suspend FIRST so the intermediate frames are held;
+        // the settle timer in `splitViewSubviewsDidResize` resumes + flushes the FINAL grid (the
+        // idempotency guard in `setResizeSuspended` prevents a double-flush).
+        if sidebarChanging || inspectorChanging {
+            resizeForwardingSuspended = true
+            store.setTerminalResizeSuspended(true)
+        }
+        if sidebarChanging, let sidebarItem {
             sidebarItem.animator().isCollapsed = sidebarCollapsed
         }
-        if let inspectorItem, inspectorItem.isCollapsed != inspectorCollapsed {
+        if inspectorChanging, let inspectorItem {
             inspectorItem.animator().isCollapsed = inspectorCollapsed
         }
     }

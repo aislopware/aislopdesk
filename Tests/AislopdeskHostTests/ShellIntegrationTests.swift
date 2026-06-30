@@ -257,13 +257,19 @@ final class ShellIntegrationTests: XCTestCase {
         let zshrc = try String(contentsOf: dir.appendingPathComponent(".zshrc"), encoding: .utf8)
         // The B mark must be present.
         XCTAssertTrue(zshrc.contains("133;B"), "zshrc must emit OSC 133;B")
-        // B must be in a PROMPT+= line (so it fires at the end of the rendered prompt, after the
-        // prompt text — NOT printed before the prompt, which would cause the prompt text to leak
-        // into commandText and break the auto-progress prefix match).
+        // B must be appended to $PROMPT via a STANDALONE `$'…'` token so zsh stores the REAL ESC/BEL
+        // bytes. (It fires at the end of the rendered prompt, after the prompt text — NOT printed before
+        // the prompt, which would leak the prompt text into commandText.)
         XCTAssertTrue(
-            zshrc.contains("PROMPT+=\"%{$'\\033]133;B\\007'%}\"")
-                || zshrc.contains("PROMPT+=\"%{$'"),
-            "B must be appended to $PROMPT via PROMPT+= (not emitted before the prompt)",
+            zshrc.contains("PROMPT+=$'%{\\033]133;B\\007%}'"),
+            "B must be appended via a standalone $'…' token (real ESC/BEL bytes)",
+        )
+        // Regression guard (revert-to-confirm-fail): the old `PROMPT+="%{$'…'%}"` form put $'…' inside
+        // DOUBLE quotes, where zsh does NOT ANSI-C-expand it — the LITERAL text $'\033]133;B\007' leaked
+        // onto the prompt line (visible junk) and, wrapped in zero-width %{…%}, corrupted column math.
+        XCTAssertFalse(
+            zshrc.contains("PROMPT+=\"%{$'"),
+            "B must NOT use the double-quoted \"%{$'…'%}\" form ($'…' is not expanded inside double quotes)",
         )
         // The PROMPT+= must appear INSIDE the precmd function and AFTER the A mark emit — A first,
         // then prompt rendered, then B (at the end of the prompt) — so the OSC bytes arrive in the

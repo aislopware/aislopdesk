@@ -708,7 +708,15 @@ public struct AislopdeskClientApp: App {
                         to: window, store: store, chrome: chrome,
                         fontPointSize: CGFloat(preferences.terminal.fontSize),
                     )
-                    guard Self.hasAutomationEnvironment(), !window.isKeyWindow else { return }
+                    // FOCUS-STEALING FIX: this `.introspect(.window)` closure RE-FIRES on every scene
+                    // re-render (terminal/video output mutates @Observable state continuously). The old
+                    // `!window.isKeyWindow` guard let it re-activate the app on ANY re-render that happened
+                    // while the window was non-key — i.e. the moment the user switched to another app it
+                    // yanked focus straight back. Gate the automation bring-to-front to ONCE per window
+                    // open via the same associated-object one-shot idiom as `applyInitialWindowSize`.
+                    guard Self.hasAutomationEnvironment(),
+                          objc_getAssociatedObject(window, &Self.windowActivatedKey) == nil else { return }
+                    objc_setAssociatedObject(window, &Self.windowActivatedKey, true, .OBJC_ASSOCIATION_RETAIN)
                     NSApplication.shared.activate(ignoringOtherApps: true)
                     window.makeKeyAndOrderFront(nil)
                 }
@@ -897,6 +905,10 @@ public struct AislopdeskClientApp: App {
     /// a later manual resize is never re-fought by the re-firing introspect callback). Only its ADDRESS is
     /// used as the key, never its value — `nonisolated(unsafe)` like ``windowCloseDelegateKey``.
     private nonisolated(unsafe) static var windowSizeAppliedKey: UInt8 = 0
+    /// One-shot gate for the automation bring-to-front (see the `.introspect(.window)` closure): the
+    /// introspect callback re-fires on every scene re-render, so the activate must run at most once per
+    /// window or it steals focus back whenever the user switches to another app.
+    private nonisolated(unsafe) static var windowActivatedKey: UInt8 = 0
 
     /// E19 WI-4 (A30) — map the pin flag to `NSWindow.level` IDEMPOTENTLY. `.floating` keeps the window above
     /// other apps (otty Pin Window); `.normal` restores it. The guard means the re-firing introspect callback
