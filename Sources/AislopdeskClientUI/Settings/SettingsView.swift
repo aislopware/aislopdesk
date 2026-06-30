@@ -248,6 +248,10 @@ struct SettingsView: View {
                 min: 200, ideal: Otty.Metric.settingsSidebarWidth, max: 320,
             )
             .searchable(text: $sidebarQuery, placement: .sidebar, prompt: "Search")
+            // A Settings window has a FIXED navigator (like macOS System Settings) — drop the toolbar
+            // sidebar-collapse button macOS auto-adds for every NavigationSplitView. Collapsing the settings
+            // sidebar leaves no way to switch sections; removing the toggle keeps the navigator always present.
+            .toolbar(removing: .sidebarToggle)
         } detail: {
             content(for: selectedSection)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

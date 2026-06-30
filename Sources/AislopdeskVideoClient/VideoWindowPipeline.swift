@@ -105,6 +105,12 @@ final class VideoWindowPipeline {
     /// the model so the "Resize…" popover caps its width/height fields. Set by the view in `activate`.
     var onDisplayMaxChanged: ((VideoSize) -> Void)?
 
+    /// CONNECTION STATS (2026-06-30): fired on the @MainActor when the host's FPS governor announces a new
+    /// stream CADENCE (frames/sec) — the initial cadence and every change. The macOS backing view forwards
+    /// it to the model so the sidebar's Connection section shows a per-pane "FPS" row. Set by the view in
+    /// `activate`. (Same value that re-bases the pacer below — surfaced for display, not control.)
+    var onStreamCadenceChanged: ((Int) -> Void)?
+
     #if os(macOS)
     /// The LOCAL `NSCursor` mirroring the host's CURRENT cursor SHAPE (Parsec model: the OS draws it at
     /// the instant local mouse position, so the pointer never lags by an RTT). `nil` until the shape
@@ -406,13 +412,16 @@ final class VideoWindowPipeline {
                 Task { @MainActor in self?.renderer?.colorRange = range }
             },
             notifyStreamNativePoints: notifyStreamNativePoints,
-            applyStreamCadence: { fps in
+            applyStreamCadence: { [weak self] fps in
                 // FPS GOVERNOR: rebase the pacer's content-cadence assumptions (deadline-mode
                 // interval + adaptive-jitter frames conversion + the depth-v2 policy's expected
                 // interval). `setContentFps` is lock-guarded and callable off-main, so no actor
                 // hop is needed. The default arrival-mode pacing is fps-agnostic
                 // (present-on-arrival) — this is a rhythm rebase only.
                 pacer.setContentFps(Double(fps))
+                // CONNECTION STATS: also surface the cadence to the view→model so the Connection section's
+                // FPS row tracks it. Hop to main (the model is @MainActor); coalesced no-op when unbound.
+                Task { @MainActor in self?.onStreamCadenceChanged?(Int(fps)) }
             },
             readPacerTelemetry: {
                 // Component 4: synchronous lock-guarded drain (no main hop — the pacer carries its

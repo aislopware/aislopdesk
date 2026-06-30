@@ -186,6 +186,9 @@ struct GuiLeafView: View {
                     onWindowGeometry: { [weak model] cw, ch, mw, mh in
                         model?.noteWindowGeometry(currentW: cw, currentH: ch, maxW: mw, maxH: mh)
                     },
+                    // CONNECTION STATS: the live view pushes the host-announced stream cadence so the sidebar's
+                    // Connection section shows this pane's FPS row (informational; not read-only-gated).
+                    onStreamCadence: { [weak model] fps in model?.noteStreamFps(fps) },
                 ),
             )
         }

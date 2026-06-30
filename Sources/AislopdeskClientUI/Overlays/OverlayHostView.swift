@@ -48,10 +48,8 @@ struct OverlayHostView: View {
                 Scrim { coordinator.closeCheatSheet() }
                 KeyboardCheatSheetView(coordinator: coordinator)
             }
-            if coordinator.connectVisible {
-                Scrim { coordinator.closeConnect() }
-                ConnectHostView(connection: connection, coordinator: coordinator)
-            }
+            // The Connect-to-Host editor is a NATIVE `.sheet` (see the `.sheet` modifier on the ZStack below),
+            // not a scrimmed custom panel — everything outside the workspace/panes is native chrome.
             if coordinator.remotePickerVisible {
                 Scrim { coordinator.closeRemotePicker() }
                 RemoteWindowPickerModal(coordinator: coordinator)
@@ -132,6 +130,14 @@ struct OverlayHostView: View {
             // Always mounted (renders nothing when empty) so an arriving toast animates in without a re-mount;
             // last in the ZStack ⇒ top-most, so a toast X stays clickable even with a panel up.
             ToastStackView(coordinator: coordinator)
+        }
+        // NATIVE Connect-to-Host editor: a real macOS sheet (native Form + buttons), not a custom scrim panel.
+        // `get` mirrors the coordinator flag; `set(false)` (Esc / system dismiss) routes through `closeConnect`.
+        .sheet(isPresented: Binding(
+            get: { coordinator.connectVisible },
+            set: { if !$0 { coordinator.closeConnect() } },
+        )) {
+            ConnectHostView(connection: connection, coordinator: coordinator)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // One fade for the whole panel layer, keyed on the modal gate so a panel appearing/dismissing

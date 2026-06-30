@@ -110,6 +110,11 @@ public struct RemotePaneContext {
     /// curH, maxW, maxH)`; a zero max = "not yet known" (the popover then leaves that field uncapped).
     /// Pure informational view→model push (never reaches the host), so it is NOT read-only-gated. `nil` ⇒ none.
     public var onWindowGeometryChanged: ((_ curW: Double, _ curH: Double, _ maxW: Double, _ maxH: Double) -> Void)?
+    /// CONNECTION STATS: the live video view PUSHES the host-announced stream cadence (frames/sec) through
+    /// this whenever the host's FPS governor announces a new value, so the sidebar's Connection section shows
+    /// a per-pane "FPS" row. Pure informational view→model push (never reaches the host), so it is NOT
+    /// read-only-gated. `nil` ⇒ none.
+    public var onStreamCadenceChanged: ((_ fps: Int) -> Void)?
 
     public init(
         isActive: Bool = true,
@@ -121,6 +126,7 @@ public struct RemotePaneContext {
         onResizeInjectorReady: ((((_ width: Double, _ height: Double) -> Void)?) -> Void)? = nil,
         onViewportInjectorReady: ((((_ command: UInt8) -> Void)?) -> Void)? = nil,
         onWindowGeometryChanged: ((_ curW: Double, _ curH: Double, _ maxW: Double, _ maxH: Double) -> Void)? = nil,
+        onStreamCadenceChanged: ((_ fps: Int) -> Void)? = nil,
     ) {
         self.isActive = isActive
         self.inputEnabled = inputEnabled
@@ -131,6 +137,7 @@ public struct RemotePaneContext {
         self.onResizeInjectorReady = onResizeInjectorReady
         self.onViewportInjectorReady = onViewportInjectorReady
         self.onWindowGeometryChanged = onWindowGeometryChanged
+        self.onStreamCadenceChanged = onStreamCadenceChanged
     }
 
     /// The standalone default (no canvas around it): always active, INPUT-ENABLED, no-op callbacks — for
@@ -159,6 +166,7 @@ public struct RemotePaneContext {
         onWindowGeometry: @escaping (_ curW: Double, _ curH: Double, _ maxW: Double, _ maxH: Double)
             -> Void = { _, _, _, _ in
             },
+        onStreamCadence: @escaping (_ fps: Int) -> Void = { _ in },
     ) -> Self {
         Self(
             isActive: isActive,
@@ -177,6 +185,9 @@ public struct RemotePaneContext {
             // reaches the host, so it stays live even on a read-only pane (the popover is hidden anyway, but
             // the model's size mirror stays current for when the pane is unlocked).
             onWindowGeometryChanged: onWindowGeometry,
+            // CONNECTION STATS: the host-cadence push is informational (never reaches the host), so it stays
+            // live regardless of read-only — the Connection section's FPS row tracks the stream either way.
+            onStreamCadenceChanged: onStreamCadence,
         )
     }
 }

@@ -100,6 +100,24 @@ final class RemoteWindowModelTests: XCTestCase {
         XCTAssertEqual(m.windowMaxPointSize, CGSize(width: 1920, height: 1080), "max persists once known")
     }
 
+    // MARK: Connection-section stats — host stream cadence (FPS)
+
+    /// `noteStreamFps` mirrors the host-announced stream cadence for the sidebar Connection section's FPS row:
+    /// `nil` until the first cadence lands, then tracks each announced value — but a non-positive value is
+    /// IGNORED (a spurious zero must not blank the row; the last good reading stands).
+    func testNoteStreamFpsTracksHostCadenceAndIgnoresNonPositive() {
+        let m = RemoteWindowModel(target: { self.target }, windowID: "1")
+        XCTAssertNil(m.streamFps, "no cadence announced yet ⇒ no FPS row")
+        m.noteStreamFps(30)
+        XCTAssertEqual(m.streamFps, 30)
+        m.noteStreamFps(60)
+        XCTAssertEqual(m.streamFps, 60, "tracks the latest host-announced cadence")
+        m.noteStreamFps(0)
+        XCTAssertEqual(m.streamFps, 60, "a spurious zero is ignored — the last good reading stands")
+        m.noteStreamFps(-5)
+        XCTAssertEqual(m.streamFps, 60, "a negative cadence is ignored")
+    }
+
     // MARK: Paste-as-keystrokes read-only / teardown gate (E21 WI-3 · F5-paste-leak)
 
     /// **F5 — a read-only lock landing MID-PASTE must withhold the remaining keystrokes.** The read-only

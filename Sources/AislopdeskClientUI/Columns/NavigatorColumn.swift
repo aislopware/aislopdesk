@@ -57,6 +57,29 @@ struct NavigatorColumn: View {
         store.tree.activeSession?.activeTab?.activePane
     }
 
+    /// The active pane's live session — resolves the per-pane connection telemetry the Connection section
+    /// shows: ping (per-pane channel RTT) and, for a GUI/video pane, the host stream cadence (fps).
+    private var activeLive: LivePaneSession? {
+        guard let id = selectedPane else { return nil }
+        return store.handle(for: id) as? LivePaneSession
+    }
+
+    /// The RTT (ms) to show in the Connection card. Prefers the ACTIVE pane's per-channel `latencyMS`, but
+    /// falls back to ANY live pane's RTT when the active pane has none — a `.remoteGUI` window pane has no
+    /// terminal-channel ping (`connection == nil`), so without this the ping would VANISH the moment you focus
+    /// a window. Every pane pings the SAME host, so a sibling terminal's RTT is representative; `.min()` keeps
+    /// it deterministic across the unordered registry.
+    private var activePingMS: Double? {
+        if let active = activeLive?.connection?.latencyMS { return active }
+        return store.allSessions
+            .compactMap { ($0 as? LivePaneSession)?.connection?.latencyMS }
+            .min()
+    }
+
+    /// The active VIDEO pane's host-announced stream cadence (fps); `nil` for a terminal pane / until the
+    /// host's FPS governor announces a value.
+    private var activeFps: Int? { activeLive?.remoteWindow?.streamFps }
+
     var body: some View {
         #if os(macOS)
         macSidebar
@@ -191,16 +214,6 @@ struct NavigatorColumn: View {
         let sections = buildSections(allRows, query: query)
         return VStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 40) // reserve the titlebar / traffic-light strip
-            // Connection header: the host + live connection status, pinned at the very top of the content area
-            // (above the session switcher AND the TABS section) because it is common to EVERY pane — the
-            // single home for the host/status cues that used to be duplicated in each pane's bottom footer.
-            // Reuses the toolbar's ``ConnectionStatusPill`` (coloured dot + host + status); tapping opens the
-            // Connect-to-Host editor. `pingMS: nil` — RTT stays in the inspector / toolbar, not the sidebar.
-            if let connection {
-                ConnectionStatusPill(connection: connection, pingMS: nil, onTap: onConnect)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-            }
             // E19 WI-5 / A32: the multi-session switcher sits ABOVE the "TABS" header (below the traffic-light
             // strip). It is additive — the tab list below still renders the ACTIVE session's tabs unchanged.
             SessionSwitcherView(store: store)
@@ -239,7 +252,21 @@ struct NavigatorColumn: View {
                 .padding(.horizontal, 8)
             }
             .scrollIndicators(.hidden) // otty's invisible scrollbars
-            Spacer(minLength: 0)
+            .frame(maxHeight: .infinity) // the tab list fills the slack so the connection card pins to the bottom
+
+            // Connection STATUS LINE: a borderless, FULL-BLEED whisper status bar pinned at the bottom of the
+            // sidebar (window chrome, not a card). Common to EVERY pane — the single home for the host/status
+            // cues. One line: dot + host + right-flushed metrics (ping = the active pane's RTT, or any live
+            // pane's, so a window pane keeps it; fps for a live video pane only). It carries its own top
+            // hairline + internal padding, so it spans the full width with no call-site insets.
+            if let connection {
+                ConnectionInfoSection(
+                    connection: connection,
+                    pingMS: activePingMS,
+                    fps: activeFps,
+                    onConnect: onConnect,
+                )
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Otty.Surface.sidebar)

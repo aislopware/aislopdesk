@@ -687,11 +687,43 @@ final class GhosttyLayerBackedView: NSView {
     var isFocusedPane: Bool = true {
         didSet {
             guard isFocusedPane != oldValue else { return }
-            // Forward render focus → ghostty's hollow (unfocused) / solid (focused) cursor, then present
-            // ONCE so the cursor style flips immediately (the cursor change alone is not a content event).
-            surface?.setFocus(isFocusedPane)
-            requestPresent()
+            // Forward render focus → ghostty's hollow (unfocused) / solid (focused) cursor, COALESCED to the
+            // next runloop (see `forwardRenderFocus`) so an in-runloop focus FLICKER can't strand the blink.
+            // The coalesced forward also re-presents to flip the cursor style. Keyboard FR stays synchronous.
+            forwardRenderFocus(isFocusedPane)
             applyKeyboardFocus()
+        }
+    }
+
+    /// Render-focus last forwarded to libghostty / the value awaiting the next-runloop forward. Render focus
+    /// is COALESCED (deferred one runloop hop, last-writer-wins, deduped against `lastForwardedFocus`) rather
+    /// than forwarded synchronously. WHY: two render-focus messages — an unfocus then a refocus — landing in
+    /// the SAME libghostty render-thread mailbox drain trip a cursor-blink race. The unfocus dispatches an
+    /// ASYNC cancel of the blink timer; if the refocus is processed before that cancel completes, the
+    /// refocus's `if (cursor_c.state() != .active)` guard skips re-showing the cursor, then the cancel lands
+    /// and leaves `cursor_blink_visible = false` with a DEAD timer — so the focused pane's blinking cursor is
+    /// stuck INVISIBLE until the next PTY byte resets it (`reset_cursor_blink`). A SwiftUI/AppKit focus
+    /// FLICKER — `isFocusedPane` false→true within one runloop (a tab switch, a popover open/close, the
+    /// mouse-move focus policy, or `becomeFirstResponder` racing the reactive update) — is exactly that
+    /// two-message pattern. Deferring the forward collapses an in-runloop flicker to a SINGLE net forward, so
+    /// the unfocus + refocus never co-occur. A genuine cross-runloop refocus is unaffected (by then the
+    /// cancel completed and libghostty's own focus handler re-shows the cursor + restarts the blink timer).
+    private var lastForwardedFocus: Bool?
+    private var pendingFocusForward: Bool?
+
+    private func forwardRenderFocus(_ focused: Bool) {
+        let alreadyScheduled = pendingFocusForward != nil
+        pendingFocusForward = focused
+        guard !alreadyScheduled else { return } // last-writer-wins: the scheduled hop reads the final value
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let want = self.pendingFocusForward else { return }
+            self.pendingFocusForward = nil
+            guard self.lastForwardedFocus != want else { return } // net no-op flicker → never reaches ghostty
+            self.lastForwardedFocus = want
+            self.surface?.setFocus(want)
+            // Re-present so the hollow⇄solid flip shows; a focus-GAIN gets a longer burst so the restarted
+            // blink's first visible frame lands despite our gated present.
+            self.requestPresent(want ? 6 : 3)
         }
     }
 
@@ -858,6 +890,8 @@ final class GhosttyLayerBackedView: NSView {
         // repaint host output via the content-driven present path above, so this never freezes them; it
         // also lets ghostty idle an unfocused pane's render thread (CPU win). The `isFocusedPane` didSet
         // re-forwards this on every focus change (with a `requestPresent` to flip the cursor style at once).
+        // Seed `lastForwardedFocus` so the coalesced `forwardRenderFocus` dedupes against the value set here.
+        lastForwardedFocus = isFocusedPane
         surface?.setFocus(isFocusedPane)
         // Resize-END → RE-ANCHOR the settle present burst to the release moment. The host `TIOCSWINSZ`
         // is DEFERRED to release, so its SIGWINCH-driven redraw bytes land ~1 RTT AFTER the layout-
@@ -2225,7 +2259,9 @@ final class GhosttyLayerBackedView: NSView {
     }
 
     override func becomeFirstResponder() -> Bool {
-        surface?.setFocus(true)
+        // Coalesced (not a direct setFocus) so this keyboard fast-path can't pair with a just-forwarded
+        // unfocus in the same render-thread drain — the cursor-blink race (see `forwardRenderFocus`).
+        forwardRenderFocus(true)
         return super.becomeFirstResponder()
     }
 
@@ -2339,8 +2375,29 @@ final class GhosttyLayerBackedView: UIView {
     var isFocusedPane: Bool = true {
         didSet {
             guard isFocusedPane != oldValue else { return }
-            surface?.setFocus(isFocusedPane)
-            requestPresent()
+            forwardRenderFocus(isFocusedPane)
+        }
+    }
+
+    /// Render-focus COALESCED to the next runloop (last-writer-wins, deduped) — parity with the macOS view.
+    /// Collapses an in-runloop focus FLICKER (false→true) to a single net forward so an unfocus + refocus
+    /// never hit libghostty's render-thread in one mailbox drain — the cursor-blink-cancel race that strands
+    /// `cursor_blink_visible = false` with a dead blink timer (focused cursor stuck invisible). See the macOS
+    /// `forwardRenderFocus` for the full mechanism.
+    private var lastForwardedFocus: Bool?
+    private var pendingFocusForward: Bool?
+
+    private func forwardRenderFocus(_ focused: Bool) {
+        let alreadyScheduled = pendingFocusForward != nil
+        pendingFocusForward = focused
+        guard !alreadyScheduled else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let want = self.pendingFocusForward else { return }
+            self.pendingFocusForward = nil
+            guard self.lastForwardedFocus != want else { return }
+            self.lastForwardedFocus = want
+            self.surface?.setFocus(want)
+            self.requestPresent(want ? 6 : 3)
         }
     }
     /// Drives libghostty's renderer thread each display tick via `ghostty_surface_draw_now`.
@@ -2560,6 +2617,8 @@ final class GhosttyLayerBackedView: UIView {
         // Render focus follows the workspace focus (not always-on): focused = solid block cursor, unfocused
         // = ghostty's hollow non-blinking cursor. Unfocused panes still repaint via the content-driven
         // present path, so this never freezes them (the didSet re-forwards on every focus change).
+        // Seed `lastForwardedFocus` so the coalesced `forwardRenderFocus` dedupes against the value set here.
+        lastForwardedFocus = isFocusedPane
         surface?.setFocus(isFocusedPane)
         requestPresent(8)   // prime the initial glyph flush / flush the replay (mirrors macOS)
 

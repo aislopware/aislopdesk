@@ -104,6 +104,10 @@ public struct VideoWindowView: View {
     /// pre-fills its fields at the current size and caps them at the remote max. `(curW, curH, maxW,
     /// maxH)`; a zero max means "not yet known" (the popover then leaves the field uncapped). `nil` ⇒ none.
     let onWindowGeometryReady: ((_ curW: Double, _ curH: Double, _ maxW: Double, _ maxH: Double) -> Void)?
+    /// CONNECTION STATS: the live view pushes the host-announced stream CADENCE (frames/sec) here whenever
+    /// the host's FPS governor announces a new value, so the sidebar's Connection section shows a per-pane
+    /// "FPS" row. `nil` ⇒ no canvas wired it (preview / standalone / iOS).
+    let onStreamCadenceReady: ((_ fps: Int) -> Void)?
 
     /// The existing seam signature (title-only): renders the Metal-backed view chrome
     /// without a live connection. Kept so `VideoWindowFactory` callers compile.
@@ -119,6 +123,7 @@ public struct VideoWindowView: View {
         onResizeInjectorReady = nil
         onViewportInjectorReady = nil
         onWindowGeometryReady = nil
+        onStreamCadenceReady = nil
     }
 
     /// Live remote-window view: brings up the orchestrator against `connection`. `isActive` /
@@ -136,6 +141,7 @@ public struct VideoWindowView: View {
         onResizeInjectorReady: ((((_ width: Double, _ height: Double) -> Void)?) -> Void)? = nil,
         onViewportInjectorReady: ((((_ command: UInt8) -> Void)?) -> Void)? = nil,
         onWindowGeometryReady: ((_ curW: Double, _ curH: Double, _ maxW: Double, _ maxH: Double) -> Void)? = nil,
+        onStreamCadenceReady: ((_ fps: Int) -> Void)? = nil,
     ) {
         self.title = title
         self.connection = connection
@@ -148,6 +154,7 @@ public struct VideoWindowView: View {
         self.onResizeInjectorReady = onResizeInjectorReady
         self.onViewportInjectorReady = onViewportInjectorReady
         self.onWindowGeometryReady = onWindowGeometryReady
+        self.onStreamCadenceReady = onStreamCadenceReady
     }
 
     /// Owns the control bridge for this view's lifetime; the backing view wires its closures.
@@ -171,6 +178,7 @@ public struct VideoWindowView: View {
             onResizeInjectorReady: onResizeInjectorReady,
             onViewportInjectorReady: onViewportInjectorReady,
             onWindowGeometryReady: onWindowGeometryReady,
+            onStreamCadenceReady: onStreamCadenceReady,
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityLabel(Text("Remote GUI window: \(title)"))
@@ -201,6 +209,7 @@ struct MetalVideoLayerView: NSViewRepresentable {
     var onResizeInjectorReady: ((((Double, Double) -> Void)?) -> Void)?
     var onViewportInjectorReady: ((((UInt8) -> Void)?) -> Void)?
     var onWindowGeometryReady: ((Double, Double, Double, Double) -> Void)?
+    var onStreamCadenceReady: ((Int) -> Void)?
 
     func makeNSView(context _: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()
@@ -213,6 +222,8 @@ struct MetalVideoLayerView: NSViewRepresentable {
         // HOST-WINDOW RESIZE: before activate so the first decoded-points / displayMax callback can publish
         // the window geometry (current + max) straight to the model.
         view.onWindowGeometryReady = onWindowGeometryReady
+        // CONNECTION STATS: before activate so the first host cadence announcement reaches the model's FPS row.
+        view.onStreamCadenceReady = onStreamCadenceReady
         view.activate(connection: connection)
         // PASTE AS KEYSTROKES: publish a key-injection sink routed to THIS view's pipeline (the
         // `pipeline.key` guard no-ops until the session is up, so publishing now is safe). The
@@ -251,6 +262,8 @@ struct MetalVideoLayerView: NSViewRepresentable {
         nsView.onViewportInjectorReady = onViewportInjectorReady
         // HOST-WINDOW RESIZE: keep the geometry push current (model persists per pane).
         nsView.onWindowGeometryReady = onWindowGeometryReady
+        // CONNECTION STATS: keep the cadence push current (model persists per pane).
+        nsView.onStreamCadenceReady = onStreamCadenceReady
         nsView.activate(connection: connection)
         if inputGateFlipped {
             nsView.onKeyInjectorReady = onKeyInjectorReady
@@ -317,6 +330,10 @@ final class MetalLayerBackedView: NSView {
     /// current + max resizable POINT sizes whenever either changes so the "Resize…" popover pre-fills +
     /// caps its fields. `(curW, curH, maxW, maxH)`; a zero max = "not yet known". Set by the representable.
     var onWindowGeometryReady: ((Double, Double, Double, Double) -> Void)?
+    /// CONNECTION STATS: the canvas publishes a cadence SINK through this — the view pushes the host-announced
+    /// stream fps whenever the host's FPS governor announces a new value so the sidebar's Connection section
+    /// shows a per-pane "FPS" row. Set by the representable.
+    var onStreamCadenceReady: ((Int) -> Void)?
     /// VIEWPORT CONTROLS: the canvas publishes a client-viewport command sink through this (and `nil` on
     /// teardown), so the pane's bottom control bar drives zoom / pan-lock. The byte is `RemoteWindowModel.
     /// ViewportCommand` (0 zoom-in / 1 zoom-out / 2 reset / 3 toggle-lock). Set by the representable.
@@ -469,6 +486,8 @@ final class MetalLayerBackedView: NSView {
             displayMaxPoints = points
             publishWindowGeometry()
         }
+        // CONNECTION STATS: forward the host-announced stream cadence to the model's FPS row (no-op if unbound).
+        pipeline.onStreamCadenceChanged = { [weak self] fps in self?.onStreamCadenceReady?(fps) }
         // Wire the SwiftUI overlay's buttons to THIS view's pipeline (live connection only). The fit/fill
         // toggle was removed (the ACTUAL-SIZE viewport auto-drives content mode), so only the 1× reset wires.
         if connection != nil, let controls {
@@ -1026,6 +1045,9 @@ struct MetalVideoLayerView: UIViewRepresentable {
     var onResizeInjectorReady: ((((Double, Double) -> Void)?) -> Void)?
     var onViewportInjectorReady: ((((UInt8) -> Void)?) -> Void)?
     var onWindowGeometryReady: ((Double, Double, Double, Double) -> Void)?
+    // Signature parity with the macOS representable. The iOS Connection section is not wired yet, so the
+    // host-cadence push is accepted + ignored here.
+    var onStreamCadenceReady: ((Int) -> Void)?
 
     func makeUIView(context _: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()

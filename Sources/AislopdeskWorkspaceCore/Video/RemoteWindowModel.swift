@@ -81,6 +81,20 @@ public final class RemoteWindowModel {
         if maxW > 0, maxH > 0 { windowMaxPointSize = CGSize(width: maxW, height: maxH) }
     }
 
+    /// The host-announced stream CADENCE (frames/sec) for this video pane, pushed by the live
+    /// ``VideoWindowView`` whenever the host's FPS governor announces a new cadence (the initial cadence and
+    /// every change). `nil` until the first cadence lands. The sidebar's Connection section reads it to show
+    /// a per-pane "FPS" row (terminal panes have no fps, so the row is hidden there). It is the host's
+    /// negotiated encode rate — not a client-measured present throughput.
+    public private(set) var streamFps: Int?
+
+    /// Records the host-announced stream cadence (frames/sec). A non-positive value is ignored so a spurious
+    /// zero never blanks the row — the last good reading stands. Only writes the observable on a real change.
+    public func noteStreamFps(_ fps: Int) {
+        guard fps > 0, streamFps != fps else { return }
+        streamFps = fps
+    }
+
     /// Request an ABSOLUTE host-window POINT size from the "Resize…" popover (no-op when no sink is wired —
     /// the pane is not streaming or is read-only). The host clamps to the window's achievable min/max and
     /// re-anchors the window at its display origin so an up-to-display-max size takes.
