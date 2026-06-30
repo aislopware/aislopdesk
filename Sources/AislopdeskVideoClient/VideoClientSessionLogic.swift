@@ -701,7 +701,7 @@ public struct CursorShapeRequestTracker: Sendable, Equatable {
     /// long enough that one re-ship has time to arrive, short enough to self-heal promptly.
     public let reRequestInterval: TimeInterval
 
-    public init(reRequestInterval: TimeInterval = 0.5) {
+    public init(reRequestInterval: TimeInterval = 0.25) {
         self.reRequestInterval = reRequestInterval
     }
 

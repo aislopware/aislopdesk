@@ -289,29 +289,42 @@ public final class CursorSampler: @unchecked Sendable {
         )
     }
 
-    /// Renders `image` to a PNG that fits ``maxShapeBitmapBytes``, halving the pixel dimensions
-    /// (down to a 1px floor) until it does. Returns `nil` only if no bitmap representation exists.
+    /// Renders `image` to a PNG that fits ``maxShapeBitmapBytes`` (one datagram), at the LARGEST size that
+    /// fits — so a normal cursor (arrow / I-beam / hand / resize) stays SHARP.
+    ///
+    /// The target is the cursor's LOGICAL size at Retina (`size × 2`), capped to the native pixel rep so we
+    /// never upscale. Crucially it does NOT start from the native rep: some system cursors hand back a
+    /// huge native image (100s of KB — measured 583 KB on a HiDPI/large-pointer host), and the old code
+    /// blindly HALVED that down (380px → ~23px) → a tiny, blurry, "wrong"-looking cursor, plus ~9 redraws
+    /// on the main actor (which lagged the shape refresh). Instead, render once at the Retina-logical target
+    /// (high interpolation) and, only if that PNG is still over budget, shrink it ~20%/pass — sparse cursors
+    /// fit at ~40-48px, dense ones land a little smaller but stay legible. Returns `nil` only if no bitmap
+    /// representation exists. (Full-quality cursors above one datagram would need fragmentation — a larger
+    /// change; this keeps the single-datagram channel but stops crushing the common cursors.)
     @MainActor
     private static func pngFittingDatagram(_ image: NSImage) -> Data? {
         guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else {
             return nil
         }
-        if let png = rep.representation(using: .png, properties: [:]), png.count <= maxShapeBitmapBytes {
-            return png
-        }
-        // Over budget: progressively downscale the pixel grid until the PNG fits one datagram.
-        var width = rep.pixelsWide
-        var height = rep.pixelsHigh
-        var lastPNG = rep.representation(using: .png, properties: [:])
-        // Bound the loop (≤ ~12 halvings reaches 1px from any realistic cursor) so it always ends.
+        let nativeW = Swift.max(1, rep.pixelsWide), nativeH = Swift.max(1, rep.pixelsHigh)
+        let longSide = Swift.max(nativeW, nativeH)
+        // Retina-logical target (≤ native): the on-screen cursor is `size` points, so `size × 2` px is sharp
+        // on a 2× display without shipping more than needed.
+        let retinaTarget = Int((Swift.max(image.size.width, image.size.height) * 2).rounded(.up))
+        var target = Swift.max(1, Swift.min(longSide, Swift.max(8, retinaTarget)))
+        var lastPNG: Data?
         for _ in 0..<16 {
-            guard width > 1 || height > 1 else { break }
-            width = Swift.max(1, width / 2)
-            height = Swift.max(1, height / 2)
-            guard let scaled = downscaledBitmap(rep, toPixelWidth: width, height: height),
-                  let png = scaled.representation(using: .png, properties: [:]) else { break }
-            lastPNG = png
-            if png.count <= maxShapeBitmapBytes { return png }
+            // Preserve aspect: longest side = `target`.
+            let w = Swift.max(1, nativeW * target / longSide)
+            let h = Swift.max(1, nativeH * target / longSide)
+            if let scaled = downscaledBitmap(rep, toPixelWidth: w, height: h),
+               let png = scaled.representation(using: .png, properties: [:])
+            {
+                lastPNG = png
+                if png.count <= maxShapeBitmapBytes { return png }
+            }
+            if target <= 8 { break }
+            target = Swift.max(8, Int(Double(target) * 0.8)) // shrink ~20% and retry
         }
         return lastPNG
     }

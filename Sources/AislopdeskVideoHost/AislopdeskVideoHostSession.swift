@@ -2695,11 +2695,16 @@ public actor AislopdeskVideoHostSession {
         guard stateMachine.mediaFlowing else { return }
         let bytes = scheduler.scheduleCursor(.shape(shape)).bytes
         transport.send(bytes, on: .cursor)
-        Task { // inherits this actor's isolation; re-checks liveness after the gap so a
-            // bye/stop teardown racing the delay aborts cleanly
-            try? await Task.sleep(nanoseconds: 25_000_000)
-            guard stateMachine.mediaFlowing else { return }
-            transport.send(bytes, on: .cursor)
+        Task { // inherits this actor's isolation; re-checks liveness after each gap so a
+            // bye/stop teardown racing the delay aborts cleanly. THREE time-separated copies (0/25/50ms)
+            // so a burst loss during video motion (the lossiest moment, and exactly when the shape often
+            // changes) is very unlikely to drop all of them — the client's shape registration is
+            // idempotent per shapeID, so the duplicates are harmless.
+            for _ in 0..<2 {
+                try? await Task.sleep(nanoseconds: 25_000_000)
+                guard stateMachine.mediaFlowing else { return }
+                transport.send(bytes, on: .cursor)
+            }
         }
     }
 
