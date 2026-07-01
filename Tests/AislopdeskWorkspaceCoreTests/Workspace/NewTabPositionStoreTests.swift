@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E7 carry-over #6 (ES-E3-3): the STORE wiring of otty's `new-tab-position` policy — a new tab lands where
+/// E7 carry-over #6 (ES-E3-3): the STORE wiring of the `new-tab-position` policy — a new tab lands where
 /// ``SettingsKey/newTabPosition`` says, evaluated against the active session's tab list. The pure placement
 /// math is pinned in `NewTabPositionTests`; here we pin that the ⌘T fire-sites (`newTab(kind:)` AND the
 /// primary `openChooserPane(.newTab)` chooser flow) actually READ the setting — preventing a silent

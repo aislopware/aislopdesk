@@ -1,7 +1,7 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E16 / WI-8 — the recipe STORE GLUE: save snapshots the live tree to a parseable `.ottyrecipe` whose
+/// E16 / WI-8 — the recipe STORE GLUE: save snapshots the live tree to a parseable `.aislopdeskrecipe` whose
 /// restore reproduces the tree; a commands-scope save gates on ≥ 1 command; the trust store skips the prompt
 /// for a self-saved recipe but raises `recipes.pendingTrustPrompt` for an unfamiliar one; and the
 /// `.saveRecipe` / `.openRecipe` actions route to the store's request entry points.
@@ -89,7 +89,7 @@ final class WorkspaceStoreRecipesTests: XCTestCase {
 
     // MARK: - Save → parseable file that restores the tree
 
-    /// `saveRecipe(.window, .layoutOnly)` writes a real `.ottyrecipe` whose bytes parse back into a recipe
+    /// `saveRecipe(.window, .layoutOnly)` writes a real `.aislopdeskrecipe` whose bytes parse back into a recipe
     /// whose `restorePlan` reproduces the SHAPE of the saved tab (split axis + pane count preserved).
     /// REVERT-TO-CONFIRM-FAIL: with `saveRecipe` returning `nil` / writing nothing, no file exists to read.
     func testSaveWindowLayoutOnlyWritesParseableFileThatReproducesTree() throws {
@@ -103,7 +103,7 @@ final class WorkspaceStoreRecipesTests: XCTestCase {
             store.saveRecipe(scope: .window, content: .layoutOnly, name: "My Layout"),
             "a window/layout-only save writes a file and returns its URL",
         )
-        XCTAssertEqual(url.pathExtension, "ottyrecipe")
+        XCTAssertEqual(url.pathExtension, "aislopdeskrecipe")
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "the recipe file is on disk")
 
         // Read the file back (the EXACT on-disk bytes) and parse it — proving it is well-formed.
@@ -288,7 +288,7 @@ final class WorkspaceStoreRecipesTests: XCTestCase {
         )
     }
 
-    /// Opening an UNFAMILIAR `.ottyrecipe` whose commands the store has never trusted raises the trust prompt
+    /// Opening an UNFAMILIAR `.aislopdeskrecipe` whose commands the store has never trusted raises the trust prompt
     /// (commands shown) and runs NOTHING until the user resolves it.
     /// REVERT-TO-CONFIRM-FAIL: route the trusted branch unconditionally and `pendingTrustPrompt` stays nil.
     func testOpeningForeignRecipeWithCommandsSetsPendingTrustPrompt() throws {

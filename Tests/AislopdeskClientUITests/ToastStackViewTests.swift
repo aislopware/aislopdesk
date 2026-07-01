@@ -3,7 +3,7 @@
 // does not: the flavour → tint mapping (the leading glyph colour) and that the card stack renders headlessly.
 //
 // Headless-only (per the hang-safety rule): no SCStream/VT/Metal — `ImageRenderer` of a pure SwiftUI view is
-// CPU rasterisation (the same `OttySnapshotRender` pattern the repo already uses in this target).
+// CPU rasterisation (the same `SlateSnapshotRender` pattern the repo already uses in this target).
 
 #if canImport(SwiftUI) && canImport(AppKit)
 import AppKit
@@ -22,10 +22,10 @@ final class ToastStackViewTests: XCTestCase {
     /// which are distinct hues in every theme; default/attention coincide under the Monokai Classic palette
     /// where `info == accent`, so they are NOT asserted distinct.)
     func testToastFlavorTintMapping() {
-        XCTAssertEqual(ToastStackView.tint(for: .success), Otty.Status.ok, "success → OK status tint")
-        XCTAssertEqual(ToastStackView.tint(for: .error), Otty.Status.err, "error → error status tint")
-        XCTAssertEqual(ToastStackView.tint(for: .default), Otty.Status.info, "default → info status tint")
-        XCTAssertEqual(ToastStackView.tint(for: .attention), Otty.State.accent, "attention → active accent")
+        XCTAssertEqual(ToastStackView.tint(for: .success), Slate.Status.ok, "success → OK status tint")
+        XCTAssertEqual(ToastStackView.tint(for: .error), Slate.Status.err, "error → error status tint")
+        XCTAssertEqual(ToastStackView.tint(for: .default), Slate.Status.info, "default → info status tint")
+        XCTAssertEqual(ToastStackView.tint(for: .attention), Slate.State.accent, "attention → active accent")
         XCTAssertNotEqual(
             ToastStackView.tint(for: .success),
             ToastStackView.tint(for: .error),
@@ -33,11 +33,11 @@ final class ToastStackViewTests: XCTestCase {
         )
     }
 
-    // MARK: - Render smoke (eyeball-able via OTTY_TOAST_SNAPSHOT_OUT)
+    // MARK: - Render smoke (eyeball-able via AISLOPDESK_TOAST_SNAPSHOT_OUT env var)
 
     /// Renders the stack with one card of every flavour and asserts `ImageRenderer` produces a bitmap — a
     /// crash-free proof the card layout + every `tint(for:)` branch resolves under the live token layer. Opt-in
-    /// file write (mirrors `OttySnapshotRender`): set `OTTY_TOAST_SNAPSHOT_OUT=<path.png>` to dump the PNG.
+    /// file write (mirrors `SlateSnapshotRender`): set `AISLOPDESK_TOAST_SNAPSHOT_OUT=<path.png>` to dump the PNG.
     func testToastStackRenderSmoke() throws {
         let coordinator = OverlayCoordinator()
         coordinator.pushToast(Toast(id: "a", flavor: .default, title: "Build started", body: "swift build"))
@@ -51,7 +51,7 @@ final class ToastStackViewTests: XCTestCase {
         renderer.scale = 2
         let image = try XCTUnwrap(renderer.nsImage, "ToastStackView renders all flavours without crashing")
 
-        guard let out = ProcessInfo.processInfo.environment["OTTY_TOAST_SNAPSHOT_OUT"] else { return }
+        guard let out = ProcessInfo.processInfo.environment["AISLOPDESK_TOAST_SNAPSHOT_OUT"] else { return }
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:])
@@ -60,7 +60,7 @@ final class ToastStackViewTests: XCTestCase {
             return
         }
         try png.write(to: URL(fileURLWithPath: out))
-        print("OTTY_TOAST_SNAPSHOT_WRITTEN \(out)")
+        print("AISLOPDESK_TOAST_SNAPSHOT_WRITTEN \(out)")
     }
 }
 #endif

@@ -30,7 +30,7 @@ struct RouteToggles {
     /// Open-Quickly at `.current`" (`OverlayCoordinator.toggleOpenQuickly(filter: .current)`), but the routing
     /// keeps it the distinct `.jumpTo`-action toggle (separate from `openQuickly` below).
     var jumpTo: (() -> Void)?
-    /// Toggles the Open-Quickly picker at the merged `.all` pill (E11 WI-7, otty ⌘⇧O). A VIEW overlay (the
+    /// Toggles the Open-Quickly picker at the merged `.all` pill (E11 WI-7, ⌘⇧O). A VIEW overlay (the
     /// `OverlayCoordinator` owns `openQuicklyVisible`/`openQuicklyFilter`), so — like `jumpTo` — it is a
     /// passed-in closure; `nil` (the headless / test default) is a graceful no-op, never a dead chord. Only
     /// ⌘⇧O (this) and ⌘J (`jumpTo`, → `.current`) are GLOBAL; the pill / ⌘1–9 / Tab / ⌘K chords are
@@ -39,18 +39,18 @@ struct RouteToggles {
     /// Jumps the Details panel to a specific tab (E9/WI-7). View-owned state (`DetailsPanelState` + the
     /// chrome reveal), so — like `detailsPanel` — it is a passed-in closure; `nil` = a graceful no-op.
     var selectDetailsTab: ((DetailsPanelTab) -> Void)?
-    /// Toggles "Pin Window" (E19 WI-3, otty View ▸ Pin Window). A macOS `NSWindow.level` / window-level
+    /// Toggles "Pin Window" (E19 WI-3, View ▸ Pin Window). A macOS `NSWindow.level` / window-level
     /// concern, so — like `sidebar` / `detailsPanel` — it is a passed-in closure (the live app flips
     /// `WorkspaceChromeState.pinned`); `nil` (the headless / test / iOS default) is a graceful no-op, never a
     /// dead chord.
     var pinWindow: (() -> Void)?
-    /// Opens the "Send to Chat" dialog (E13 WI-5 / ES-E13-5, otty ⌘⌃↩). A VIEW overlay (the app /
+    /// Opens the "Send to Chat" dialog (E13 WI-5 / ES-E13-5, ⌘⌃↩). A VIEW overlay (the app /
     /// `OverlayCoordinator` owns the dialog visibility + captures the active pane's selection / last-output
     /// into a ``SendToChatContext`` when it fires), so — like `globalSearch` / `jumpTo` — it is a passed-in
     /// closure; `nil` (the headless / test default) is a graceful no-op, never a dead chord (ES-E1-5 keeps
     /// the chord LIVE).
     var sendToChat: (() -> Void)?
-    /// Actuates a real window close (otty ⌘⇧W / View ▸ Close Window, E3 WI-4 audit fix). A macOS
+    /// Actuates a real window close (⌘⇧W / View ▸ Close Window, E3 WI-4 audit fix). A macOS
     /// `NSWindow.performClose(_:)` concern — so, like `pinWindow`, it is a passed-in closure; the live app
     /// wires it to `window.performClose(nil)`, which fires the native `windowShouldClose` → the existing
     /// `WindowCloseGate` confirmation (preserving the configured ``CloseConfirmationPolicy``). `nil` (the
@@ -113,7 +113,7 @@ public extension WorkspaceBindingRegistry {
             store.openChooserPane(.split(axis: .vertical))
         // Split-left / split-up (E1 ES-E1-1): same chooser-split as right/down, but `leading: true` inserts
         // the new `.chooser` leaf on the LEADING side of the active pane (left of a horizontal split / above a
-        // vertical one). The new pane is focused, matching otty's "new pane is left/up and focused".
+        // vertical one). The new pane is focused — a left/up split leaves the new pane focused, same as right/down.
         case .splitLeft:
             store.openChooserPane(.split(axis: .horizontal, leading: true))
         case .splitUp:
@@ -156,7 +156,7 @@ public extension WorkspaceBindingRegistry {
         case .commandPalette: toggles.palette?()
         // Cheat sheet / vi key hints (E17 ES-E17-2 / WI-5): `⌘/` is CONTEXTUAL. While the active pane is in
         // vi / copy-mode, `⌘/` toggles that pane's vi KEY-HINT BAR (the reference card) instead of the global
-        // keyboard cheat sheet — ONE binding, contextual behaviour (otty parity), no new chord, no conflict.
+        // keyboard cheat sheet — ONE binding, contextual behaviour, no new chord, no conflict.
         // Out of copy-mode it falls through to the view-owned cheat-sheet toggle (the existing behaviour).
         case .cheatSheet:
             if store.activeTerminalModel?.isCopyMode == true {
@@ -213,14 +213,14 @@ public extension WorkspaceBindingRegistry {
         // (the auto path engages on a host no-echo prompt without an action). A graceful no-op for an empty /
         // non-terminal shell; the macOS leaf's `SecureKeyboardEntryController` actuates the process-global API.
         case .secureKeyboardEntry: store.toggleSecureKeyboardEntryInActivePane()
-        // Toggle Tabs Panel (otty ⌘⇧L): the LEFT sidebar collapse on the macOS shell is VIEW @State
+        // Toggle Tabs Panel (⌘⇧L): the LEFT sidebar collapse on the macOS shell is VIEW @State
         // (`WorkspaceChromeState.sidebarCollapsed`, read by the native split controller) — NOT the legacy
         // `store.sidebarCollapsed`, which nothing reads on macOS. So it is a passed-in closure (like
         // `.toggleDetailsPanel`). When no closure is supplied (the headless / test / iOS default) fall back to
         // the store flag so the action is a non-trapping graceful op (and any store-flag reader still toggles).
         case .toggleSidebar:
             if let s = toggles.sidebar { s() } else { store.toggleSidebarCollapsed() }
-        // Toggle Details Panel (otty ⌘⇧R): the right-hand inspector is VIEW @State (`WorkspaceChromeState`),
+        // Toggle Details Panel (⌘⇧R): the right-hand inspector is VIEW @State (`WorkspaceChromeState`),
         // not store state, so it is a passed-in closure (like the palette / cheat-sheet toggles). `nil` (the
         // headless / test default) keeps it a graceful no-op — never a dead chord.
         case .toggleDetailsPanel: toggles.detailsPanel?()
@@ -273,7 +273,7 @@ public extension WorkspaceBindingRegistry {
         case .prevTab: store.cycleTab(by: -1)
         case let .selectTab(n): store.selectTabNumber(n)
         case .closeTab: store.closeActiveTab()
-        // Close Window (otty ⌘⇧W / View ▸ Close Window, E7 carry-over #5; E3 WI-4 audit fix): a window maps to
+        // Close Window (⌘⇧W / View ▸ Close Window, E7 carry-over #5; E3 WI-4 audit fix): a window maps to
         // a ``Session``. ACTUATE the close through the passed-in closure — the live app wires it to
         // `window.performClose(nil)`, which fires the native `windowShouldClose` → the existing
         // ``WindowCloseGate`` confirmation (preserving the configured ``CloseConfirmationPolicy``). When NO

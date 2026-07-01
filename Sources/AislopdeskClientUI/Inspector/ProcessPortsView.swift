@@ -1,13 +1,14 @@
 // ProcessPortsView — the Info-tab Process + Ports sections of the Details Panel (E4, WI-5).
 //
-// Ports the otty info-panel's two host-metadata rows (spec/user-interface__details-panel.md §"Process
+// Renders the Info-panel's two host-metadata rows (spec/user-interface__details-panel.md §"Process
 // section" / "Ports section"): a "Process" list — a filled green dot + process name + PID + right-aligned
 // uptime ("-zsh 64628  34s") — and a "Ports" list that reads "No listening ports" when empty. The data is
 // the remote host's, decoded into the pane's `PaneMetadataModel` (the Info tab binds this view to it); a
 // disconnected pane shows the empty copy without hanging.
 //
-// otty tokens / fonts only (`Otty.*`, `OttySectionHeader`, `OttyStatusDot`). The `MetadataFormatting`
-// helper (compact uptime) is pure + headlessly unit-tested — no view rendering needed to prove it.
+// Uses design-system tokens / fonts only (`Slate.*`, `SlateSectionHeader`, `SlateStatusDot`). The
+// `MetadataFormatting` helper (compact uptime) is pure + headlessly unit-tested — no view rendering needed
+// to prove it.
 
 #if canImport(SwiftUI)
 import AislopdeskProtocol
@@ -23,14 +24,14 @@ struct ProcessPortsView: View {
             processSection
             portsSection
         }
-        .font(.system(size: Otty.Typeface.base))
+        .font(.system(size: Slate.Typeface.base))
     }
 
     // MARK: Process
 
     private var processSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            OttySectionHeader("Process") { refreshButton }
+            SlateSectionHeader("Process") { refreshButton }
             if model.processes.isEmpty {
                 emptyLine(model.isConnected ? "No processes" : "Not connected")
             } else {
@@ -43,21 +44,21 @@ struct ProcessPortsView: View {
     }
 
     private func processRow(_ proc: MetadataCodec.ProcessInfo) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
-            OttyStatusDot(color: Otty.Status.ok, size: 6)
+        HStack(spacing: Slate.Metric.space2) {
+            SlateStatusDot(color: Slate.Status.ok, size: 6)
             Text(proc.name.isEmpty ? "—" : proc.name)
-                .foregroundStyle(Otty.Text.primary)
+                .foregroundStyle(Slate.Text.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Text(String(proc.pid))
-                .foregroundStyle(Otty.Text.secondary)
+                .foregroundStyle(Slate.Text.secondary)
                 .monospacedDigit()
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             Text(MetadataFormatting.uptime(proc.uptimeSec))
-                .foregroundStyle(Otty.Text.secondary)
+                .foregroundStyle(Slate.Text.secondary)
                 .monospacedDigit()
         }
-        .padding(.horizontal, Otty.Metric.space3)
+        .padding(.horizontal, Slate.Metric.space3)
         .padding(.vertical, 3)
     }
 
@@ -65,7 +66,7 @@ struct ProcessPortsView: View {
 
     private var portsSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            OttySectionHeader("Ports")
+            SlateSectionHeader("Ports")
             if model.ports.isEmpty {
                 emptyLine("No listening ports")
             } else {
@@ -77,21 +78,21 @@ struct ProcessPortsView: View {
     }
 
     private func portRow(_ port: MetadataCodec.PortInfo) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
-            OttyStatusDot(color: Otty.Status.ok, size: 6)
+        HStack(spacing: Slate.Metric.space2) {
+            SlateStatusDot(color: Slate.Status.ok, size: 6)
             Text(port.procName.isEmpty ? "—" : port.procName)
-                .foregroundStyle(Otty.Text.primary)
+                .foregroundStyle(Slate.Text.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Text(":\(String(port.port))")
-                .foregroundStyle(Otty.Text.secondary)
+                .foregroundStyle(Slate.Text.secondary)
                 .monospacedDigit()
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             Text(MetadataFormatting.portProtocolLabel(port.proto))
-                .font(.system(size: Otty.Typeface.small, weight: .medium))
-                .foregroundStyle(Otty.Text.tertiary)
+                .font(.system(size: Slate.Typeface.small, weight: .medium))
+                .foregroundStyle(Slate.Text.tertiary)
         }
-        .padding(.horizontal, Otty.Metric.space3)
+        .padding(.horizontal, Slate.Metric.space3)
         .padding(.vertical, 3)
     }
 
@@ -102,8 +103,8 @@ struct ProcessPortsView: View {
             Task { await model.refresh() }
         } label: {
             Image(systemName: "arrow.clockwise")
-                .font(.system(size: Otty.Typeface.small, weight: .medium))
-                .foregroundStyle(Otty.Text.icon)
+                .font(.system(size: Slate.Typeface.small, weight: .medium))
+                .foregroundStyle(Slate.Text.icon)
         }
         .buttonStyle(.plain)
         .disabled(!model.isConnected)
@@ -112,16 +113,16 @@ struct ProcessPortsView: View {
 
     private func emptyLine(_ text: String) -> some View {
         Text(text)
-            .foregroundStyle(Otty.Text.secondary)
-            .padding(.horizontal, Otty.Metric.space3)
+            .foregroundStyle(Slate.Text.secondary)
+            .padding(.horizontal, Slate.Metric.space3)
             .padding(.vertical, 3)
     }
 }
 
 /// Pure formatting helpers for the host-metadata Info tab — extracted so they are headlessly testable
-/// (no view, no `Otty` theme read). Mirrors the `CommandBlock.durationLabel` pure-formatting precedent.
+/// (no view, no `Slate` theme read). Mirrors the `CommandBlock.durationLabel` pure-formatting precedent.
 enum MetadataFormatting {
-    /// Compact uptime like otty's process rows: seconds under a minute ("34s"), then "5m" / "2h" / "3d".
+    /// Compact uptime for the process rows: seconds under a minute ("34s"), then "5m" / "2h" / "3d".
     /// Always a single coarse unit (the panel wants a glanceable hint, not a precise duration).
     static func uptime(_ seconds: UInt32) -> String {
         if seconds < 60 { return "\(seconds)s" }

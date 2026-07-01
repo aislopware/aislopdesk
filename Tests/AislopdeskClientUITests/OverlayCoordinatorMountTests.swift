@@ -199,7 +199,7 @@ final class OverlayCoordinatorMountTests: XCTestCase {
 
     /// ES-E2-1 "grouped by section": the verbs-only zero-state LEADS with the WORKING DIRECTORY section (which
     /// owns the cwd badge in the view) carrying the client-side Copy Path row, and the catalog is grouped into
-    /// otty categories. Also pins that the Toggle Details Panel row exists (lighting up the dead `.toggleInspector`
+    /// multiple categories. Also pins that the Toggle Details Panel row exists (lighting up the dead `.toggleInspector`
     /// plumbing) as a sibling of Toggle Tabs Panel. Fails on the old flat single-"Actions"-section catalog.
     func testZeroStateLeadsWithWorkingDirectoryAndGroupsByCategory() throws {
         let (overlay, _) = makeCoordinator()
@@ -234,11 +234,11 @@ final class OverlayCoordinatorMountTests: XCTestCase {
             return
         }
 
-        // The catalog spans more than one otty category (it is no longer one flat "Actions" list).
+        // The catalog spans more than one category (it is no longer one flat "Actions" list).
         let categories = Set(ActionsPaletteSource.catalog.compactMap(\.category))
         XCTAssertTrue(
             categories.isSuperset(of: [.workingDirectory, .pane, .tab, .view, .settings]),
-            "the catalog is grouped across otty categories, not one flat Actions list",
+            "the catalog is grouped across multiple categories, not one flat Actions list",
         )
     }
 
@@ -525,8 +525,8 @@ final class OverlayCoordinatorMountTests: XCTestCase {
     }
 
     /// `openGlobalSearch(seed:)` with a non-empty selection seed runs the store search so the surface shows
-    /// results immediately (otty pre-fills ⇧⌘F with the selection), and the store retains the seed as the live
-    /// query. A nil/empty seed leaves the store's last query untouched (it restores the prior results).
+    /// results immediately (⇧⌘F pre-fills with the current selection), and the store retains the seed as the
+    /// live query. A nil/empty seed leaves the store's last query untouched (it restores the prior results).
     func testOpenGlobalSearchSeedRunsTheStoreSearch() {
         let (overlay, store) = makeCoordinator()
         XCTAssertEqual(store.globalSearchQuery, "", "no search has run yet")
@@ -570,11 +570,11 @@ final class OverlayCoordinatorMountTests: XCTestCase {
     /// re-scoped ⌘⇧W onto Close Window, leaving Close Tab reachable only via the ⌘W cascade / palette, see
     /// DECISIONS.md) + the four E9 `Details: *` jump commands (Info/Outline/Git/Files — palette/menu-only,
     /// `chord: nil` by design, pinned chord-less by `DetailsTabRoutingTests`) + the three E17 view toggles
-    /// `Read Only` + `Secure Keyboard Entry` + `Vi Mode Key Hints` (otty ships no default chord for any —
+    /// `Read Only` + `Secure Keyboard Entry` + `Vi Mode Key Hints` (none ships a default chord —
     /// palette/menu-only, `chord: nil`, the user may bind them in Settings → Keybindings) + the E19 `Pin
-    /// Window` view toggle (otty's "View ▸ Pin Window" ships no default chord — palette/menu-only,
+    /// Window` view toggle (the "View ▸ Pin Window" toggle ships no default chord — palette/menu-only,
     /// `chord: nil`, pinned chord-less by `WorkspaceBindingRoutingTests`) + the three E13 `Fork in…` agent
-    /// entries (Split Right / Split Down / New Tab — otty `agents__fork-branch-session`; the fork is started
+    /// entries (Split Right / Split Down / New Tab; the fork is started
     /// from the agent's `/branch` command, so each ships `chord: nil`, palette/menu-only). The representative
     /// bakes its hint
     /// into its title instead. The trap this pins: `glyph(for:)` of the representative's stand-in `.selectTab(1)`
@@ -593,11 +593,11 @@ final class OverlayCoordinatorMountTests: XCTestCase {
                 "tab.selectN", "pane.rename", "tab.close",
                 "view.detailsInfo", "view.detailsOutline", "view.detailsGit", "view.detailsFiles",
                 "view.readOnly", "view.secureKeyboardEntry", "view.viKeyHints",
-                // E10 WI-9: Hint to Reveal in Finder is chord-less (otty's ⌘⇧R is aislopdesk's Toggle Details).
+                // E10 WI-9: Hint to Reveal in Finder is chord-less (⌘⇧R is already bound to Toggle Details).
                 "view.hintReveal",
-                // E19 ES-E19-1: Pin Window is chord-less (otty's "View ▸ Pin Window" ships no default chord).
+                // E19 ES-E19-1: Pin Window is chord-less (the "View ▸ Pin Window" toggle ships no default chord).
                 "view.pinWindow",
-                // E13 ES-E13-7: the three "Fork in…" entries (otty `agents__fork-branch-session`) are
+                // E13 ES-E13-7: the three "Fork in…" entries are
                 // palette/menu-only — the fork is initiated from the agent's `/branch` command, no key
                 // equivalent, so each carries `chord: nil`.
                 "agent.forkSplitRight", "agent.forkSplitDown", "agent.forkNewTab",
@@ -726,7 +726,7 @@ final class OverlayCoordinatorMountTests: XCTestCase {
     }
 
     /// A delivered reply ADVANCES to the next pane needing attention (excluding the just-answered one, which
-    /// may still report blocked until the host re-reports) and CLOSES when none is left — the otty
+    /// may still report blocked until the host re-reports) and CLOSES when none is left — the
     /// answer-then-advance flow. Two blocked panes: the focused one is answered first, the advance lands the
     /// other, and answering it closes the card. FAILS on a card that re-targeted the same (still-blocked)
     /// pane (no exclusion) or never closed.

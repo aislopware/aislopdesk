@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - moveTab (manual drag-reorder — pure permutation of the active session's tab array)
 
-/// The pure tab-reorder op behind otty's manual drag-to-reorder in the vertical sidebar (E6 plan WI-3 /
+/// The pure tab-reorder op behind manual drag-to-reorder in the vertical sidebar (E6 plan WI-3 /
 /// Design #4). It ONLY permutes the active session's ``Session/tabs`` array — the **leaf set is
 /// unchanged**, so the store wrapper's ``WorkspaceStore/reconcileTree()`` is a registry no-op (no
 /// `teardown`, no surface rebuild; the memory rule "never tear down surface"). Selection follows the SAME
@@ -41,8 +41,8 @@ public extension WorkspaceTreeOps {
     /// and `to` are positions INTO that rendered list, **not** raw `session.tabs` indices. It FIRST
     /// materializes the rendered order into `session.tabs` (so a recency-driven ``TabSort/updated`` order
     /// becomes the concrete array the user is looking at), THEN moves the single dragged tab by its rendered
-    /// position — so only that one row moves and the rest stay exactly where they were on screen (the otty
-    /// manual-order affordance: a drag converts the live order into `manual` without reshuffling siblings).
+    /// position — so only that one row moves and the rest stay exactly where they were on screen: a drag
+    /// converts the live order into `manual` without reshuffling siblings.
     ///
     /// A no-op (`from == clamped(to)`, an out-of-range `from`, fewer than two tabs, or a `renderedOrder` that
     /// is not an exact permutation of the live tabs) returns `ws` UNCHANGED — it neither materializes nor

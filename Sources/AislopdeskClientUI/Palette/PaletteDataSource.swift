@@ -5,7 +5,7 @@
 // per-item score, and groups them under section separators.
 //
 // All sources here are SYNCHRONOUS over a store SNAPSHOT (taken on the @MainActor) so the mixing/ranking is
-// pure + unit-testable without a view. The ⌘⇧P palette is verbs-only (the ACTIONS catalog grouped by otty
+// pure + unit-testable without a view. The ⌘⇧P palette is verbs-only (the ACTIONS catalog grouped by
 // category); the multi-source jump-to (panes/recents/folders/agents/files) lives on its OWN E11 surface
 // (`OpenQuicklyModel`/`OpenQuicklyView`), so the former `files`/`conversations`/`repos` empty-stub sources
 // were removed here (E11 / WI-5) — they were never reachable.
@@ -58,7 +58,7 @@ public struct ActionsPaletteSource: PaletteDataSource {
     public static let catalog: [PaletteItem] = [
         // WORKING DIRECTORY — leads the palette (the section header OWNS the cwd badge in the view). "Copy
         // Path" is a CLIENT-side write of the focused pane's cwd to the platform pasteboard (the same idiom
-        // `RemoteFileTreeView` uses). otty's sibling "Reveal in Finder" / "Open in…" rows are host-routed —
+        // `RemoteFileTreeView` uses). Sibling "Reveal in Finder" / "Open in…" rows are host-routed —
         // TODO(E10): add them once the host can resolve a local Finder/Open path over the control channel.
         item(
             id: "action.copyPath", icon: "doc.on.doc", title: "Copy Path",
@@ -154,8 +154,8 @@ public struct ActionsPaletteSource: PaletteDataSource {
             subtitle: nil, shortcut: glyph(.toggleDetailsPanel), filter: .actions, category: .view,
             action: .toggleInspector,
         ),
-        // E9/WI-7 (ES-E9-5): otty's four UNBOUND `Details: *` jump commands surfaced in the palette (otty
-        // lists unbound commands there, so they are runnable out-of-box with NO default chord). Each switches
+        // E9/WI-7 (ES-E9-5): four UNBOUND `Details: *` jump commands surfaced in the palette (unbound
+        // commands are listed there, so they are runnable out-of-box with NO default chord). Each switches
         // the right-hand Details panel to a specific tab AND reveals it, routed by the coordinator to the
         // injected `selectDetailsTab` closure — the SAME live `DetailsPanelState` + chrome the ⌘⇧R toggle and
         // the View ▸ Details: * menu rows drive. The palette is cross-platform, so these run on iOS too. The
@@ -181,11 +181,11 @@ public struct ActionsPaletteSource: PaletteDataSource {
             subtitle: nil, shortcut: glyph(.selectDetailsTab(.files)), filter: .actions, category: .view,
             action: .selectDetailsTab(.files),
         ),
-        // Read Only (E17 ES-E17-1): toggle the active pane's input gate. Under the SHELL section to mirror
-        // otty's "Shell → Read Only" menu placement (the first shell verb in the catalog). The spec accepts
+        // Read Only (E17 ES-E17-1): toggle the active pane's input gate. Under the SHELL section as the
+        // first shell verb in the catalog. The spec accepts
         // "read only" plus the synonyms `readonly` / `lock` / `freeze` / `view only` — folded into the row's
-        // HIDDEN `keywords` so they search without being rendered. No registry chord (otty ships none) ⇒ the
-        // glyph resolves to nil ⇒ no hint chip. Drives the store seam that converges with the pill `×` + menu.
+        // HIDDEN `keywords` so they search without being rendered. No registry chord is registered for this
+        // verb ⇒ the glyph resolves to nil ⇒ no hint chip. Drives the store seam that converges with the pill `×` + menu.
         item(
             id: "action.toggleReadOnly", icon: "lock", title: "Read Only",
             keywords: "readonly lock freeze view only locked viewer input gate protect",
@@ -193,8 +193,8 @@ public struct ActionsPaletteSource: PaletteDataSource {
             run: { store in store.toggleReadOnlyInActivePane() },
         ),
         // Secure Keyboard Entry (E17 ES-E17-4): the MANUAL toggle for macOS process-global secure event input
-        // over the active pane (otty Edit ▸ Secure Keyboard Entry). Under the SHELL section beside Read Only.
-        // No registry chord (otty ships none) ⇒ the glyph resolves to nil ⇒ no hint chip. Drives the store
+        // over the active pane. Under the SHELL section beside Read Only.
+        // No registry chord is registered for this verb ⇒ the glyph resolves to nil ⇒ no hint chip. Drives the store
         // seam that flips the active model's manual flag (→ the pill + the leaf's controller).
         item(
             id: "action.secureKeyboardEntry", icon: "lock.shield", title: "Secure Keyboard Entry",
@@ -202,7 +202,7 @@ public struct ActionsPaletteSource: PaletteDataSource {
             shortcut: glyph(.secureKeyboardEntry), category: .shell,
             run: { store in store.toggleSecureKeyboardEntryInActivePane() },
         ),
-        // Reopen Closed Pane (otty ⌘⇧T) — pops the tree shell's recently-closed LIFO. A graceful no-op when
+        // Reopen Closed Pane (⌘⇧T) — pops the tree shell's recently-closed LIFO. A graceful no-op when
         // the LIFO is empty. Glyph derives from the registry's `.reopenClosed` chord (no drift).
         item(
             id: "action.reopenClosed", icon: "arrow.uturn.backward", title: "Reopen Closed Pane",
@@ -210,7 +210,7 @@ public struct ActionsPaletteSource: PaletteDataSource {
             shortcut: glyph(.reopenClosed), category: .tab,
             run: { store in store.reopenLastClosedPane() },
         ),
-        // Sync Input to All Panes (otty broadcast / Zellij ToggleActiveSyncTab; ⌘⇧I) — mirror keystrokes to
+        // Sync Input to All Panes (Zellij ToggleActiveSyncTab-style broadcast; ⌘⇧I) — mirror keystrokes to
         // every other pane in the active tab. A graceful no-op when there is no active tab.
         item(
             id: "action.toggleSyncInput", icon: "rectangle.3.group", title: "Sync Input to All Panes",
@@ -220,7 +220,7 @@ public struct ActionsPaletteSource: PaletteDataSource {
                 if let tabID = store.tree.activeSession?.activeTab?.id { store.toggleSyncInput(tabID: tabID) }
             },
         ),
-        // Named layout presets (tmux/zellij `select-layout`; otty/registry comment: "menu/palette only — no
+        // Named layout presets (tmux/zellij `select-layout`; registry comment: "menu/palette only — no
         // chord"). The registry tracks `.applyLayout(_)` as palette/menu-only but listed it on NEITHER surface
         // (only the chorded `.cycleLayout` shipped), so the documented entry point was missing. Surface the five
         // presets here so they're reachable. Each re-tiles the active tiled tab directly via
@@ -255,7 +255,7 @@ public struct ActionsPaletteSource: PaletteDataSource {
             icon: "rectangle.split.2x2",
             preset: .tiled,
         ),
-        // New Session (otty ⌃⌘N) — mints a fresh session whose first pane is an in-pane `.chooser` (Terminal /
+        // New Session (⌃⌘N) — mints a fresh session whose first pane is an in-pane `.chooser` (Terminal /
         // Remote window). Cross-platform (the palette is the iOS entry point — there is no ⌃⌘N there).
         item(
             id: "action.newSession", icon: "square.stack.3d.up", title: "New Session",
@@ -263,7 +263,7 @@ public struct ActionsPaletteSource: PaletteDataSource {
             shortcut: glyph(.newSession), category: .window,
             run: { store in store.openChooserPane(.newSession) },
         ),
-        // Close Window (otty Window ▸ Close Window, ⌘⇧W) — routes through the injected `closeWindow` closure
+        // Close Window (⌘⇧W) — routes through the injected `closeWindow` closure
         // (macOS `NSWindow.performClose` → the close-confirmation gate), falling back to the store's parked
         // confirmation when no closure is installed (iOS / tests). The SAME actuation the ⌘⇧W chord + menu use.
         PaletteItem(
@@ -271,7 +271,7 @@ public struct ActionsPaletteSource: PaletteDataSource {
             subtitle: nil, keywords: "close window quit session", shortcut: glyph(.closeWindow),
             filter: .actions, category: .window, action: .closeWindow,
         ),
-        // Font size (otty ⌘= / ⌘- / ⌘0) — rescale the active pane's render font (the cell box resizes, so the
+        // Font size (⌘= / ⌘- / ⌘0) — rescale the active pane's render font (the cell box resizes, so the
         // remote PTY grid REFLOWS). A graceful no-op off a terminal active pane.
         item(
             id: "action.increaseFontSize", icon: "textformat.size.larger", title: "Increase Font Size",
@@ -291,15 +291,15 @@ public struct ActionsPaletteSource: PaletteDataSource {
             shortcut: glyph(.resetFontSize), category: .view,
             run: { store in store.resetFontInActivePane() },
         ),
-        // Open Composer (E12, otty Agents; ⌘⇧E) — toggle the active pane's Composer. A graceful no-op off a
-        // terminal active pane. Under the AGENTS section (otty's Agents menu placement).
+        // Open Composer (E12; ⌘⇧E) — toggle the active pane's Composer. A graceful no-op off a
+        // terminal active pane. Under the AGENTS section.
         item(
             id: "action.openComposer", icon: "square.and.pencil", title: "Open Composer",
             keywords: "composer prompt write agent message draft compose",
             shortcut: glyph(.composer), category: .agents,
             run: { store in store.requestComposerInActivePane() },
         ),
-        // Prompt Queue (E12, otty Agents ▸ Prompt Queue; ⌘⇧M) — open the active pane's composer in prompt-queue
+        // Prompt Queue (E12; ⌘⇧M) — open the active pane's composer in prompt-queue
         // input mode. The macOS Agents menu has it; surfacing it here makes it reachable cross-platform (iOS has
         // no Agents menu). A graceful no-op off a terminal active pane. Glyph from the registry (no drift).
         item(
@@ -308,7 +308,7 @@ public struct ActionsPaletteSource: PaletteDataSource {
             shortcut: glyph(.promptQueue), category: .agents,
             run: { store in store.requestPromptQueueInActivePane() },
         ),
-        // Send to Chat (E13 ES-E13-5, otty Agents ▸ Send to Chat; ⌘⌃↩) — quote the active pane's selection /
+        // Send to Chat (E13 ES-E13-5; ⌘⌃↩) — quote the active pane's selection /
         // last command into a chosen Claude-only agent pane. A VIEW overlay (the coordinator captures the quote
         // + presents the scrimmed dialog), so it routes through ``PaletteAction/openSendToChat`` — the SAME ⌘⌃↩
         // surface the menu mirrors. Surfacing it makes the dialog reachable from the palette (cross-platform).
@@ -318,7 +318,7 @@ public struct ActionsPaletteSource: PaletteDataSource {
             keywords: "send chat agent selection command share forward message",
             shortcut: glyph(.sendToChat), filter: .actions, category: .agents, action: .openSendToChat,
         ),
-        // Fork in Split Right / Down / New Tab (E13 ES-E13-7, otty `agents__fork-branch-session`; CLAUDE-ONLY).
+        // Fork in Split Right / Down / New Tab (E13 ES-E13-7, spec `agents__fork-branch-session`; CLAUDE-ONLY).
         // PALETTE / MENU ONLY (the registry rows ship `chord: nil`) — the fork is started inside the agent's
         // own `/branch` command, then the user picks a destination here. Each routes through the SAME single
         // ``WorkspaceBindingRegistry/route`` `performFork` path (no duplicated fork logic), which is a graceful
@@ -352,9 +352,9 @@ public struct ActionsPaletteSource: PaletteDataSource {
             id: "action.connect", icon: "network", title: "Connect to Host…",
             subtitle: nil, shortcut: nil, filter: .actions, category: .window, action: .openConnect,
         ),
-        // E19 WI-4: Pin Window (otty View ▸ Pin Window — float the window above all other apps). A CHECKABLE
+        // E19 WI-4: Pin Window (float the window above all other apps). A CHECKABLE
         // toggle (ES-E2-3): `OverlayHostView.toggledState(for:)` lights the ✓ gutter when `chrome.pinned`.
-        // CHORD-LESS (otty ships none) ⇒ `shortcut: nil` ⇒ no hint chip; routed by the coordinator to the
+        // CHORD-LESS (no registry chord is registered) ⇒ `shortcut: nil` ⇒ no hint chip; routed by the coordinator to the
         // injected `togglePinWindow` closure (the SAME live `chrome.pinned` the View menu + the `NSWindow.level`
         // glue read). macOS-meaningful (iOS has no window level — a documented no-op).
         PaletteItem(
@@ -365,8 +365,8 @@ public struct ActionsPaletteSource: PaletteDataSource {
             id: "action.openSettings", icon: "slider.horizontal.3", title: "Open Settings",
             subtitle: nil, shortcut: nil, filter: .actions, category: .settings, action: .openSettings,
         ),
-        // Theme / config verbs (Batch 4 catalog-completeness; otty palette "Theme: Switch Theme / Open Theme
-        // File" + "Settings: Reload Config"). Theme is LOCAL client state in aislopdesk (``ThemeStore`` /
+        // Theme / config verbs (Batch 4 catalog-completeness) — "Switch Theme", "Reload Config", and
+        // "Open Theme File" rows. Theme is LOCAL client state in aislopdesk (``ThemeStore`` /
         // ``PreferencesStore``), so these are pure client actions routed by the coordinator to injected handlers
         // (the SAME live `appearance` Settings → Appearance edits). Chord-less ⇒ no hint chip. Grouped under the
         // SETTINGS section (aislopdesk has no separate Theme palette category).
@@ -382,7 +382,7 @@ public struct ActionsPaletteSource: PaletteDataSource {
         ),
         PaletteItem(
             id: "action.openThemeFile", icon: "doc.text", title: "Open Theme File",
-            subtitle: nil, keywords: "open theme file reveal finder folder custom ottytheme edit config",
+            subtitle: nil, keywords: "open theme file reveal finder folder custom aislopdesktheme edit config",
             shortcut: nil, filter: .actions, category: .settings, action: .openThemeFile,
         ),
         // The cheat sheet is also reachable by ⌘/; surfacing it here means the keyboard reference is
@@ -401,7 +401,7 @@ public struct ActionsPaletteSource: PaletteDataSource {
     }
 
     /// One ``PaletteDataSource`` per non-empty category, in ``PaletteCategory/commandOrder`` — the verbs-only
-    /// ⌘⇧P palette registers these so the mixer emits an otty-style section header per category (Working
+    /// ⌘⇧P palette registers these so the mixer emits a section header per category (Working
     /// Directory / Window / Pane / Tab / View / Settings) for a typed query. (The empty-query zero-state is
     /// hand-built the same way in ``OverlayCoordinator/zeroStateResults()`` so it can interleave Recents.)
     public static func categorySources() -> [any PaletteDataSource] {
@@ -411,7 +411,7 @@ public struct ActionsPaletteSource: PaletteDataSource {
         }
     }
 
-    /// Write `string` to the platform pasteboard — the client-side stand-in for otty's local clipboard write
+    /// Write `string` to the platform pasteboard — the client-side local clipboard write
     /// (mirrors `RemoteFileTreeView.copyPath`). Host-routed Reveal/Open land in E10.
     private static func copyToPasteboard(_ string: String) {
         #if canImport(AppKit)
@@ -470,9 +470,9 @@ public struct ActionsPaletteSource: PaletteDataSource {
     }
 }
 
-// MARK: - CATEGORY ACTIONS source (one otty category of the verb catalog) — REAL
+// MARK: - CATEGORY ACTIONS source (one category of the verb catalog) — REAL
 
-/// A single otty verb category of ``ActionsPaletteSource/catalog`` (Working Directory / Window / Pane / …)
+/// A single verb category of ``ActionsPaletteSource/catalog`` (Working Directory / Window / Pane / …)
 /// surfaced as its own ``PaletteDataSource`` so the verbs-only ⌘⇧P palette's mixer emits one section header
 /// per category. Filters on `.actions` like the parent source; the section title is the category label.
 public struct CategoryActionsSource: PaletteDataSource {
@@ -553,8 +553,8 @@ public struct TabsPaletteSource: PaletteDataSource {
 /// The saved-snippet source (E16 WI-7) — one row per persisted ``Snippet``; selecting it runs the snippet
 /// into the focused (or broadcast) pane via ``WorkspaceStore/beginRunSnippet(_:)`` (which arms the value-entry
 /// sheet for a parameterized snippet, or injects immediately for a plain one). Surfaced under the verbs-only
-/// ⌘⇧P palette's `.actions` filter with a "Snippets" section header, so otty's "snippets appear in the command
-/// palette by name" behaviour is faithful. SNAPSHOT-based (like ``TabsPaletteSource``) — the live store read
+/// ⌘⇧P palette's `.actions` filter with a "Snippets" section header, so saved snippets are searchable and
+/// runnable by name directly from the command palette. SNAPSHOT-based (like ``TabsPaletteSource``) — the live store read
 /// happens when the snapshot is built on the @MainActor at palette-open, so the mix/rank stay pure + testable.
 public struct SnippetPaletteSource: PaletteDataSource {
     public let filters: Set<QueryFilter> = [.actions]
@@ -608,10 +608,10 @@ public struct SnippetPaletteSource: PaletteDataSource {
 
 // MARK: - RECIPES source (save / open a recipe, + run a saved one by name) — REAL
 
-/// The recipe source (E16 ES-E16-1/2/3 / M1) — surfaces otty's THIRD documented recipe entry point: the
+/// The recipe source (E16 ES-E16-1/2/3 / M1) — surfaces a THIRD recipe entry point: the
 /// command palette (alongside Settings ▸ Recipes + the File ▸ Recipe menu). Two FIXED verb rows — "Save
 /// Recipe…" arms ``WorkspaceStore/requestSaveRecipe()`` and "Open Recipe…" arms
-/// ``WorkspaceStore/requestOpenRecipe()`` — plus one row per saved `.ottyrecipe` ("Open Recipe: <name>",
+/// ``WorkspaceStore/requestOpenRecipe()`` — plus one row per saved `.aislopdeskrecipe` ("Open Recipe: <name>",
 /// opening it via ``WorkspaceStore/openRecipe(at:source:launchGrace:)`` with ``RecipeSource/savedLibrary``).
 /// Because the palette is the ONLY cross-platform recipe surface, these rows ALSO make Save / Open Recipe
 /// reachable on iOS (no menu bar, no ⌘S). SNAPSHOT-based (like ``SnippetPaletteSource``) — the saved-file scan
@@ -653,18 +653,18 @@ public struct RecipePaletteSource: PaletteDataSource {
         var rows: [PaletteItem] = [
             PaletteItem(
                 id: "recipe.save", icon: "square.and.arrow.down", title: "Save Recipe…",
-                keywords: "recipe save layout window tab snapshot export ottyrecipe",
+                keywords: "recipe save layout window tab snapshot export aislopdeskrecipe",
                 shortcut: nil, filter: .actions,
                 action: .store { store in store.requestSaveRecipe() },
             ),
             PaletteItem(
                 id: "recipe.open", icon: "square.and.arrow.up", title: "Open Recipe…",
-                keywords: "recipe open restore import layout ottyrecipe",
+                keywords: "recipe open restore import layout aislopdeskrecipe",
                 shortcut: nil, filter: .actions,
                 action: .store { store in store.requestOpenRecipe() },
             ),
         ]
-        // One row per saved `.ottyrecipe` — opens it by URL from the library (`.savedLibrary` follows the
+        // One row per saved `.aislopdeskrecipe` — opens it by URL from the library (`.savedLibrary` follows the
         // Saved-Recipes Command-Replay default). The id is path-namespaced so two recipes never collide.
         rows += entries.map { entry in
             PaletteItem(

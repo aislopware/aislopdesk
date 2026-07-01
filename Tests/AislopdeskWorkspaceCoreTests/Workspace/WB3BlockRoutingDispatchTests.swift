@@ -99,8 +99,8 @@ final class WB3BlockRoutingDispatchTests: XCTestCase {
     // MARK: - Re-run an EXPLICIT command (E11 Open-Quickly Command-row "Re-Run in Current Pane")
 
     /// `reRunCommandInActivePane(_:)` re-injects an EXPLICIT command text (the picked Current Command row,
-    /// not the latest block) verbatim + one newline through the pane's input path — the otty Command-row
-    /// "Re-Run in Current Pane" action. Pins it sends the PASSED text (`"git status"`), independent of the
+    /// not the latest block) verbatim + one newline through the pane's input path — the Open-Quickly
+    /// Command-row "Re-Run in Current Pane" action. Pins it sends the PASSED text (`"git status"`), independent of the
     /// block list, and that a literal `"<Enter>"` substring is NOT parsed into a control byte (the verbatim
     /// `BlockReRunEncoder` invariant). FAILS if the action were wired to `reRunLastCommandInActivePane`
     /// (which would send the latest block "tail", not the picked row) or to a SendKeysParser path.

@@ -1,8 +1,8 @@
 import Foundation
 
-// MARK: - otty config action-name → registry bindingID resolver (E1 / WI-1, the N5 resolver core)
+// MARK: - Config action-name → registry bindingID resolver (E1 / WI-1, the N5 resolver core)
 
-/// Maps otty config action NAMES (`new_tab`, `split_right`, `goto_tab:N`, …) to this registry's stable
+/// Maps config action NAMES (`new_tab`, `split_right`, `goto_tab:N`, …) to this registry's stable
 /// binding ids (`tab.new`, `pane.splitRight`, `tab.select.<n>`, …).
 ///
 /// **Why this exists (the N5 gap).** ``KeybindGrammar/parseAction`` already turns a config line's
@@ -26,7 +26,7 @@ import Foundation
 /// `scripts/check-ios.sh`). Names taken from `spec/reference__keybindings.md` "Config keys" +
 /// `spec/customization__custom-keybindings.md`.
 public extension WorkspaceBindingRegistry {
-    /// The bare otty config name → registry bindingID table (the non-parameterized actions). The values
+    /// The bare config name → registry bindingID table (the non-parameterized actions). The values
     /// are exactly the `WorkspaceBinding.id`s in ``bindings`` / ``selectTabBindings`` — pinned to have no
     /// orphan by `WorkspaceActionConfigNamesTests`. The parameterized `goto_tab:N` family is resolved
     /// separately (it expands to nine per-digit ids in ``selectTabBindings``).
@@ -55,7 +55,7 @@ public extension WorkspaceBindingRegistry {
         "new_session": "session.new",
     ]
 
-    /// Resolve an otty config action `name` (with an optional `arg`) to this registry's binding id, or
+    /// Resolve a config action `name` (with an optional `arg`) to this registry's binding id, or
     /// `nil` if the name is unknown, the arg is out of range, or the action is a libghostty-only responder
     /// action with no ``WorkspaceAction`` (validate-then-drop — never a trap, never an invented id).
     ///

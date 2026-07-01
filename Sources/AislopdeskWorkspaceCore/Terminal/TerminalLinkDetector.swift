@@ -2,8 +2,8 @@ import Foundation
 
 // MARK: - E10 WI-1 (ES-E10-1 / ES-E10-2): pure path / URL / link detector over the terminal grid
 
-/// The classification of a span detected by ``TerminalLinkDetector``. Mirrors otty's
-/// `user-interface__files-and-links` "Path and Link Detection" list.
+/// The classification of a span detected by ``TerminalLinkDetector``. Mirrors the
+/// `docs/ui-shell/spec/user-interface__files-and-links.md` "Path and Link Detection" list.
 ///
 /// - ``absolutePath``: a `/…`-rooted filesystem path (`/usr/local/bin/foo`).
 /// - ``tildePath``: a `~`-anchored path (`~/project/file.swift`) — anchored at the host `$HOME`,
@@ -58,19 +58,19 @@ public struct DetectedLink: Equatable, Hashable, Sendable {
     }
 }
 
-/// Which URL schemes the detector underlines / makes clickable — otty's "Auto-Detect Link Schemes".
+/// Which URL schemes the detector underlines / makes clickable — the "Auto-Detect Link Schemes" setting.
 ///
-/// `http`, `https`, `file`, and `mailto` are **always** detected regardless of this policy (the otty
-/// rule); this only governs OTHER `scheme://…` forms.
+/// `http`, `https`, `file`, and `mailto` are **always** detected regardless of this policy (hard-coded);
+/// this only governs OTHER `scheme://…` forms.
 public enum LinkSchemePolicy: Equatable, Hashable, Sendable {
-    /// Detect ANY `scheme://…` (otty "All", the default).
+    /// Detect ANY `scheme://…` (the default, labeled "All" in Settings).
     case all
-    /// Detect only the always-on schemes plus this user list (otty "Custom", e.g. `codex`, `ssh`,
-    /// `vscode`). Compared case-insensitively.
+    /// Detect only the always-on schemes plus this user list (labeled "Custom" in Settings, e.g. `codex`,
+    /// `ssh`, `vscode`). Compared case-insensitively.
     case custom([String])
 }
 
-/// The PURE, headless heart of otty's terminal path/URL/link detection (E10 ES-E10-1/2): scan
+/// The PURE, headless heart of the terminal's path/URL/link detection (E10 ES-E10-1/2): scan
 /// `[String]` rows and return every detected path, `path:line:col`, URL, `file://`, and `mailto:`
 /// span with its cell columns and (where derivable) resolved absolute path.
 ///
@@ -242,7 +242,7 @@ public enum TerminalLinkDetector {
         )
     }
 
-    /// `mailto:user@host` — always detected per otty regardless of the scheme policy. Requires an `@`
+    /// `mailto:user@host` — always detected regardless of the scheme policy. Requires an `@`
     /// so a bare `mailto:` is dropped (validate-then-drop).
     private static func classifyMailto(_ core: String, row: Int, cellStart: Int) -> DetectedLink? {
         guard core.lowercased().hasPrefix("mailto:") else { return nil }

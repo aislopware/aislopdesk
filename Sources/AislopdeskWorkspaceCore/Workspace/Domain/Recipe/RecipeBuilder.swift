@@ -66,7 +66,7 @@ public struct RecipeRestorePane: Equatable, Sendable {
 /// - ``restorePlan(_:home:currentFolder:recipeLocation:)`` is the inverse: it resolves cwd templates and
 ///   reconstructs each tab's split tree by replaying the recorded relative splits (reusing
 ///   ``SplitNode/splitting(_:axis:inserting:before:)`` — the SAME tree-rewrite the store uses — so the
-///   round-trip is faithful for the right/down-spine trees the otty save workflow produces).
+///   round-trip is faithful for the right/down-spine trees the recipe-save workflow produces).
 ///
 /// **Exported recipes OMIT scrollback, machine-local keybindings, and agent sessions** — structurally, by
 /// construction: ``RecipePane`` carries only `cwd` / `commands` / `split` / `size`, so none of those

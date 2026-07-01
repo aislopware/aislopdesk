@@ -206,7 +206,7 @@ final class WindowSizeMathTests: XCTestCase {
 
     // MARK: WindowSizeMode raw values + Defaults round-trip / repair
 
-    /// The enum raw values are the otty `window-size` config tokens and round-trip exactly.
+    /// The enum raw values are the `window-size` config tokens and round-trip exactly.
     func testWindowSizeModeRawRoundTrip() {
         XCTAssertEqual(WindowSizeMode.allCases, [.remember, .grid, .frame])
         XCTAssertEqual(WindowSizeMode.remember.rawValue, "remember")

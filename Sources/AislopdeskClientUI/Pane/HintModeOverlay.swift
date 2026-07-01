@@ -2,7 +2,7 @@
 //
 // A DECORATION overlay layered OVER the terminal surface in `TerminalLeafView` (never a content branch — the
 // libghostty-freeze guardrail): while the pane model has an armed intent (``TerminalViewModel/hintMode``), it
-// DIMS the surface (so labels pop, otty convention), draws a yellow 2-letter badge at each detected target —
+// DIMS the surface (so labels pop), draws a yellow 2-letter badge at each detected target —
 // mapped to points by the WI-2 ``TerminalCellMetrics`` (the SAME geometry seam the ⌘-hold underline uses) — and
 // shows a `HINTS · <intent> · Esc Exit` badge top-trailing (the `hint-mode.png` chrome; aislopdesk has no
 // titlebar, so it floats in the pane like the vi-mode / read-only pills).
@@ -21,7 +21,7 @@
 // `cellMetrics()` is absent and the overlay renders nothing — labels are ABSENT, never wrong. The actuation
 // itself is wired by ``TerminalLeafView`` (``TerminalViewModel/onHintConfirmed``).
 //
-// `Otty.*` tokens for chrome; the badge is a FIXED yellow plate with BLACK text (the hint-mode spec's "yellow
+// `Slate.*` tokens for chrome; the badge is a FIXED yellow plate with BLACK text (the hint-mode spec's "yellow
 // background / black text" — theme-independent so it reads over any terminal background, the secure-input-pill
 // rationale). check-ds-leaks forbids only raw font-size / radius literals, not these colours.
 
@@ -50,10 +50,10 @@ struct HintModeOverlay: View {
             let matched = Set(HintLabelAssigner.filter(typed: typed, labels: labels).matched)
 
             ZStack(alignment: .topLeading) {
-                // Dim the surface so the labels pop (otty convention) — the SAME scrim token the modal overlays
+                // Dim the surface so the labels pop — the SAME scrim token the modal overlays
                 // use. Tapping the dim plate cancels the mode (and blocks stray clicks to the terminal while up).
                 Rectangle()
-                    .fill(Otty.State.shadow)
+                    .fill(Slate.State.shadow)
                     .contentShape(Rectangle())
                     .onTapGesture { model.cancelHintMode() }
 
@@ -74,7 +74,7 @@ struct HintModeOverlay: View {
             }
             .overlay(alignment: .topTrailing) {
                 HintModeBadge(intent: intent, typed: typed, onExit: { model.cancelHintMode() })
-                    .padding(Otty.Metric.space2)
+                    .padding(Slate.Metric.space2)
             }
             // Belt-and-suspenders Escape dismiss (C4): the primary cancel is the renderer's `keyDown` →
             // `cancelHintMode()` once the terminal is first responder (the routing now nudges focus there). This
@@ -105,14 +105,14 @@ private struct HintLabelBadge: View {
 
     var body: some View {
         labelText
-            .font(.system(size: Otty.Typeface.small, weight: .bold, design: .monospaced))
-            .padding(.horizontal, Otty.Metric.space1)
+            .font(.system(size: Slate.Typeface.small, weight: .bold, design: .monospaced))
+            .padding(.horizontal, Slate.Metric.space1)
             .frame(minHeight: 14)
-            .background(Otty.Status.warn, in: .rect(cornerRadius: Otty.Metric.radiusSmall))
+            .background(Slate.Status.warn, in: .rect(cornerRadius: Slate.Metric.radiusSmall))
             .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
                     // A thin dark hairline so the yellow plate reads on a light background too.
-                    .strokeBorder(Color.black.opacity(0.35), lineWidth: Otty.Metric.hairline),
+                    .strokeBorder(Color.black.opacity(0.35), lineWidth: Slate.Metric.hairline),
             )
             .opacity(dimmed ? 0.2 : 1)
             .fixedSize()
@@ -152,26 +152,26 @@ private struct HintModeBadge: View {
     }
 
     var body: some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             Text("HINTS")
-                .font(.system(size: Otty.Typeface.footnote, weight: .bold))
+                .font(.system(size: Slate.Typeface.footnote, weight: .bold))
                 .tracking(0.5)
                 .foregroundStyle(Color.black)
             Text(intentLabel)
-                .font(.system(size: Otty.Typeface.small, weight: .semibold))
+                .font(.system(size: Slate.Typeface.small, weight: .semibold))
                 .tracking(0.5)
                 .foregroundStyle(Color.black.opacity(0.6))
             if !typed.isEmpty {
                 Text(typed.uppercased())
-                    .font(.system(size: Otty.Typeface.footnote, weight: .bold, design: .monospaced))
+                    .font(.system(size: Slate.Typeface.footnote, weight: .bold, design: .monospaced))
                     .foregroundStyle(Color.black)
             }
             closeButton
         }
-        .padding(.horizontal, Otty.Metric.space2)
-        .padding(.vertical, Otty.Metric.space1)
-        .background(Otty.Status.warn, in: .rect(cornerRadius: Otty.Metric.radiusControl))
-        .shadow(color: Otty.State.shadow, radius: 4, x: 0, y: 1)
+        .padding(.horizontal, Slate.Metric.space2)
+        .padding(.vertical, Slate.Metric.space1)
+        .background(Slate.Status.warn, in: .rect(cornerRadius: Slate.Metric.radiusControl))
+        .shadow(color: Slate.State.shadow, radius: 4, x: 0, y: 1)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Hint mode \(intentLabel)")
         .accessibilityHint("Press a label, or Escape to exit")
@@ -181,14 +181,14 @@ private struct HintModeBadge: View {
     private var closeButton: some View {
         Button(action: onExit) {
             Image(systemName: "xmark")
-                .font(.system(size: Otty.Typeface.small, weight: .bold))
+                .font(.system(size: Slate.Typeface.small, weight: .bold))
                 .foregroundStyle(Color.black.opacity(closeHover ? 1 : 0.6))
                 .frame(width: 16, height: 16)
                 .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .onHover { closeHover = $0 }
-        .ottyHelp("Exit hint mode (Esc)")
+        .slateHelp("Exit hint mode (Esc)")
     }
 }
 #endif

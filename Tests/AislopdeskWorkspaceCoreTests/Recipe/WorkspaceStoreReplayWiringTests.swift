@@ -91,7 +91,7 @@ final class WorkspaceStoreReplayWiringTests: XCTestCase {
     /// in-pane HUD renders, and runs the WHOLE queue on a single ``continueRecipeReplayInActivePane()`` — the
     /// exact path the HUD's "Run" button drives.
     /// REVERT-TO-CONFIRM-FAIL: before the HUD seam, nothing called the active-pane continue for an
-    /// `awaitingConfirmation` machine, so Ask-Once (the DEFAULT for opened `.ottyrecipe` files) queued its
+    /// `awaitingConfirmation` machine, so Ask-Once (the DEFAULT for opened `.aislopdeskrecipe` files) queued its
     /// commands and never ran — `recipeReplayPrompt` was nil-surfaced by no view and stayed unread.
     func testAskOnceSurfacesPromptThenRunsAllViaActivePaneContinue() throws {
         let store = makeStore()

@@ -1,7 +1,7 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E8 WI-4 (ES-E8-3): pins the pure ``PasteSafetyAnalyzer`` — otty's paste-protection danger detection
+/// E8 WI-4 (ES-E8-3): pins the pure ``PasteSafetyAnalyzer`` — the paste-protection danger detection
 /// (multi-line / trailing-newline / sudo-su / control-char) and the skip rules (protection off, empty,
 /// full-screen TUI alt-screen, bracketed-safe). Every assertion targets a SINGLE behaviour and several
 /// are deliberately discriminating (a naive substring / "any newline" implementation FAILS them), so the

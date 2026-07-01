@@ -118,7 +118,7 @@ public struct AislopdeskClientApp: App {
         AppearanceApplier.apply = { appearance in
             ThemeStore.shared.apply(appearance: appearance)
         }
-        // The terminal CELLS adopt the active theme's flat palette (otty flat design): this hook reads the
+        // The terminal CELLS adopt the active theme's flat palette (flat cell design, no per-cell texture): this hook reads the
         // already-resolved `ThemeStore.active` (so the dual-slot / `.system` selection is concrete) and hands
         // its libghostty 6-hex background/foreground PLUS (E15 WI-3) the 16-entry ANSI palette + selection
         // colour to `PreferencesStore` when it (re)builds the terminal config.
@@ -148,7 +148,7 @@ public struct AislopdeskClientApp: App {
         // Build the GUI Settings store FIRST so its apply paths run before the video pipeline / any
         // `static let` env flag is forced (folds persisted prefs into `EnvConfig.overlay`).
         let preferences = PreferencesStore()
-        // E1/WI-6 + WI-2: fold the otty-style `~/.config/aislopdesk/config.toml` keybind lines into the live
+        // E1/WI-6 + WI-2: fold the `~/.config/aislopdesk/config.toml` keybind lines into the live
         // keybindings so ES-E1-6 is reachable end-to-end — setting `keybindings` republishes the merged model
         // to `WorkspaceBindingRegistry.activeOverrides` via the store's `didSet`, which the dispatcher reads
         // BEFORE the action table. The `text:` / `csi:` / `esc:` / `unbind:` directives need no registry and
@@ -193,7 +193,7 @@ public struct AislopdeskClientApp: App {
         // host, each as a logical channel.
         let muxRegistry = ConnectionRegistry(makeConnection: LiveMuxConnectionFactory.makeConnection)
 
-        // O1: honour the otty `On Launch` general setting (General → On Launch). `.restoreLastSession` (the
+        // O1: honour the `On Launch` general setting (General → On Launch). `.restoreLastSession` (the
         // default) restores the persisted tree; `.newWindow` seeds a fresh single-pane session instead
         // (`launchTree` returns nil ⇒ the store uses `TreeWorkspace.defaultWorkspace()`), so the picker is a
         // live control, not a dead accessor. nil in automation ⇒ bootstrap replaces it anyway.
@@ -305,7 +305,7 @@ public struct AislopdeskClientApp: App {
         #if os(macOS)
         overlay.openThemeFile = {
             guard let dir = ThemeLibrary.themesDirectoryURL() else { return }
-            // Create the folder first so a never-yet-used custom-themes dir still opens (otty creates on demand).
+            // Create the folder first so a never-yet-used custom-themes dir still opens (created lazily, on first open).
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             NSWorkspace.shared.open(dir)
         }
@@ -526,8 +526,8 @@ public struct AislopdeskClientApp: App {
         #endif
     }
 
-    /// The root IDE shell. On macOS it hands the root view installers that wire ⌘⇧R (otty Toggle Details
-    /// Panel) and ⌘⇧L (otty Toggle Tabs Panel / sidebar) to the view's `WorkspaceChromeState` toggles ON THE
+    /// The root IDE shell. On macOS it hands the root view installers that wire ⌘⇧R (Toggle Details
+    /// Panel) and ⌘⇧L (Toggle Tabs Panel / sidebar) to the view's `WorkspaceChromeState` toggles ON THE
     /// app-level `keyDispatcher`, so each chord routes through the SAME NSEvent monitor that owns every other
     /// chord (the legacy `store.sidebarCollapsed` is not read on macOS); iOS has no dispatcher.
     @ViewBuilder
@@ -584,10 +584,10 @@ public struct AislopdeskClientApp: App {
                 .sheet(isPresented: $presentFirstLaunch) {
                     FirstLaunchView(model: firstLaunchModel, store: preferences)
                         .agentHooksController(agentHooks)
-                        .tint(Otty.State.accent)
+                        .tint(Slate.State.accent)
                         // Adopt the active theme's light/dark like every other surface (issue 1) — without it
                         // the sheet inherited the OS appearance and could render light over a dark workspace.
-                        .preferredColorScheme(Otty.colorScheme)
+                        .preferredColorScheme(Slate.colorScheme)
                 }
                 .task {
                     presentFirstLaunch = FirstLaunchModel.shouldPresent(
@@ -595,12 +595,12 @@ public struct AislopdeskClientApp: App {
                         automationActive: Self.hasAutomationEnvironment(),
                     )
                 }
-                // L6: the otty chrome is a PINNED palette (default Monokai Pro Classic — flat dark filter).
+                // L6: the app chrome is a PINNED palette (default Monokai Pro Classic — flat dark filter).
                 // Pin the window's colour scheme to the active theme so every system semantic colour we don't
-                // tokenize resolves with the right contrast, and route the global tint to the otty accent so
-                // stock controls/selection adopt it.
-                .tint(Otty.State.accent)
-                .preferredColorScheme(Otty.colorScheme)
+                // tokenize resolves with the right contrast, and route the global tint to the theme's accent
+                // colour so stock controls/selection adopt it.
+                .tint(Slate.State.accent)
+                .preferredColorScheme(Slate.colorScheme)
                 .onChange(of: scenePhase) { _, phase in handleScenePhase(phase) }
                 // System-dialog monitor poll loop, scoped to the scene. Skipped under automation / when
                 // AISLOPDESK_SYSTEM_DIALOG_PANES=0; inert anyway with no discovery seam registered.
@@ -739,8 +739,8 @@ public struct AislopdeskClientApp: App {
             #endif
         }
         #if os(macOS)
-        // otty has NO system unified toolbar: hide the titlebar (the window keeps traffic lights + a
-        // full-size content view) so otty's own hover-reveal titlebar (`OttyTitlebar`) is the only chrome.
+        // The app has NO system unified toolbar: hide the titlebar (the window keeps traffic lights + a
+        // full-size content view) so its own hover-reveal titlebar (`SlateTitlebar`) is the only chrome.
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.automatic)
         // G1: open at the odiff reference geometry (1280×800) so a fresh window matches the reference.
@@ -775,7 +775,7 @@ public struct AislopdeskClientApp: App {
                 // `WorkspaceRootView.wireChromeToggles` → sets `DetailsPanelState.selected` + reveals the
                 // panel). Without this the menu rows were inert (`selectDetailsTab` was nil).
                 selectDetailsTab: { [overlayCoordinator] tab in overlayCoordinator.selectDetailsTab(tab) },
-                // E19 WI-4: Pin Window is CHORD-LESS (otty ships no chord), so the menu item is its primary
+                // E19 WI-4: Pin Window is CHORD-LESS (no default keybinding), so the menu item is its primary
                 // entry. Flip the SAME live `chrome.pinned` the `.onChange(of:)` above actuates to `NSWindow
                 // .level` — directly off the app-owned chrome (no overlay round-trip needed).
                 togglePinWindow: { [chrome] in chrome.togglePin() },
@@ -800,9 +800,9 @@ public struct AislopdeskClientApp: App {
         #endif
 
         // D4: the GUI Settings surface (⌘,). A STOCK SwiftUI `Settings` scene — the main window is
-        // `.hiddenTitleBar` and the otty overlay host (`OverlayCoordinator`) is not yet mounted, so a
+        // `.hiddenTitleBar` and the in-app overlay host (`OverlayCoordinator`) is not yet mounted, so a
         // separate system-chromed window is the non-clashing home for now (it relocates into an in-window
-        // otty panel once the coordinator lands). Binds the SAME single live `PreferencesStore`. macOS-only:
+        // settings panel once the coordinator lands). Binds the SAME single live `PreferencesStore`. macOS-only:
         // `Settings` is unavailable on iOS (the iOS settings surface lands as an in-app sheet later).
         #if os(macOS)
         // Thread the live `WorkspaceStore` into the Settings scene so the Advanced → Workspace rows (E7
@@ -914,7 +914,7 @@ public struct AislopdeskClientApp: App {
     private nonisolated(unsafe) static var windowActivatedKey: UInt8 = 0
 
     /// E19 WI-4 (A30) — map the pin flag to `NSWindow.level` IDEMPOTENTLY. `.floating` keeps the window above
-    /// other apps (otty Pin Window); `.normal` restores it. The guard means the re-firing introspect callback
+    /// other apps (the Pin Window feature); `.normal` restores it. The guard means the re-firing introspect callback
     /// + a redundant `.onChange` never thrash the level.
     @MainActor
     private static func applyPinLevel(to window: NSWindow, pinned: Bool) {
@@ -1055,8 +1055,8 @@ enum WindowCloseGate {
     /// (``WorkspaceStore/requestCloseWindow()``). When NO confirmation is required it returns `true`
     /// immediately (byte-identical to the pre-E3 default close, the persisted layout preserved). When one IS
     /// required it invokes `confirm` (the synchronous prompt) EXACTLY once and routes the user's choice:
-    ///   - confirmed ⇒ ``WorkspaceStore/confirmPendingWindowClose()`` (close the active session — otty window
-    ///     → ``Session`` — which tears down its panes / stops any running processes) and return `true` so the
+    ///   - confirmed ⇒ ``WorkspaceStore/confirmPendingWindowClose()`` (close the active session — the window
+    ///     maps 1:1 to a ``Session`` — which tears down its panes / stops any running processes) and return `true` so the
     ///     NSWindow then closes (the red-traffic-light intent);
     ///   - cancelled ⇒ ``WorkspaceStore/cancelPendingWindowClose()`` and return `false` (keep the window).
     ///
@@ -1080,7 +1080,7 @@ enum WindowCloseGate {
 /// displacing SwiftUI's own window delegate. It implements ONLY `windowShouldClose(_:)` and forwards every
 /// other selector to the delegate SwiftUI installed (`next`), so SwiftUI's window bookkeeping is untouched.
 ///
-/// On a close attempt it routes through ``WindowCloseGate/resolve(store:confirm:)`` (the otty window → active
+/// On a close attempt it routes through ``WindowCloseGate/resolve(store:confirm:)`` (the window → active
 /// ``Session`` map). When the configured ``CloseConfirmationPolicy`` says confirm, it presents a SYNCHRONOUS
 /// confirmation (`NSAlert`) so the attempt always resolves — the window can never be stranded with an
 /// unresolved park (the regression this fixes). The decision is store-side + unit-tested; only this NSWindow

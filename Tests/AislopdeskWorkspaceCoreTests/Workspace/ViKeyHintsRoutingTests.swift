@@ -8,7 +8,7 @@ import XCTest
 /// The single point under test is ``WorkspaceBindingRegistry/route(_:to:)``'s `.cheatSheet` case: while the
 /// active pane is in vi / copy-mode it must toggle THAT pane's vi key-hint bar (NOT the global keyboard cheat
 /// sheet); out of copy-mode it must fall through to the view-owned cheat-sheet toggle (the existing behaviour).
-/// One binding, contextual behaviour — otty parity, no new chord.
+/// One binding, contextual behaviour — no new chord.
 ///
 /// Driven over ``RecordingTerminalPaneSession`` (a headless double carrying a REAL ``TerminalViewModel``) so the
 /// store↔model drive runs end-to-end WITHOUT a socket or renderer (the hang-safety rule). NO SwiftUI view is

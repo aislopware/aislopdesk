@@ -362,7 +362,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         // the input bar.
         let composer = ComposerModel()
         composer.send = { [weak inputBar] data in inputBar?.sendRaw([UInt8](data), record: true) }
-        // NORMAL-pane idle dispatch (the literal otty trigger): the client modeTracker fires `onPromptIdle`
+        // NORMAL-pane idle dispatch (the shell-idle-prompt trigger): the client modeTracker fires `onPromptIdle`
         // on an OSC-133;A prompt mark (the shell is back at an idle prompt) → drain the next queued prompt.
         // The AGENT-pane (alt-screen Claude Code, no OSC-133 marks) idle path is `claudeStatus → .idle` in
         // `applyDetectedStatus`. Weak so the callback can't retain the composer.
@@ -441,7 +441,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// survives the workspace-tree persistence round-trip (the current tree model is ``SplitNode``, whose
     /// `.leaf(PaneID)` case carries the id verbatim through encode/decode). So adoption is the right
     /// moment to (1) RESTORE a persisted pin — re-pinning the RIGHT pane on a fresh launch and opening the
-    /// bar so it visibly rides along (the otty "pinned state is persisted" rule) — and (2) wire forward
+    /// bar so it visibly rides along (pinned state is persisted across launches) — and (2) wire forward
     /// persistence on later toggles. The restore runs BEFORE wiring ``ComposerModel/onPinnedChange`` so it
     /// never re-persists what it just read.
     func adopt(id: PaneID) {

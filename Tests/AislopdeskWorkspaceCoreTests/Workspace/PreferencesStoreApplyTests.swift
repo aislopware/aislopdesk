@@ -104,7 +104,7 @@ final class PreferencesStoreApplyTests: XCTestCase {
         // The GUI hook reports the active slot's resolved theme slug.
         AppearanceApplier.resolveActiveThemeSlug = { "dracula" }
         let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil)
-        // Global unset (so the per-theme override wins — otty "Global overrides theme" precedence) + a
+        // Global unset (so the per-theme override wins — the "Global overrides theme" precedence) + a
         // per-theme font for the active slug.
         store.terminal.fontFamily = ""
         store.appearance.themeFonts = ["dracula": "Fira Code"]

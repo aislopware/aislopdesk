@@ -3,7 +3,7 @@ import Foundation
 // MARK: - RecipeReplayMode (`Command Replay` setting)
 
 /// How a recipe's captured commands are replayed on open. Two independent settings pick a mode: one for
-/// internally-saved recipes (default ``auto``) and one for externally-opened `.ottyrecipe` files (default
+/// internally-saved recipes (default ``auto``) and one for externally-opened `.aislopdeskrecipe` files (default
 /// ``askOnce``) — see `SettingsKey`/`Defaults`. Raw `String` values back the `Defaults` serialization.
 public enum RecipeReplayMode: String, Codable, Sendable, Equatable, CaseIterable {
     /// All commands run automatically in sequence.

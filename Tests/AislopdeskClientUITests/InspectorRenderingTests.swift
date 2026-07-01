@@ -262,11 +262,11 @@ final class InspectorRenderingTests: XCTestCase {
 
     func testDetailsTabOrderPlacesOutlineBetweenInfoAndGit() {
         // ES-E9-2 / WI-5 + WI-7: the Details panel's segmented header iterates the hoisted cross-module
-        // `DetailsPanelTab.allCases`; the Outline tab must sit BETWEEN Info and Git (otty order Info | Outline
-        // | Git | Files). FAILS on the un-fixed code (no `.outline` case ⇒ does not compile) and on a reorder
-        // regression (the index pins below fail).
+        // `DetailsPanelTab.allCases`; the Outline tab must sit BETWEEN Info and Git, giving the fixed order
+        // Info | Outline | Git | Files. FAILS on the un-fixed code (no `.outline` case ⇒ does not compile) and
+        // on a reorder regression (the index pins below fail).
         let order = DetailsPanelTab.allCases.map(\.rawValue)
-        XCTAssertEqual(order, ["info", "outline", "git", "files"], "otty Details tab order")
+        XCTAssertEqual(order, ["info", "outline", "git", "files"], "Details tab order")
 
         guard let info = order.firstIndex(of: "info"),
               let outline = order.firstIndex(of: "outline"),
@@ -297,7 +297,7 @@ final class InspectorRenderingTests: XCTestCase {
         // fixed placeholder and the literal input, not the helper's own derivation.
         XCTAssertEqual(InfoTabFormatting.displayPath(nil), "—", "no cwd ⇒ em-dash, never a blank row")
         XCTAssertEqual(InfoTabFormatting.displayPath(""), "—", "an empty cwd is treated as missing")
-        XCTAssertEqual(InfoTabFormatting.displayPath("~/Workplace/otty"), "~/Workplace/otty")
+        XCTAssertEqual(InfoTabFormatting.displayPath("~/Workplace/myproject"), "~/Workplace/myproject")
         XCTAssertEqual(InfoTabFormatting.displayPath("/Users/me/src/app"), "/Users/me/src/app")
     }
 

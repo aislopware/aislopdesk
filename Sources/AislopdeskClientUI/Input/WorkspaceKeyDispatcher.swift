@@ -39,12 +39,12 @@ final class WorkspaceKeyDispatcher {
     private let toggleCheatSheet: (() -> Void)?
     private let toggleFind: (() -> Void)?
     private let togglePeekReply: (() -> Void)?
-    /// E13 / WI-5 (ES-E13-5): the Send-to-Chat dialog toggle (otty ⌘⌃↩). View-overlay state (the
+    /// E13 / WI-5 (ES-E13-5): the Send-to-Chat dialog toggle (⌘⌃↩). View-overlay state (the
     /// ``OverlayCoordinator`` owns the dialog visibility + the captured ``SendToChatContext``), so it is passed
     /// in as a closure like `togglePeekReply`; `nil` (the headless / test default) keeps `.sendToChat` a
     /// graceful no-op via `route` — never a dead chord (ES-E1-5 keeps the chord LIVE).
     private let toggleSendToChat: (() -> Void)?
-    /// E5 / WI-4: the cross-tab Global Search overlay toggle (otty ⇧⌘F). View-overlay state (the
+    /// E5 / WI-4: the cross-tab Global Search overlay toggle (⇧⌘F). View-overlay state (the
     /// ``OverlayCoordinator``), so it is passed in as a closure like `togglePalette`; `nil` (the headless /
     /// test default) keeps `.globalSearch` a graceful no-op via `route` — never a dead chord.
     private let toggleGlobalSearch: (() -> Void)?
@@ -59,12 +59,12 @@ final class WorkspaceKeyDispatcher {
     /// `route` — never a dead chord. ⌘⇧O (this) and ⌘J (`toggleJumpTo`) are the ONLY global Open-Quickly
     /// chords — the pill / ⌘1–9 / Tab / ⌘K chords are PICKER-LOCAL (handled in `OpenQuicklyView`).
     private let toggleOpenQuickly: (() -> Void)?
-    /// The Details/inspector panel toggle (otty ⌘⇧R). View-owned `@State` (`WorkspaceChromeState`), so it is
+    /// The Details/inspector panel toggle (⌘⇧R). View-owned `@State` (`WorkspaceChromeState`), so it is
     /// passed in as a closure. The chrome state is created INSIDE `WorkspaceRootView` (after the dispatcher is
     /// built at app `init`), so the root view installs the real closure via ``setToggleDetailsPanel(_:)`` on
     /// appear; until then it is `nil` ⇒ `.toggleDetailsPanel` is a graceful no-op (never a dead chord).
     private var toggleDetailsPanel: (() -> Void)?
-    /// The left sidebar / Tabs-panel toggle (otty ⌘⇧L). Same view-owned `@State` story as the Details toggle:
+    /// The left sidebar / Tabs-panel toggle (⌘⇧L). Same view-owned `@State` story as the Details toggle:
     /// the macOS sidebar collapse is `WorkspaceChromeState.sidebarCollapsed` (the native split reads it), NOT
     /// the legacy `store.sidebarCollapsed`, so the root view installs the real closure via
     /// ``setToggleSidebar(_:)`` on appear. Until then `nil` ⇒ `.toggleSidebar` falls back to the store flag in
@@ -75,12 +75,12 @@ final class WorkspaceKeyDispatcher {
     /// ``setSelectDetailsTab(_:)`` once those exist; until then `nil` ⇒ `.selectDetailsTab` is a graceful
     /// no-op (never a dead command).
     private var selectDetailsTab: ((DetailsPanelTab) -> Void)?
-    /// E19/A30 (WI-4): "Pin Window" (otty View ▸ Pin Window). View-owned `@State` (`WorkspaceChromeState`), so
+    /// E19/A30 (WI-4): "Pin Window" (View ▸ Pin Window). View-owned `@State` (`WorkspaceChromeState`), so
     /// it is installed late by the root view via ``setTogglePinWindow(_:)`` once the chrome exists. Pin Window
-    /// is CHORD-LESS by default (otty ships no chord), so this fires only if a user binds a chord to the
+    /// is CHORD-LESS by default (no chord ships out of the box), so this fires only if a user binds a chord to the
     /// `.pinWindow` action; until installed `nil` ⇒ `.pinWindow` is a graceful no-op (never a dead chord).
     private var togglePinWindow: (() -> Void)?
-    /// E3 WI-4 (audit fix): the "Close Window" actuator (otty ⌘⇧W / View ▸ Close Window). A macOS
+    /// E3 WI-4 (audit fix): the "Close Window" actuator (⌘⇧W / View ▸ Close Window). A macOS
     /// `NSWindow.performClose(_:)` concern, so it is installed late by the app via ``setCloseWindow(_:)`` once
     /// the scene's window is captured; the app wires it to `window.performClose(nil)`, which fires the native
     /// `windowShouldClose` → the existing window-close confirmation gate. Until installed `nil` ⇒ `.closeWindow`
@@ -159,13 +159,13 @@ final class WorkspaceKeyDispatcher {
     /// Install the Details/inspector toggle once the `WorkspaceChromeState` exists (the root view wires this
     /// to `chrome.toggleInspector` on appear). Without it, ⌘⇧R resolves to `.toggleDetailsPanel` and is
     /// swallowed but no-ops — so the titlebar SwiftUI shortcut can't own it either; this closure makes ⌘⇧R
-    /// actually toggle the Details panel (otty parity).
+    /// actually toggle the Details panel.
     func setToggleDetailsPanel(_ toggle: @escaping () -> Void) { toggleDetailsPanel = toggle }
 
     /// Install the left sidebar / Tabs-panel toggle once the `WorkspaceChromeState` exists (the root view
     /// wires this to `chrome.toggleSidebar` on appear). Without it, ⌘⇧L resolves to `.toggleSidebar` and
     /// `route` falls back to the legacy `store.sidebarCollapsed` (which nothing reads on macOS) — so this
-    /// closure makes ⌘⇧L actually collapse the native sidebar item (otty "Toggle Tabs Panel" parity).
+    /// closure makes ⌘⇧L actually collapse the native sidebar item ("Toggle Tabs Panel").
     func setToggleSidebar(_ toggle: @escaping () -> Void) { toggleSidebar = toggle }
 
     /// Install the `Details: *` tab selector once the `DetailsPanelState` + `WorkspaceChromeState` exist (the
@@ -230,7 +230,7 @@ final class WorkspaceKeyDispatcher {
             ),
         ) else { return event }
 
-        // E18 M2: a FOCUSED local web pane OWNS the otty browser chords (⌘[ Back / ⌘] Forward / ⌘⇧R hard-
+        // E18 M2: a FOCUSED local web pane OWNS the standard browser chords (⌘[ Back / ⌘] Forward / ⌘⇧R hard-
         // Reload / ⌘F Find-in-page; `files-and-links.md` › Web Browser Pane). These DEFAULT-collide with the
         // global pane-cycle (⌘[/⌘]), Toggle Details (⌘⇧R) and Find (⌘F) bindings, and this monitor PREEMPTS
         // the responder chain — so without yielding them here the web pane's focus-scoped `.keyboardShortcut`
@@ -241,7 +241,7 @@ final class WorkspaceKeyDispatcher {
 
         switch machine.feed(chord, at: ProcessInfo.processInfo.systemUptime) {
         case let .passthrough(passed):
-            // E1/WI-7: a user `text:`/`csi:`/`esc:` config binding (otty literal-byte bindings) resolves
+            // E1/WI-7: a user `text:`/`csi:`/`esc:` config binding (a literal-byte binding) resolves
             // BEFORE the action table — the chord sends its already-resolved bytes (ESC/CSI lead bytes baked
             // in by `KeybindGrammar`) to the focused pane and is swallowed.
             if let textBinding = WorkspaceBindingRegistry.textBinding(for: passed) {
@@ -291,7 +291,7 @@ final class WorkspaceKeyDispatcher {
         store.tree.activeSession?.activeTab?.activePane
     }
 
-    /// The DEFAULT otty web-browser chords yielded to a focused web pane (see `handle`). ⌘R Reload is omitted
+    /// The DEFAULT web-browser chords yielded to a focused web pane (see `handle`). ⌘R Reload is omitted
     /// — it is unbound in the global table, so it already passes through to the focused responder.
     private static let webPaneChords: Set<KeyChord> = [
         KeyChord(character: "[", [.command]), // Back

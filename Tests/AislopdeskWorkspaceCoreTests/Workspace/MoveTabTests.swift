@@ -3,7 +3,7 @@ import XCTest
 @testable import AislopdeskWorkspaceCore
 
 /// Tests for ``WorkspaceTreeOps/moveTab(from:to:in:)`` — the PURE tab-reorder op (E6 plan WI-3 / Design #4)
-/// behind otty's manual drag-to-reorder. It permutes the active session's `tabs` array ONLY (the leaf set
+/// behind manual drag-to-reorder. It permutes the active session's `tabs` array ONLY (the leaf set
 /// is unchanged ⇒ the store wrapper's reconcile is a registry no-op), clamps an out-of-range destination,
 /// and keeps `activeTabIndex` pointed at the SAME tab id across the move. Each assertion fails before the
 /// op exists (revert-to-confirm-fail = the static is absent → compile failure).

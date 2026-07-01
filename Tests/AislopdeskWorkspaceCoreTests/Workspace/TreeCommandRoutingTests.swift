@@ -458,7 +458,7 @@ final class TreeCommandRoutingTests: XCTestCase {
         }
     }
 
-    /// Pins the nine new pane-management chords to their otty-documented defaults (move = ⌥⌘⇧arrows,
+    /// Pins the nine new pane-management chords to their documented defaults (move = ⌥⌘⇧arrows,
     /// divider-move = ⌃⌘⇧arrows, balance = ⌃⌘=) — distinct from focus (⌃⌘arrows) and the ⌃⌘bracket block jumps.
     func testPaneManagementChordsAreTheDocumentedDefaults() {
         func chord(_ action: WorkspaceAction) -> KeyChord? {
@@ -468,7 +468,7 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(chord(.movePaneRight), KeyChord(.rightArrow, [.option, .command, .shift]), "move right = ⌥⌘⇧→")
         XCTAssertEqual(chord(.movePaneUp), KeyChord(.upArrow, [.option, .command, .shift]), "move up = ⌥⌘⇧↑")
         XCTAssertEqual(chord(.movePaneDown), KeyChord(.downArrow, [.option, .command, .shift]), "move down = ⌥⌘⇧↓")
-        // Move divider = ⌃⌘⇧arrows (otty spec/reference__keybindings.md:86-89).
+        // Move divider = ⌃⌘⇧arrows (docs/ui-shell/spec/reference__keybindings.md:86-89).
         XCTAssertEqual(
             chord(.resizePaneLeft),
             KeyChord(.leftArrow, [.control, .command, .shift]),
@@ -490,9 +490,9 @@ final class TreeCommandRoutingTests: XCTestCase {
 
     /// The two floating-pane chords are the documented free defaults: ⌥⌘F float-toggle, ⌃⌘⇧F new-floating.
     /// Pinning them here makes a future rebind/typo a loud failure (the uniqueness test only catches a
-    /// COLLISION, not a wrong-but-unique value). E5 RELOCATED float-toggle ⌘⇧F → ⌥⌘F to free ⇧⌘F for otty
-    /// Global Search (`view.globalSearch`); the otty-clone audit RELOCATED new-floating ⌃⌘F → ⌃⌘⇧F to free
-    /// ⌃⌘F for otty's Toggle Fullscreen (see `testControlCommandFIsFreeForSystemToggleFullscreen`).
+    /// COLLISION, not a wrong-but-unique value). E5 RELOCATED float-toggle ⌘⇧F → ⌥⌘F to free ⇧⌘F for
+    /// Global Search (`view.globalSearch`); a later audit RELOCATED new-floating ⌃⌘F → ⌃⌘⇧F to free
+    /// ⌃⌘F for the system Toggle Fullscreen (see `testControlCommandFIsFreeForSystemToggleFullscreen`).
     func testFloatingPaneChordsAreTheDocumentedDefaults() {
         func chord(_ action: WorkspaceAction) -> KeyChord? {
             WorkspaceBindingRegistry.binding(for: action)?.chord
@@ -506,8 +506,8 @@ final class TreeCommandRoutingTests: XCTestCase {
         )
     }
 
-    /// otty's reference keymap reserves ⌃⌘F for **Toggle Fullscreen** (the macOS-native Enter/Exit Full
-    /// Screen). The clone must NOT bind ⌃⌘F to any workspace action — the app-level NSEvent dispatcher reads
+    /// ⌃⌘F is reserved for **Toggle Fullscreen** (the macOS-native Enter/Exit Full
+    /// Screen). Aislopdesk must NOT bind ⌃⌘F to any workspace action — the app-level NSEvent dispatcher reads
     /// `resolvedChordTable`, so a binding there would resolve + SWALLOW ⌃⌘F and the system Full-Screen menu
     /// item could never fire. This pins the audit fix: ⌃⌘F is free (no action), and in particular NOT
     /// `.spawnFloating`, which moved to ⌃⌘⇧F. Revert (re-bind ⌃⌘F to spawnFloating) ⇒ both assertions fail.
@@ -603,7 +603,7 @@ final class TreeCommandRoutingTests: XCTestCase {
 
     // MARK: - Tabs: Close Window (⌘⇧W) routes to the window-close gate (E7 carry-over #5)
 
-    /// `.closeWindow` (otty ⌘⇧W) routes to `store.requestCloseWindow()` — parking `pendingWindowClose` for the
+    /// `.closeWindow` (⌘⇧W) routes to `store.requestCloseWindow()` — parking `pendingWindowClose` for the
     /// active session when the close must confirm (here: a busy pane under the default `.process` window
     /// policy). Proven to fail before `.closeWindow` exists / is routed (the pre-E7 ⌘⇧W closed the TAB instead).
     @MainActor
@@ -624,7 +624,7 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertNil(store.pendingTabCloseID, "⌘⇧W is a WINDOW close now, never a tab close")
     }
 
-    /// `.closeWindow` (otty ⌘⇧W / View ▸ Close Window) ACTUATES a real close: when an actuator closure is
+    /// `.closeWindow` (⌘⇧W / View ▸ Close Window) ACTUATES a real close: when an actuator closure is
     /// supplied (the live app wires it to `window.performClose(nil)` → the native `windowShouldClose` →
     /// `WindowCloseGate` confirmation) the route FORWARDS to it EXACTLY once and does NOT silently park
     /// `pendingWindowClose`. The audit found the bare-park path had no SwiftUI observer, so ⌘⇧W parked a flag
@@ -764,7 +764,7 @@ final class TreeCommandRoutingTests: XCTestCase {
         }
     }
 
-    /// E17 ES-E17-2 / WI-5: otty's Vi Mode entry chord ⌃⇧Space resolves (through the dispatcher's
+    /// E17 ES-E17-2 / WI-5: the Vi Mode entry chord ⌃⇧Space resolves (through the dispatcher's
     /// ``resolvedChordTable``, which folds ``aliasChords``) to `.toggleCopyMode` — the SAME action as the
     /// canonical ⌘⇧C display chord. Space is the NAMED `.space` key (keyCode 49), and ⌃⇧Space must be free.
     /// Revert-to-confirm-fail: before the alias existed, ⌃⇧Space resolved to `nil` and the command was titled
@@ -777,11 +777,11 @@ final class TreeCommandRoutingTests: XCTestCase {
         // The dispatcher's resolved table folds the alias → it fires Vi / Copy mode.
         XCTAssertEqual(
             WorkspaceBindingRegistry.resolvedChordTable[viChord], .toggleCopyMode,
-            "⌃⇧Space (otty Vi Mode entry) resolves to the vi/copy-mode action via the alias",
+            "⌃⇧Space (Vi Mode entry) resolves to the vi/copy-mode action via the alias",
         )
         // The command is discoverable as "Vi Mode", keeping "copy mode" as a search synonym.
         let binding = WorkspaceBindingRegistry.binding(for: .toggleCopyMode)
-        XCTAssertEqual(binding?.title, "Vi Mode", "the command surfaces as 'Vi Mode' (otty parity)")
+        XCTAssertEqual(binding?.title, "Vi Mode", "the command surfaces as 'Vi Mode'")
         XCTAssertEqual(binding?.chord, KeyChord(character: "c", [.command, .shift]), "the display chord stays ⌘⇧C")
         XCTAssertTrue(
             binding?.keywords?.contains("copy mode") == true,
@@ -822,22 +822,24 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(chord(.closePane), KeyChord(character: "w", [.command]), "close pane = ⌘W")
         XCTAssertEqual(chord(.splitRight), KeyChord(character: "d", [.command]), "split right = ⌘D")
         XCTAssertEqual(chord(.splitDown), KeyChord(character: "d", [.command, .shift]), "split down = ⌘⇧D")
-        XCTAssertEqual(chord(.focusLeft), KeyChord(.leftArrow, [.control, .command]), "focus left = ⌃⌘← (otty)")
-        XCTAssertEqual(chord(.toggleZoom), KeyChord(.return, [.command, .shift]), "zoom = ⌘⇧↩ (otty)")
+        XCTAssertEqual(chord(.focusLeft), KeyChord(.leftArrow, [.control, .command]), "focus left = ⌃⌘←")
+        XCTAssertEqual(chord(.toggleZoom), KeyChord(.return, [.command, .shift]), "zoom = ⌘⇧↩")
         // E1 re-scope (ES-E1-2 / DECISIONS): tab cycling moved to ⌘⇧]/⌘⇧[ (was ⌘]/⌘[ under the old Muxy
-        // parity); plain ⌘]/⌘[ now drive sequential PANE cycling (`focus.cycleNext`/`focus.cyclePrev`), matching
-        // otty's reference table. These pins are ours to re-scope.
+        // parity); plain ⌘]/⌘[ now drive sequential PANE cycling (`focus.cycleNext`/`focus.cyclePrev`). These
+        // pins are ours to re-scope.
         XCTAssertEqual(chord(.nextTab), KeyChord(character: "]", [.command, .shift]), "next tab = ⌘⇧] (E1 re-scope)")
         XCTAssertEqual(chord(.prevTab), KeyChord(character: "[", [.command, .shift]), "prev tab = ⌘⇧[ (E1 re-scope)")
         // E7 carry-over #5 / DECISIONS: ⌘⇧W reconciled Close Tab → Close WINDOW. Close Tab is now CHORD-LESS
-        // (reachable via the ⌘W cascade + palette/menu — otty ships no Close-Tab chord); ⌘⇧W = Close Window.
+        // (reachable via the ⌘W cascade + palette/menu — Close Tab ships with no dedicated chord); ⌘⇧W = Close
+        // Window.
         XCTAssertNil(chord(.closeTab), "close tab is chord-less (E7: ⌘⇧W moved to Close Window)")
         XCTAssertEqual(chord(.closeWindow), KeyChord(character: "w", [.command, .shift]), "close window = ⌘⇧W (E7)")
-        // E1 review fix (otty parity): the sidebar toggle was ⌘B, which routed to the LEGACY
-        // `store.sidebarCollapsed` the native split shell never reads (a DEAD chord). Re-bound to otty's
-        // ⌘⇧L "Toggle Tabs Panel" (spec/reference__keybindings.md:66), routed through a `chrome` view-closure.
+        // E1 review fix: the sidebar toggle was ⌘B, which routed to the LEGACY
+        // `store.sidebarCollapsed` the native split shell never reads (a DEAD chord). Re-bound to
+        // ⌘⇧L "Toggle Tabs Panel" (docs/ui-shell/spec/reference__keybindings.md:66), routed through a `chrome`
+        // view-closure.
         XCTAssertEqual(
-            chord(.toggleSidebar), KeyChord(character: "l", [.command, .shift]), "toggle sidebar = ⌘⇧L (otty)",
+            chord(.toggleSidebar), KeyChord(character: "l", [.command, .shift]), "toggle sidebar = ⌘⇧L",
         )
         XCTAssertEqual(chord(.newSession), KeyChord(character: "n", [.control, .command]), "new session = ⌃⌘N")
         XCTAssertEqual(chord(.selectTab(1)), KeyChord(character: "1", [.command]), "select tab 1 = ⌘1")
@@ -929,7 +931,7 @@ final class TreeCommandRoutingTests: XCTestCase {
 
     // MARK: - View: E5 find-nav (⌘G/⇧⌘G) + global search (⇧⌘F) — chords + routing
 
-    /// E5: pins the three new chords to their otty-documented free defaults — ⌘G Find Next, ⇧⌘G Find Previous,
+    /// E5: pins the three new chords to their documented free defaults — ⌘G Find Next, ⇧⌘G Find Previous,
     /// ⇧⌘F Global Search. The generic uniqueness guard catches a COLLISION; this pins the intended values so a
     /// transposed modifier can't slip past it.
     func testE5FindNavAndGlobalSearchChordsAreTheDocumentedDefaults() {
@@ -1087,14 +1089,14 @@ final class TreeCommandRoutingTests: XCTestCase {
 
     // MARK: - View: read-only (E17 ES-E17-1) — chord-less registry pin + active-pane routing
 
-    /// `.toggleReadOnly` is registered, in the View category, and CHORD-LESS — otty documents no default
-    /// chord, so it must never collide with a chord yet must not be a dead row. Revert-to-confirm-fail by
+    /// `.toggleReadOnly` is registered, in the View category, and CHORD-LESS by design — it must never
+    /// collide with a chord yet must not be a dead row. Revert-to-confirm-fail by
     /// removing the registry case (this test then fails to find the binding).
     func testReadOnlyBindingIsViewAndChordless() {
         let binding = WorkspaceBindingRegistry.binding(for: .toggleReadOnly)
         XCTAssertEqual(binding?.id, "view.readOnly", "read-only has the stable id view.readOnly")
         XCTAssertEqual(binding?.category, .view, "read-only is a View command")
-        XCTAssertNil(binding?.chord, "read-only is unbound by default (otty documents no chord)")
+        XCTAssertNil(binding?.chord, "read-only is unbound by default (no default chord)")
     }
 
     /// Routing `.toggleReadOnly` flips the ACTIVE pane's membership in the convergent `paneReadOnly` set
@@ -1148,7 +1150,7 @@ final class TreeCommandRoutingTests: XCTestCase {
     // MARK: - View: Hint Mode (E10 WI-9, ES-E10-6) — chord pins + active-pane routing
 
     /// Pins the three Hint Mode chords to their E10 defaults: ⌘⇧J Hint to Open, ⌘⇧Y Hint to Copy, and Hint to
-    /// Reveal CHORD-LESS (otty's ⌘⇧R is aislopdesk's Toggle Details). ALSO pins that peek-and-reply RE-POINTED
+    /// Reveal CHORD-LESS (⌘⇧R is already aislopdesk's Toggle Details chord). ALSO pins that peek-and-reply RE-POINTED
     /// ⌘⇧J → ⌘⌥J so Hint to Open could own ⌘⇧J (the carryover binding). The generic uniqueness guard catches a
     /// COLLISION; this pins the intended values so a transposed modifier can't slip past it. Revert-to-confirm-fail
     /// by removing the hint bindings (this fails to find them) or leaving peek-and-reply on ⌘⇧J (a collision).

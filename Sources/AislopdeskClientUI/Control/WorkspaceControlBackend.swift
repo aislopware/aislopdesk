@@ -50,7 +50,7 @@ final class WorkspaceControlBackend: ClientControlBackend {
     private weak var preferences: PreferencesStore?
     private weak var folders: FolderFrecencyStore?
 
-    /// The directory a prior no-query `jump` left — the mutable pole of otty's `$HOME`↔last-jump-source
+    /// The directory a prior no-query `jump` left — the mutable pole of the `$HOME`↔last-jump-source
     /// toggle (`reference__cli.md`). Held on this long-lived backend (owned by the running app) so the
     /// toggle persists across the separate, short-lived `aislopdesk jump` CLI processes that drive it.
     /// `nil` until the first committed jump away from `$HOME`.
@@ -138,7 +138,7 @@ final class WorkspaceControlBackend: ClientControlBackend {
 
     // MARK: - Tab badge
 
-    /// Set the MANUAL status badge on a tab (the focused tab when `tabId` is nil) — otty `tab badge --kind`.
+    /// Set the MANUAL status badge on a tab (the focused tab when `tabId` is nil) — the `tab badge --kind` verb.
     /// Resolves the target ``TabID`` (an unknown / absent tab → `false`, which the dispatcher turns into
     /// `tab not found`) and writes the per-tab override the rail + `tab list` consult AHEAD of the derived
     /// badge (``WorkspaceStore/setTabBadgeOverride(_:for:)``). This is the real ES-E20-3 write path — the
@@ -176,7 +176,7 @@ final class WorkspaceControlBackend: ClientControlBackend {
         if changeDirectory, let handle = focusedHandle() {
             // The PATH is sent VERBATIM (CLAUDE.md: jump literal text is never routed through `SendKeysParser`)
             // but SHELL-QUOTED — an unquoted `cd /Users/x/My Project` would `cd` to `/Users/x/My`. Reuses the
-            // shared `'…'`-with-`'\''` idiom (zoxide/otty quote the target the same way); only shell-safe
+            // shared `'…'`-with-`'\''` idiom (zoxide quotes the target the same way); only shell-safe
             // quoting is added, the bytes are still derived verbatim from the user's path. Enter == CR.
             handle.sendText("cd -- " + ShellQuoting.singleQuote(resolution.path))
             handle.sendBytes([0x0D])
@@ -186,7 +186,7 @@ final class WorkspaceControlBackend: ClientControlBackend {
     }
 
     /// Record a directory visit in the frecency DB. A nil/blank `path` records the focused pane's cached
-    /// OSC-7 cwd (otty `learn` with no args). Returns the recorded path, or `nil` when neither a path nor a
+    /// OSC-7 cwd (the `learn` verb with no args). Returns the recorded path, or `nil` when neither a path nor a
     /// focused-pane cwd is available. The store itself validates-then-drops an over-long path.
     func learn(path: String?) -> String? {
         guard let folders else { return nil }
@@ -202,7 +202,7 @@ final class WorkspaceControlBackend: ClientControlBackend {
         return resolved
     }
 
-    /// Remove `path` from the frecency DB (otty `ignore`). `forget` is idempotent — a path with no entry is
+    /// Remove `path` from the frecency DB (the `ignore` verb). `forget` is idempotent — a path with no entry is
     /// a silent no-op — so this only reports `false` when the store has gone away.
     func ignore(path: String) -> Bool {
         guard let folders else { return false }
@@ -212,7 +212,7 @@ final class WorkspaceControlBackend: ClientControlBackend {
 
     // MARK: - view / edit shim (WI-6)
 
-    /// Open the read-only `view` / editor `edit` shim in a NEW pane (otty `--new-tab` default / `--new-window` /
+    /// Open the read-only `view` / editor `edit` shim in a NEW pane (`--new-tab` default / `--new-window` /
     /// split side) — NOT a native local file renderer (an aislopdesk pane IS a remote PTY; there is no local
     /// renderer — the documented E20 shim, carry-over §4). The shim TYPES a shell command into the freshly-spawned
     /// pane: `view` → `open <url>` for a URL else `less <path>`; `edit` → `${EDITOR:-vi} <path>`. The command is
@@ -279,13 +279,13 @@ final class WorkspaceControlBackend: ClientControlBackend {
 
     // MARK: - open-recipe
 
-    /// Open a `.ottyrecipe` by path or a saved-library recipe by name. A path that does not exist / a name
+    /// Open a `.aislopdeskrecipe` by path or a saved-library recipe by name. A path that does not exist / a name
     /// with no library match → `false` (validate-then-drop; the store's parse is itself drop-on-malformed).
     func openRecipe(reference: String) -> Bool {
         guard let store else { return false }
         let url: URL
         // A by-NAME resolution is a saved-library recipe (its Command-Replay default follows
-        // `replayModeSaved`); a path/`.ottyrecipe` reference is an external file (`replayModeFiles`).
+        // `replayModeSaved`); a path/`.aislopdeskrecipe` reference is an external file (`replayModeFiles`).
         let source: RecipeSource
         if reference.hasSuffix("." + RecipeLibrary.fileExtension) || reference.contains("/") {
             // swiftlint:disable:next legacy_objc_type
@@ -305,7 +305,7 @@ final class WorkspaceControlBackend: ClientControlBackend {
 
     // MARK: - config
 
-    /// The otty config key whose value is the active theme NAME — `reference__cli.md` line 34 documents
+    /// The config key whose value is the active theme NAME — `reference__cli.md` line 34 documents
     /// `config set theme <name>` as THE CLI theme switch. Resolved here (not in ``PreferencesStore``)
     /// because it needs the GUI ``ThemeStore`` / ``ThemeCatalog`` the headless store cannot import.
     private static let themeConfigKey = "theme"
@@ -327,8 +327,8 @@ final class WorkspaceControlBackend: ClientControlBackend {
     ///
     /// `transient` (apply-to-running-app-without-persisting) is HONESTLY REJECTED (returns `false`): aislopdesk's
     /// live render settings ARE their own persistence — the typed ``PreferencesStore`` model the renderer reads
-    /// is the SAME model whose `didSet` persists, with no separate ephemeral render layer to write (unlike otty's
-    /// config-file ⇄ running-app split). The pre-fix backend ignored the flag and persisted identically while the
+    /// is the SAME model whose `didSet` persists, with no separate ephemeral render layer to write. The
+    /// pre-fix backend ignored the flag and persisted identically while the
     /// dispatcher echoed `transient:true`, lying to the caller; rather than silently persist a "transient" write
     /// we reject it (the dispatcher surfaces a clear reason). Recorded as a ceiling in `docs/DECISIONS.md`. A
     /// genuine overlay would require splitting render-source-of-truth from persistence in the libghostty config
@@ -414,7 +414,7 @@ final class WorkspaceControlBackend: ClientControlBackend {
     func listThemes(color: ClientControlProtocol.ThemeColorFilter) -> [ClientThemeInfo] {
         let activeID = ThemeStore.shared.active.id
         var all = ThemeCatalog.builtinThemes
-        all.append(contentsOf: ThemeCatalog.shared.customThemes.map { OttyTheme(document: $0) })
+        all.append(contentsOf: ThemeCatalog.shared.customThemes.map { SlateTheme(document: $0) })
         var out: [ClientThemeInfo] = []
         for theme in all {
             let isDark = !theme.isLight
@@ -428,7 +428,7 @@ final class WorkspaceControlBackend: ClientControlBackend {
         return out
     }
 
-    /// Import a theme file via the E15 importers (`ThemeLibrary.importFile` — auto-detects Otty `.ottytheme`
+    /// Import a theme file via the E15 importers (`ThemeLibrary.importFile` — auto-detects native `.aislopdesktheme`
     /// / iTerm2 / kitty / alacritty / ghostty), re-scan the custom catalog, and optionally activate it. A
     /// missing / unreadable / unparseable file → `nil` (validate-then-drop). `overwrite` is accepted for CLI
     /// parity; the importer already resolves slug collisions by suffixing (`-1`, `-2`), so a forced replace
@@ -467,7 +467,7 @@ final class WorkspaceControlBackend: ClientControlBackend {
 
     /// Enumerate font families (macOS via `NSFontManager`; iOS returns empty — no `font list` surface there).
     /// `monospaceOnly` filters by fixed-pitch; `family` is a case-insensitive substring filter. `scope` honors
-    /// the otty system/user split (`reference__cli.md`): each family is classified by the on-disk URL of its
+    /// the system/user split (`reference__cli.md`): each family is classified by the on-disk URL of its
     /// representative font face — a face under `~/Library/Fonts` is a USER font, everything else (the
     /// `/Library/Fonts` + `/System/Library/Fonts` bundles, or an unresolved URL) is a SYSTEM font — and the
     /// `SCOPE` column + the `--system`/`--user` filter reflect that classification.

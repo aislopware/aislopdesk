@@ -1,9 +1,9 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E10 WI-1 (ES-E10-1 / ES-E10-2): the pure terminal path/URL/link detector. These pin every form
-/// from otty's `files-and-links` spec (absolute / tilde / relative / `path:line:col` / `scheme://` /
-/// `file://` / `mailto:`), the cwd resolution, the East-Asian-wide cell-column mapping (the jump-to
+/// E10 WI-1 (ES-E10-1 / ES-E10-2): the pure terminal path/URL/link detector. These pin every supported
+/// form (absolute / tilde / relative / `path:line:col` / `scheme://` / `file://` / `mailto:`), the cwd
+/// resolution, the East-Asian-wide cell-column mapping (the jump-to
 /// spec confirms CJK), the scheme policy, the anti-hang column bound, and the validate-then-drop of
 /// noise. Each case is revert-to-confirm-fail: it fails on a detector that drops the form, mis-columns
 /// a wide glyph, ignores the bound, or over-matches prose.
@@ -102,7 +102,7 @@ final class TerminalLinkDetectorTests: XCTestCase {
 
     /// `mailto:` is always on regardless of the scheme policy; a bare `mailto:` (no address) drops.
     func testMailtoAlwaysDetected() {
-        XCTAssertEqual(only("mailto:abner@otty.sh", schemes: .custom([]))?.kind, .url)
+        XCTAssertEqual(only("mailto:abner@example.com", schemes: .custom([]))?.kind, .url)
         XCTAssertTrue(detect("mailto:", schemes: .all).isEmpty, "bare mailto: has no address → drop")
     }
 

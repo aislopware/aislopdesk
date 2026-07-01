@@ -87,7 +87,7 @@ final class RailRowBuilderTests: XCTestCase {
     }
 
     /// A SETTLED clean exit (the `.success` landed longer ago than the flash window) surfaces the
-    /// persistent `.finished` accent dot — proving otty's unread-output marker is reachable end-to-end
+    /// persistent `.finished` accent dot — proving the settled unread-output marker is reachable end-to-end
     /// through the rail (NOT a perpetual checkmark). The stamp is injected in the past so the row settles.
     func testFinishedAccentDotFromSettledSuccessCompletion() {
         let store = makeStore()
@@ -159,7 +159,7 @@ final class RailRowBuilderTests: XCTestCase {
     }
 
     /// In a SPLIT tab the override renders on the REPRESENTATIVE (active) pane row ONLY, not its sibling —
-    /// one badge per tab, mirroring otty's per-tab badge and the `tab list` representative.
+    /// one badge per tab, matching the per-tab badge model and the `tab list` representative.
     func testManualTabBadgeOverrideOnlyOnRepresentativePaneOfSplitTab() {
         let store = makeStore()
         store.splitActivePane(axis: .horizontal, kind: .terminal, leading: false, launchGrace: .zero)
@@ -255,7 +255,7 @@ final class RailRowBuilderTests: XCTestCase {
     }
 
     /// The lock is strictly per-pane: locking one pane of a split tab leaves its sibling's row unlocked
-    /// (faithful to otty's "splitting gives a fresh editable pane; the state does not propagate to siblings").
+    /// (splitting gives a fresh editable pane; the read-only state does not propagate to siblings).
     func testReadOnlyFlagIsPerPane() {
         let store = makeStore()
         store.splitActivePane(axis: .horizontal, kind: .terminal, leading: false, launchGrace: .zero)

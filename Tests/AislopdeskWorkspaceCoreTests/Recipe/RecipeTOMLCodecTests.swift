@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// Pins WI-3 of E16: the `.ottyrecipe` TOML codec (``RecipeTOMLCodec``). `emit` matches the documented
+/// Pins WI-3 of E16: the `.aislopdeskrecipe` TOML codec (``RecipeTOMLCodec``). `emit` matches the documented
 /// byte-shape; `parse` is validate-then-drop on untrusted disk input — `nil` on malformed / missing
 /// `[recipe]` / unknown `scope` / over-count panes, `size` clamped to `0…1` with ordered min/max, an
 /// unknown `split` dropped (pane survives), and single-quoted literal cwds with `{{current_folder}}`
@@ -10,7 +10,7 @@ import XCTest
 final class RecipeTOMLCodecTests: XCTestCase {
     // MARK: - the spec's `deploy-prod-debug` example as a value
 
-    /// The exact recipe from `spec/customization__custom-commands.md` § "The `.ottyrecipe` File Format".
+    /// The exact recipe from `spec/customization__custom-commands.md` § "The `.aislopdeskrecipe` File Format".
     private func specRecipe() -> Recipe {
         Recipe(
             name: "deploy-prod-debug",
@@ -150,7 +150,7 @@ final class RecipeTOMLCodecTests: XCTestCase {
     }
 
     func testEmptyAndWhitespaceInputReturnNil() {
-        // An empty / whitespace-only `.ottyrecipe` has no `[recipe]` table → there is nothing to open
+        // An empty / whitespace-only `.aislopdeskrecipe` has no `[recipe]` table → there is nothing to open
         // (validate-then-drop on the `aislopdesk open <recipe>` path), never a trap.
         XCTAssertNil(RecipeTOMLCodec.parse(""))
         XCTAssertNil(RecipeTOMLCodec.parse("   \n\t\n   "))

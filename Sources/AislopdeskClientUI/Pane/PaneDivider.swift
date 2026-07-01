@@ -54,8 +54,8 @@ struct PaneDivider: View {
             Color.clear.contentShape(Rectangle())
             // The crisp resting hairline — accent + a touch thicker while actively dragging.
             hairlineShape(
-                color: gestureActive ? Otty.State.accent : NativePaneColor.separator,
-                thickness: gestureActive ? Otty.Metric.dividerHoverWidth : hairline,
+                color: gestureActive ? Slate.State.accent : NativePaneColor.separator,
+                thickness: gestureActive ? Slate.Metric.dividerHoverWidth : hairline,
             )
         }
         .frame(width: handle.rect.width, height: handle.rect.height)
@@ -84,7 +84,7 @@ struct PaneDivider: View {
                     onResizeEnd()
                 }
             }
-            .animation(Otty.Anim.dividerHover, value: gestureActive)
+            .animation(Slate.Anim.dividerHover, value: gestureActive)
     }
 
     /// The absolute leading weight for a cursor translation of `translation` points along the split axis:

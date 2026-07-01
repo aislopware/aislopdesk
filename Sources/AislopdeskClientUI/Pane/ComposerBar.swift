@@ -1,4 +1,4 @@
-// ComposerBar — the otty "Composer" (`⌘⇧E`) input overlay mounted at the bottom of a terminal pane
+// ComposerBar — the "Composer" (`⌘⇧E`) input overlay mounted at the bottom of a terminal pane
 // (E12 / WI-5). A multi-line growing field + a bottom toolbar, bound to the DURABLE per-pane
 // ``ComposerModel`` (on the pane's `LivePaneSession`, WI-3/WI-4) so the draft + queue survive tab switches.
 //
@@ -15,7 +15,7 @@
 // socket or spawns an unstructured `Task`; it only drives the model's verbs. `staticMirror` renders a
 // non-interactive Text mirror for ImageRenderer snapshots (hang-safe; no responder).
 //
-// Return-key safety (otty's core principle — "accidental sends are impossible"): bare `↩`/`⇧↩` insert a
+// Return-key safety (the core invariant — "accidental sends are impossible"): bare `↩`/`⇧↩` insert a
 // newline; only `⌘↩` sends and `⌥⌘↩` enqueues. The (command, option, queueMode) → action mapping is the
 // PURE ``ComposerKeyResolver`` so it is unit-tested headlessly (``ComposerKeyResolverTests``) — the view
 // only dispatches the resolved action.
@@ -46,7 +46,7 @@ enum ComposerKeyAction: Equatable {
     case cancel
 }
 
-/// The PURE Return-key resolver. otty's invariant: Return alone never sends — a half-written message can't
+/// The PURE Return-key resolver. Invariant: Return alone never sends — a half-written message can't
 /// fire. `⌘↩` sends, `⌥⌘↩` always enqueues, and a bare Return enqueues ONLY in Prompt-Queue input mode
 /// (where the bar exists to stack lines); otherwise it is a newline.
 enum ComposerKeyResolver {
@@ -218,15 +218,15 @@ struct ComposerBar: View {
     var body: some View {
         VStack(spacing: 0) {
             field
-                .padding(.horizontal, Otty.Metric.space3)
-                .padding(.top, Otty.Metric.space2)
-                .padding(.bottom, Otty.Metric.space1)
+                .padding(.horizontal, Slate.Metric.space3)
+                .padding(.top, Slate.Metric.space2)
+                .padding(.bottom, Slate.Metric.space1)
             toolbar
         }
         .background(NativePaneColor.terminalBackground)
         // 1px top rule = the divider between the terminal surface (or the queue strip) and the Composer.
         .overlay(alignment: .top) {
-            Rectangle().fill(Otty.Line.divider).frame(height: Otty.Metric.hairline)
+            Rectangle().fill(Slate.Line.divider).frame(height: Slate.Metric.hairline)
         }
     }
 
@@ -235,8 +235,8 @@ struct ComposerBar: View {
     @ViewBuilder private var field: some View {
         if staticMirror {
             Text(composer.draft.isEmpty ? placeholder : composer.draft)
-                .font(.system(size: Otty.Typeface.body).monospaced())
-                .foregroundStyle(composer.draft.isEmpty ? Otty.Text.tertiary : Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body).monospaced())
+                .foregroundStyle(composer.draft.isEmpty ? Slate.Text.tertiary : Slate.Text.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .lineLimit(lineLimitRange)
         } else {
@@ -267,46 +267,46 @@ struct ComposerBar: View {
     // MARK: Toolbar
 
     private var toolbar: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             if chrome.queueMode {
                 // queue.png: minimal — a Close text button + the queue glyph on the right.
                 Spacer(minLength: 0)
                 hintButton(label: "Close") { composer.cancel() }
-                OttyPlateButton(symbol: .listBullet, help: "Add to Prompt Queue (↩)", size: iconSize, plate: plate) {
+                SlatePlateButton(symbol: .listBullet, help: "Add to Prompt Queue (↩)", size: iconSize, plate: plate) {
                     composer.enqueueDraft()
                 }
             } else {
                 // composer.png: ⌘↩ Send · ⌥⌘↩ Queue · ⎋ Cancel low-weight labels, divided by a muted interpunct
-                // "·" separator between each action group (otty parity), then pin / float / queue.
+                // "·" separator between each action group, then pin / float / queue.
                 hintButton(chord: "⌘↩", label: "Send") { composer.sendDraft() }
                 actionSeparator
                 hintButton(chord: "⌥⌘↩", label: "Queue") { composer.enqueueDraft() }
                 actionSeparator
                 hintButton(chord: "⎋", label: "Cancel") { composer.cancel() }
                 Spacer(minLength: 0)
-                OttyPlateButton(
+                SlatePlateButton(
                     symbol: composer.isPinned ? .pinFill : .pin,
                     help: composer.isPinned ? "Unpin composer" : "Pin composer (stays across tabs)",
                     size: iconSize,
                     plate: plate,
-                    tint: composer.isPinned ? Otty.State.accent : Otty.Text.icon,
+                    tint: composer.isPinned ? Slate.State.accent : Slate.Text.icon,
                 ) { composer.togglePin() }
-                OttyPlateButton(
+                SlatePlateButton(
                     // Pop-out glyph to float; dock-back glyph (`.pipExit`, the same embed glyph the floating
                     // card's titlebar uses) once floating, so the icon mirrors the action it performs.
                     symbol: composer.isFloating ? .pipExit : .arrowUpForwardApp,
                     help: composer.isFloating ? "Dock composer back" : "Float composer on top",
                     size: iconSize,
                     plate: plate,
-                    tint: composer.isFloating ? Otty.State.accent : Otty.Text.icon,
+                    tint: composer.isFloating ? Slate.State.accent : Slate.Text.icon,
                 ) { composer.isFloating.toggle() }
-                OttyPlateButton(symbol: .listBullet, help: "Add to Prompt Queue (⌥⌘↩)", size: iconSize, plate: plate) {
+                SlatePlateButton(symbol: .listBullet, help: "Add to Prompt Queue (⌥⌘↩)", size: iconSize, plate: plate) {
                     composer.enqueueDraft()
                 }
             }
         }
-        .padding(.horizontal, Otty.Metric.space3)
-        .padding(.vertical, Otty.Metric.space1)
+        .padding(.horizontal, Slate.Metric.space3)
+        .padding(.vertical, Slate.Metric.space1)
         .frame(maxWidth: .infinity)
     }
 
@@ -315,31 +315,31 @@ struct ComposerBar: View {
     private let plate: CGFloat = 34
     private let iconSize: CGFloat = 16
     #else
-    private let plate: CGFloat = Otty.Metric.plate
-    private let iconSize: CGFloat = Otty.Metric.iconSize
+    private let plate: CGFloat = Slate.Metric.plate
+    private let iconSize: CGFloat = Slate.Metric.iconSize
     #endif
 
     /// composer.png divides the three action hints with a muted interpunct "·" (the SAME separator the block
     /// caption uses — ``BlockRowView``): a tertiary-toned dot so it reads as a divider, never an action.
     private var actionSeparator: some View {
         Text("·")
-            .font(.system(size: Otty.Typeface.footnote))
-            .foregroundStyle(Otty.Text.tertiary)
+            .font(.system(size: Slate.Typeface.footnote))
+            .foregroundStyle(Slate.Text.tertiary)
     }
 
     /// A low-weight chord+label hint that is also clickable (composer.png renders these as plain text, not
     /// pills). The chord segment is omitted for the bare "Close" label.
     private func hintButton(chord: String? = nil, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: Otty.Metric.space1) {
+            HStack(spacing: Slate.Metric.space1) {
                 if let chord {
                     Text(chord)
-                        .font(.system(size: Otty.Typeface.footnote, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Otty.Text.tertiary)
+                        .font(.system(size: Slate.Typeface.footnote, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Slate.Text.tertiary)
                 }
                 Text(label)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
             }
             .contentShape(.rect)
         }

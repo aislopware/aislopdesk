@@ -32,7 +32,7 @@ final class OSC99ParseTests: XCTestCase {
         }
     }
 
-    // MARK: Plain title-only payload → notification body (the canonical otty form)
+    // MARK: Plain title-only payload → notification body (the canonical kitty-notification form)
 
     func testKittyPlainPayloadEmitsNotificationBody() {
         // `ESC]99;;Build finished ESC\` — empty metadata, a single (default-title) payload. We fold a

@@ -2,8 +2,8 @@ import Foundation
 
 // MARK: - Bell / error-exit sound policy (E14/K10 — the PURE "should this beep" decisions)
 
-/// The PURE decision for the otty **Sound — Shell Controlled** bell: a `BEL` (`0x07`) rings the system
-/// alert sound (`NSSound.beep()`) iff the toggle is on (default ON). Audio-only — otty implements no
+/// The PURE decision for the **Sound — Shell Controlled** bell: a `BEL` (`0x07`) rings the system
+/// alert sound (`NSSound.beep()`) iff the toggle is on (default ON). Audio-only — there is no
 /// visual/flash bell. `UN`-free + AppKit-free so the rule is unit-tested without a real `NSSound`; the
 /// actuation stays behind the existing injected `beep` seam on ``TerminalViewModel``.
 public enum BellPolicy {
@@ -13,7 +13,7 @@ public enum BellPolicy {
     }
 }
 
-/// The PURE decision for the otty **Sound on Error Exit** beep: a command that exits non-zero beeps iff the
+/// The PURE decision for the **Sound on Error Exit** beep: a command that exits non-zero beeps iff the
 /// toggle is on (default OFF; requires shell integration / OSC 133). `exit == nil` (a completion carrying no
 /// code) is treated as a clean exit 0 → no error beep, matching the BackgroundCompletionPolicy convention.
 public enum ErrorSoundPolicy {

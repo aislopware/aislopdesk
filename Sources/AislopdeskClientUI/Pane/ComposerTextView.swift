@@ -1,4 +1,4 @@
-// ComposerTextView — the hosted, paste-overriding text editor backing the otty Composer field (E12 /
+// ComposerTextView — the hosted, paste-overriding text editor backing the Composer field (E12 /
 // ES-E12-3). The Composer's draft is edited in a real AppKit `NSTextView` (macOS) / UIKit `UITextView`
 // (iOS) instead of a SwiftUI `TextField`, because the ONLY reliable way to make `⌘V` run the
 // HTML/RTF→Markdown rich-paste conversion is to OVERRIDE the text view's `paste(_:)`: SwiftUI installs a
@@ -79,7 +79,7 @@ extension ComposerTextEditor {
         init(_ parent: ComposerTextEditor) { self.parent = parent }
 
         /// Resolve + perform a Return press. Returns `true` when handled (send/enqueue/cancel); `false`
-        /// for `.newline` so the platform text view inserts the newline itself (otty's "Return never sends").
+        /// for `.newline` so the platform text view inserts the newline itself (bare Return never sends).
         func handleReturn(command: Bool, option: Bool) -> Bool {
             switch ComposerKeyResolver.resolveReturn(
                 command: command,
@@ -123,8 +123,8 @@ extension ComposerTextEditor: NSViewRepresentable {
         textView.isRichText = false
         textView.allowsUndo = true
         textView.font = Self.font
-        textView.textColor = NSColor(Otty.Text.primary)
-        textView.insertionPointColor = NSColor(Otty.State.accent)
+        textView.textColor = NSColor(Slate.Text.primary)
+        textView.insertionPointColor = NSColor(Slate.State.accent)
         textView.drawsBackground = false
         textView.backgroundColor = .clear
         textView.textContainerInset = NSSize(width: 0, height: Self.insetV)
@@ -186,7 +186,7 @@ extension ComposerTextEditor: NSViewRepresentable {
         return CGSize(width: width, height: height)
     }
 
-    static var font: NSFont { NSFont.monospacedSystemFont(ofSize: Otty.Typeface.body, weight: .regular) }
+    static var font: NSFont { NSFont.monospacedSystemFont(ofSize: Slate.Typeface.body, weight: .regular) }
     static let insetV: CGFloat = 2
 }
 
@@ -280,7 +280,7 @@ final class ComposerTextView: NSTextView {
         guard string.isEmpty, !placeholderString.isEmpty else { return }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font ?? ComposerTextEditor.font,
-            .foregroundColor: NSColor(Otty.Text.tertiary),
+            .foregroundColor: NSColor(Slate.Text.tertiary),
         ]
         let origin = NSPoint(
             x: textContainerInset.width + (textContainer?.lineFragmentPadding ?? 0),
@@ -322,8 +322,8 @@ extension ComposerTextEditor: UIViewRepresentable {
         textView.coordinator = context.coordinator
         textView.delegate = context.coordinator
         textView.font = Self.font
-        textView.textColor = UIColor(Otty.Text.primary)
-        textView.tintColor = UIColor(Otty.State.accent)
+        textView.textColor = UIColor(Slate.Text.primary)
+        textView.tintColor = UIColor(Slate.State.accent)
         textView.backgroundColor = .clear
         textView.isScrollEnabled = true // grow-then-scroll past maxLines (height is clamped in sizeThatFits)
         textView.textContainerInset = UIEdgeInsets(top: Self.insetV, left: 0, bottom: Self.insetV, right: 0)
@@ -364,7 +364,7 @@ extension ComposerTextEditor: UIViewRepresentable {
         return CGSize(width: width, height: height)
     }
 
-    static var font: UIFont { UIFont.monospacedSystemFont(ofSize: Otty.Typeface.body, weight: .regular) }
+    static var font: UIFont { UIFont.monospacedSystemFont(ofSize: Slate.Typeface.body, weight: .regular) }
     static let insetV: CGFloat = 4
 }
 
@@ -379,7 +379,7 @@ final class ComposerTextView: UITextView {
         let label = UILabel()
         label.text = text
         label.font = font
-        label.textColor = UIColor(Otty.Text.tertiary)
+        label.textColor = UIColor(Slate.Text.tertiary)
         label.numberOfLines = 0
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
@@ -456,7 +456,7 @@ extension ComposerTextEditor.Coordinator: UITextViewDelegate {
     }
 
     func textView(_: UITextView, shouldChangeTextIn _: NSRange, replacementText text: String) -> Bool {
-        // Bare Return in Prompt-Queue input mode enqueues the line instead of inserting a newline (otty's
+        // Bare Return in Prompt-Queue input mode enqueues the line instead of inserting a newline (the
         // `⌘⇧M` bar). Normal mode → allow the newline (Return never sends). ⌘↩ never reaches here (it's a
         // key command), so this only governs the soft/hardware bare Return.
         guard text == "\n", parent.chrome.queueMode else { return true }

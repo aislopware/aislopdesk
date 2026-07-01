@@ -16,7 +16,7 @@ import Foundation
 /// **No exfiltration → no cwd confinement.** Unlike the read verbs (`gitDiff`/`listDirectory`/
 /// `readAgentSession`), which are confined to the pane cwd subtree because they stream host file CONTENTS
 /// back over the wire, open/reveal return ONLY a status byte + empty payload — no host bytes ever cross
-/// the wire. So they accept any ABSOLUTE host path (the otty affordance: ⌘click ANY detected path, not
+/// the wire. So they accept any ABSOLUTE host path (⌘click ANY detected path, not
 /// just one under the cwd). The security boundary is the trusted WireGuard mesh (no app-layer crypto);
 /// the path is still validated defensively (see below).
 ///

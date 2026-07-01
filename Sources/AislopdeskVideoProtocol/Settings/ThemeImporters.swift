@@ -1,14 +1,14 @@
 import Foundation
 
 /// E15 (WI-5) — pure format converters that turn a third-party terminal colour scheme into a validated
-/// ``ThemeDocument``, the same uniform model the `.ottytheme` parser produces.
+/// ``ThemeDocument``, the same uniform model the `.aislopdesktheme` parser produces.
 ///
-/// otty's "Import Theme…" dropdown accepts five formats; we mirror them: the native otty `.ottytheme`
+/// The Import Theme… dropdown accepts five formats; we mirror them: the native `.aislopdesktheme`
 /// (delegated to ``ThemeTOMLParser`` — chrome preserved), iTerm2 `.itermcolors` (an XML plist of 0…1 sRGB
 /// colour dicts), Kitty `.conf` (`foreground #fff` / `color0 #000`), Alacritty `[colors.*]` `.toml`, and
 /// Ghostty (`foreground = #fff` / `palette = 0=#000`). Each converter is a PURE `String`/`Data` → document
 /// transform with no I/O, so it is headlessly unit-testable; the filesystem wiring (read the file, pick a
-/// collision-free slug, write the `.ottytheme`) lives in ``ThemeLibrary/importFile(at:format:into:environment:builtinSlugs:)``.
+/// collision-free slug, write the `.aislopdesktheme`) lives in ``ThemeLibrary/importFile(at:format:into:environment:builtinSlugs:)``.
 ///
 /// **VALIDATE-THEN-DROP (CLAUDE.md §3, file edition).** An imported file is untrusted user input, handled with
 /// the same discipline as a hostile UDP datagram: a bad plist, a short palette, a malformed hex, or a missing
@@ -17,7 +17,7 @@ import Foundation
 /// holds.
 ///
 /// **LIGHT/DARK INFERENCE.** Third-party schemes carry no `[meta] mode`, so the slot is inferred from the
-/// background's relative luminance (the same Rec. 709 helper the `.ottytheme` parser uses) — a dark background
+/// background's relative luminance (the same Rec. 709 helper the `.aislopdesktheme` parser uses) — a dark background
 /// lands the theme in the dark slot. `none`/unparseable backgrounds default to the dark slot.
 ///
 /// COLOUR NORMALISATION: every converter funnels its raw colour tokens through ``normalizeHex(_:)``, which
@@ -27,11 +27,11 @@ import Foundation
 /// SEPARATE clamp + multiply with NaN-faithful ordered clamps (`Double.minimum`/`Double.maximum`), never
 /// `fma`/`addingProduct`.
 public enum ThemeImporters {
-    /// The set of import formats otty's dropdown offers. The raw value is the stable lowercase id used by the
+    /// The set of import formats the dropdown offers. The raw value is the stable lowercase id used by the
     /// UI menu / any future CLI.
     public enum Format: String, CaseIterable, Codable, Sendable, Equatable {
-        /// Native otty `.ottytheme` TOML — delegated to ``ThemeTOMLParser`` (chrome styling preserved).
-        case ottytheme
+        /// Native `.aislopdesktheme` TOML — delegated to ``ThemeTOMLParser`` (chrome styling preserved).
+        case aislopdeskTheme
         /// iTerm2 `.itermcolors` — an XML plist of 0…1 sRGB component dicts.
         case iterm2
         /// Kitty colour `.conf` — whitespace-separated `key value` lines (`foreground #fff` / `color0 #000`).
@@ -41,10 +41,10 @@ public enum ThemeImporters {
         /// Ghostty config — `key = value` lines (`foreground = #fff` / `palette = 0=#000`).
         case ghostty
 
-        /// The human-readable label otty shows in the Import dropdown row.
+        /// The human-readable label shown in the Import dropdown row.
         public var displayLabel: String {
             switch self {
-            case .ottytheme: "Otty"
+            case .aislopdeskTheme: "Aislopdesk"
             case .iterm2: "iTerm2"
             case .kitty: "Kitty"
             case .alacritty: "Alacritty"
@@ -59,7 +59,7 @@ public enum ThemeImporters {
     /// `fallbackName` is the display name (the file's base name) — third-party files carry no `[meta] name`.
     public static func parse(_ data: Data, format: Format, fallbackName: String) -> ThemeDocument? {
         switch format {
-        case .ottytheme:
+        case .aislopdeskTheme:
             guard let text = String(data: data, encoding: .utf8) else { return nil }
             return ThemeTOMLParser.parse(text, fallbackName: fallbackName)
         case .iterm2:
@@ -81,7 +81,7 @@ public enum ThemeImporters {
     /// explicitly, so this is the Finder-drop / auto path.
     public static func detectFormat(pathExtension: String, contents: String) -> Format? {
         switch pathExtension.lowercased() {
-        case "ottytheme": return .ottytheme
+        case "aislopdesktheme": return .aislopdeskTheme
         case "itermcolors": return .iterm2
         case "conf": return .kitty
         case "toml": return .alacritty
@@ -91,8 +91,8 @@ public enum ThemeImporters {
         let lower = contents.lowercased()
         if lower.contains("<plist") || lower.contains("ansi 0 color") { return .iterm2 }
         if contents.contains("[colors.") || lower.contains("[colors]") { return .alacritty }
-        if contents.contains("[terminal]") { return .ottytheme }
-        // Ghostty: an indexed `palette = N=` line (otty's `.ottytheme` palette is a `[ … ]` array instead).
+        if contents.contains("[terminal]") { return .aislopdeskTheme }
+        // Ghostty: an indexed `palette = N=` line (the `.aislopdesktheme` palette is a `[ … ]` array instead).
         if contents.contains("palette =") || contents.contains("palette=") {
             let isArrayPalette = contents.contains("palette = [") || contents.contains("palette=[")
             if !isArrayPalette { return .ghostty }

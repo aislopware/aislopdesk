@@ -234,7 +234,7 @@ final class GlobalSearchControllerTests: XCTestCase {
 
     // MARK: Per-group collapse state (the disclosure-control reducer the ⇧⌘F surface owns)
 
-    /// A fresh result set is fully EXPANDED — every group shows its hit rows by default (otty parity: a group
+    /// A fresh result set is fully EXPANDED — every group shows its hit rows by default (a group
     /// is collapsed only on an explicit disclosure tap). Reverting the fix (the view unconditionally renders
     /// every group's hits) regresses to "never collapsible"; this pins that the default is expanded AND that a
     /// toggle actually hides the group, distinguishing the fixed behaviour from the dead pre-fix terminal glyph.

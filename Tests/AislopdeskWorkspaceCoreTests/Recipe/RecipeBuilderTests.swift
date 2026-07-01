@@ -228,7 +228,7 @@ final class RecipeBuilderTests: XCTestCase {
     // MARK: - nested round-trip (DFS + relative-split beyond two panes)
 
     func testNestedRightDownSpineRoundTrips() {
-        // horizontal[ P0 , vertical[ P1, P2 ] ] — a right-then-down spine, the class the otty save produces.
+        // horizontal[ P0 , vertical[ P1, P2 ] ] — a right-then-down spine, the class a nested split-save produces.
         let p0 = PaneID(), p1 = PaneID(), p2 = PaneID()
         let vert = SplitNode.split(id: SplitNodeID(), axis: .vertical, children: [
             .init(weight: .flex(1), node: .leaf(p1)),

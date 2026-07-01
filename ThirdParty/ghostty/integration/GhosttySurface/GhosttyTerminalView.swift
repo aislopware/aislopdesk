@@ -96,13 +96,13 @@ import UIKit
         : .general
 }
 
-/// E8 WI-4 (ES-E8-3): the embedder side of otty's Paste Protection. Reached from
+/// E8 WI-4 (ES-E8-3): the embedder side of Paste Protection. Reached from
 /// `confirm_read_clipboard_cb` for a PASTE that libghostty already deemed unsafe (paste-protection on,
 /// not bracketed-safe). Decides — via the PURE, headless-tested ``PasteSafetyAnalyzer`` — whether to show
 /// the confirmation sheet, then completes the pending clipboard request exactly once.
 ///
-/// The decision uses otty's OWN four-danger criteria (not libghostty's broader `isSafe`), so the sheet
-/// appears only for an otty-classified danger even if libghostty's gate is more eager. On approve we
+/// The decision uses this feature's OWN four-danger criteria (not libghostty's broader `isSafe`), so the sheet
+/// appears only for a locally-classified danger even if libghostty's gate is more eager. On approve we
 /// complete with the text + `confirmed: true` (`allow_unsafe`); on cancel we complete with EMPTY data,
 /// which short-circuits `Surface.completeClipboardPaste` (`if (data.len == 0) return;`) so the request
 /// frees cleanly with no paste and NO gate re-trip (the de-risked cancel contract — see the callback).
@@ -125,9 +125,9 @@ func aislopdeskConfirmUnsafePaste(
     let dangers = PasteSafetyAnalyzer.analyze(text)
     let shouldWarn = PasteSafetyAnalyzer.shouldWarn(
         text: text,
-        // The LIVE otty "Paste Protection" toggle is authoritative — not a hardcoded `true`. libghostty's own
+        // The LIVE "Paste Protection" toggle is authoritative — not a hardcoded `true`. libghostty's own
         // `clipboard-paste-protection` config gate (default on) is what ROUTES a `\n`/bracketed-end paste here,
-        // but whether to WARN is otty's decision: with otty protection OFF this auto-approves (below), so a user
+        // but whether to WARN is decided here: with Paste Protection OFF this auto-approves (below), so a user
         // who disabled the feature is not warned. (The embedder pre-check `requestPaste` is the primary gate for
         // a ⌘V / menu paste; this stays the backstop for a libghostty-initiated paste, e.g. middle-click.)
         protectionOn: SettingsKey.pasteProtectionEnabled,
@@ -137,7 +137,7 @@ func aislopdeskConfirmUnsafePaste(
     )
 
     guard shouldWarn else {
-        // No otty-classified danger (or a skip rule applied) → approve without a dialog.
+        // No classified danger (or a skip rule applied) → approve without a dialog.
         surface.completeClipboardRead(text, state: state, confirmed: true)
         return
     }
@@ -158,10 +158,10 @@ func aislopdeskConfirmUnsafePaste(
     }
 }
 
-/// E8 WI-6 (I11): the embedder side of otty's OSC-52 clipboard-READ access gate. Reached from
+/// E8 WI-6 (I11): the embedder side of the OSC-52 clipboard-READ access gate. Reached from
 /// `confirm_read_clipboard_cb` for a `GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ` — a terminal program (vim,
 /// tmux, an SSH session running inside the hosted PTY) asked to READ the system clipboard. It honours the
-/// LIVE otty `clipboard-read` access (Allow / Ask / Deny, default Ask — the spec's riskier direction),
+/// LIVE `clipboard-read` access setting (Allow / Ask / Deny, default Ask — the riskier direction),
 /// reusing the paste-protection surface with the OSC-52 "Allow this program to read the clipboard?" copy
 /// (``PasteProtectionSheet.Kind.clipboardRead``).
 ///
@@ -368,11 +368,11 @@ final class GhosttyApp {
                 return true
             } else if action.tag == GHOSTTY_ACTION_MOUSE_VISIBILITY {
                 // E8 (H9, ES-E8-6): mouse-hide-while-typing actuation. The `mouse-hide-while-typing = true`
-                // config (otty default ON) only makes libghostty DECIDE to hide the pointer — it then
+                // config (default ON) only makes libghostty DECIDE to hide the pointer — it then
                 // delegates the actual hide/show to the embedder via THIS action (`Surface.zig`
                 // `hideMouse`/`showMouse` → `performAction(.mouse_visibility, .hidden/.visible)`). Without
                 // this branch the action was dropped (`return false`) and the pointer never hid, so a
-                // default-ON otty behavior silently did nothing. Mirror the MOUSE_SHAPE branch: recover the
+                // default-ON behavior silently did nothing. Mirror the MOUSE_SHAPE branch: recover the
                 // target surface, resolve the raw `ghostty_action_mouse_visibility_e` via the headless,
                 // {0,1}-guarded `MouseVisibilityMapping` (read defensively — never assume the enum layout),
                 // hop to the main actor, and drive the pane's NSCursor through `onMouseVisibility`.
@@ -425,7 +425,7 @@ final class GhosttyApp {
                 #else
                 let str = (location == GHOSTTY_CLIPBOARD_SELECTION) ? "" : (UIPasteboard.general.string ?? "")
                 #endif
-                // E8 WI-4 (ES-E8-3): if the embedder already ran otty's paste-protection sheet for THIS paste
+                // E8 WI-4 (ES-E8-3): if the embedder already ran the paste-protection sheet for THIS paste
                 // and the user approved it, complete with `confirmed: true` (allow_unsafe) so libghostty pastes
                 // without re-tripping its own (narrower) `isSafe` gate → no SECOND dialog. The flag is one-shot
                 // and consumed here; every other read keeps `confirmed: false`, so the OSC-52 read access gate
@@ -441,7 +441,7 @@ final class GhosttyApp {
         // `request` arg distinguishes which gate fired.
         //
         // E8 WI-4 (ES-E8-3) — the OLD code blanket-AUTO-APPROVED everything (`confirmed: true`) because
-        // there was no dialog. We now run otty's paste-protection sheet for an UNSAFE PASTE. The historical
+        // there was no dialog. We now run the paste-protection sheet for an UNSAFE PASTE. The historical
         // crash warning still holds and is the WHOLE point of the de-risk: completing with `confirmed: false`
         // AND THE SAME UNSAFE DATA re-trips the gate → core re-invokes this callback → unbounded recursion →
         // stack overflow. The CANCEL path therefore does NOT re-complete the unsafe data — it completes with
@@ -451,8 +451,8 @@ final class GhosttyApp {
         // pasted, and the gate is NOT re-evaluated. "Paste Anyway" completes with the text + `confirmed: true`
         // (`allow_unsafe`), which pastes and frees the state. Either way the request terminates exactly once.
         //
-        // E8 WI-6 (I11) — the `request` arg now ROUTES the decision: PASTE → otty's paste-protection sheet
-        // (WI-4); OSC-52 READ → otty's `clipboard-read` access gate (Allow / Ask / Deny, default Ask) via
+        // E8 WI-6 (I11) — the `request` arg now ROUTES the decision: PASTE → the paste-protection sheet
+        // (WI-4); OSC-52 READ → the `clipboard-read` access gate (Allow / Ask / Deny, default Ask) via
         // `aislopdeskConfirmClipboardRead`. An OSC-52 WRITE never routes through this READ-confirm callback in
         // the pinned fork — a program WRITE goes via `write_clipboard_cb`, where `clipboard-write =
         // deny/ask/allow` is honoured: libghostty enforces `deny` (never calls the write callback) and
@@ -1048,7 +1048,7 @@ final class GhosttyLayerBackedView: NSView {
             CATransaction.setDisableActions(true)
             hosted.frame = CGRect(origin: .zero, size: bounds.size)
             hosted.contentsScale = scale
-            // FLAT PANE (otty flat design): the terminal fills its leaf edge-to-edge with NO corner
+            // FLAT PANE design: the terminal fills its leaf edge-to-edge with NO corner
             // radius — its surface is the same flat colour as the backdrop beneath, so a pane never reads
             // as a floating card. `masksToBounds` clips the libghostty Metal sublayer to the exact bounds
             // RECTANGLE (radius 0); contentsGravity stays .topLeft so the clip does not shift the surface.
@@ -1439,7 +1439,7 @@ final class GhosttyLayerBackedView: NSView {
 
     /// The link gesture for `flags`, or `nil` when this is not a link-owning click — link detection is off,
     /// the surface is a mouse-reporting TUI (alt screen — don't fight vim/tmux), or ⌘ is not held (a bare
-    /// click does nothing per otty, so we leave it to libghostty's selection).
+    /// click does nothing, so we leave it to libghostty's selection).
     private func linkGesture(for flags: NSEvent.ModifierFlags) -> LinkGesture? {
         guard SettingsKey.linkDetectionEnabled, model?.isAlternateScreen == false else { return nil }
         guard flags.contains(.command) else { return nil }
@@ -1468,7 +1468,7 @@ final class GhosttyLayerBackedView: NSView {
         return links.first { $0.row == row && column >= $0.colStart && column < $0.colEnd }
     }
 
-    /// The live link config the policy reads (otty `link-cmd-click` / `link-cmd-shift-click`), resolved
+    /// The live link config the policy reads (`link-cmd-click` / `link-cmd-shift-click`), resolved
     /// fire-time from Settings so a change applies to the next click with no re-wire.
     private func liveLinkConfig() -> LinkActionConfig {
         LinkActionConfig(cmdClick: SettingsKey.linkCmdClick, cmdShiftClick: SettingsKey.linkCmdShiftClick)
@@ -1574,7 +1574,7 @@ final class GhosttyLayerBackedView: NSView {
     override func otherMouseDown(with event: NSEvent) {
         let mods = Self.ghosttyMods(event.modifierFlags)
         // AUDIT FIX `rightclick-paste-protection-hole`: a MIDDLE-click (button 2) pastes the SELECTION clipboard
-        // via libghostty, which bypasses otty's broad paste-protection gate exactly like the right-click path.
+        // via libghostty, which bypasses the broad paste-protection gate exactly like the right-click path.
         // When the pointer is NOT captured by a mouse-reporting program, intercept and route the selection
         // content through the SAME pre-check (`requestPasteFromSelection`). A CAPTURED middle-click (a TUI's own
         // mouse mode) belongs to the program — forward it untouched.
@@ -1615,7 +1615,7 @@ final class GhosttyLayerBackedView: NSView {
     override func rightMouseDown(with event: NSEvent) {
         let mods = Self.ghosttyMods(event.modifierFlags)
 
-        // E8 WI-7 (H8): the otty ⌃-right-always-menu override. ⌃+right-click ALWAYS shows the native context
+        // E8 WI-7 (H8): the ⌃-right-always-menu override. ⌃+right-click ALWAYS shows the native context
         // menu, regardless of the configured Right-Click Action. libghostty now OWNS the bare-right-click
         // dispatch (WI-2 emits `right-click-action`) but does NOT special-case the ⌃ modifier, so we must
         // intercept ⌃+right HERE — BEFORE forwarding the press — otherwise a `copy`/`paste`/… config would
@@ -1643,7 +1643,7 @@ final class GhosttyLayerBackedView: NSView {
         // and Ignore/Paste left a stray highlight — the WI-7 right-click-action review finding).
         //
         // AUDIT FIX `rightclick-paste-protection-hole`: if the configured action resolves to a PASTE, intercept
-        // it HERE (before forwarding) and route through `requestPaste()` so it runs otty's full four-danger
+        // it HERE (before forwarding) and route through `requestPaste()` so it runs the full four-danger
         // pre-check — libghostty's own `confirm_read_clipboard_cb` backstop only trips for a `\n` / bracketed-end
         // payload, so a single-line `sudo`, an ESC-laced control-char paste, or a bare-`\r` paste would otherwise
         // reach the shell with NO protection sheet. The PURE ``RightClickPasteInterceptPolicy`` gates on
@@ -1713,7 +1713,7 @@ final class GhosttyLayerBackedView: NSView {
         requestFocusFollowsMouseIfNeeded()
     }
 
-    /// E8 WI-8 (H6, ES-E8-6): MOUSE-OVER-TO-FOCUS. When otty's `focus-follows-mouse` (`focusFollowsMouse`) is
+    /// E8 WI-8 (H6, ES-E8-6): MOUSE-OVER-TO-FOCUS. When `focus-follows-mouse` (`focusFollowsMouse`) is
     /// on, hovering a pane focuses it — but ONLY across aislopdesk's OWN panes: libghostty's native
     /// `focus-follows-mouse` only relays focus inside ghostty's internal split tree, and each aislopdesk pane
     /// is a SEPARATE `GhosttySurface` tiled at the SwiftUI layer, so this cross-pane focus relay must be ours.
@@ -1776,7 +1776,7 @@ final class GhosttyLayerBackedView: NSView {
 
         // E8 WI-12 (I14/I15, ES-E8-5): SCROLL-PAST overscroll + SMOOTH-SCROLL — DOCUMENTED RENDERING CEILING.
         // The delta above is handed straight to libghostty, which OWNS the viewport: on the primary screen it
-        // navigates scrollback (auto-snapping to the bottom on new output / typing — otty's auto-snap, native),
+        // navigates scrollback (auto-snapping to the bottom on new output / typing, native),
         // and in an alt-screen mouse-mode TUI it is encoded as a mouse-scroll report — both handled internally.
         //   • SMOOTH SCROLL: the precision-delta path above already scrolls at sub-row (pixel) granularity, so
         //     `smoothScroll` ON ≈ the native behaviour. The OFF variant (snap each gesture to a whole-row
@@ -1887,7 +1887,7 @@ final class GhosttyLayerBackedView: NSView {
     // MARK: Mouse-hide-while-typing (E8 H9 / ES-E8-6)
 
     /// Actuate libghostty's mouse-hide-while-typing decision (H9). The `mouse-hide-while-typing = true`
-    /// config (otty default ON) makes libghostty emit a `GHOSTTY_ACTION_MOUSE_VISIBILITY` action when the
+    /// config (default ON) makes libghostty emit a `GHOSTTY_ACTION_MOUSE_VISIBILITY` action when the
     /// user types / when the pointer should reappear; the app-level `action_cb` resolves it through the
     /// headless ``MouseVisibilityMapping`` and forwards the `visible` Bool here. We mirror ghostty's macOS
     /// `setCursorVisibility` EXACTLY — `NSCursor.setHiddenUntilMouseMoves(!visible)` — which is the
@@ -1943,8 +1943,8 @@ final class GhosttyLayerBackedView: NSView {
         surface?.performBindingAction("copy_to_clipboard")
     }
 
-    /// CUT (⌘X / Edit ▸ Cut, audit fix `cut-cmdx-not-wired`). otty's Cut "always copies the selection to the
-    /// clipboard; if editable prompt text, also deletes it; on read-only, falls back to a plain copy". The
+    /// CUT (⌘X / Edit ▸ Cut, audit fix `cut-cmdx-not-wired`). Cut always copies the selection to the
+    /// clipboard; if editable prompt text, also deletes it; on read-only, falls back to a plain copy. The
     /// PURE, headless-tested ``CutSelectionPolicy`` makes the 3-way decision; this view is the thin actuator.
     /// The copy half is the universally-correct `copy_to_clipboard` binding action; the delete half is subject
     /// to the SAME geometry ceiling as backspace-deletes-selection — against the pinned libghostty fork we
@@ -1989,11 +1989,11 @@ final class GhosttyLayerBackedView: NSView {
     }
 
     /// E8 WI-4 (ES-E8-3): the single embedder paste entry point for ⌘V / right-click-Paste / context-menu
-    /// Paste. It runs otty's paste-protection pre-check BEFORE handing the bytes to libghostty, because
-    /// libghostty's own `isSafe` gate is NARROWER than otty's four dangers (it trips its
+    /// Paste. It runs the paste-protection pre-check BEFORE handing the bytes to libghostty, because
+    /// libghostty's own `isSafe` gate is NARROWER than this pre-check's four dangers (it trips its
     /// `confirm_read_clipboard_cb` only for a `\n` / bracketed-end payload) — so a single-line `sudo`, an
     /// ESC-laced control-char paste, or a bare-`\r` paste would otherwise reach the shell SILENTLY. The PURE,
-    /// headless-tested ``PastePrecheck`` makes the decision off the LIVE otty "Paste Protection" toggle and
+    /// headless-tested ``PastePrecheck`` makes the decision off the LIVE "Paste Protection" toggle and
     /// the OSC-133 shell-activity (a full-screen TUI owns the screen ⇒ `.running` ⇒ skip, the paste lands
     /// inertly). On a danger we present ``PasteProtectionSheet``; only on approve do we paste, with
     /// `allow_unsafe` (the one-shot `pasteApprovedOnce` flag) so libghostty's own gate is not re-tripped into
@@ -2013,10 +2013,10 @@ final class GhosttyLayerBackedView: NSView {
         requestPaste(clipboard: selection, bindingAction: "paste_from_selection")
     }
 
-    /// The shared paste entry point: run otty's ``PastePrecheck`` over `clipboard` BEFORE handing it to
+    /// The shared paste entry point: run ``PastePrecheck`` over `clipboard` BEFORE handing it to
     /// libghostty's `bindingAction` (`paste_from_clipboard` for ⌘V / right-click / context-menu Paste,
-    /// `paste_from_selection` for a middle-click). libghostty's own `isSafe` gate is narrower than otty's four
-    /// dangers, so a single-line `sudo`, an ESC-laced control-char paste, or a bare-`\r` paste would otherwise
+    /// `paste_from_selection` for a middle-click). libghostty's own `isSafe` gate is narrower than this
+    /// pre-check's four dangers, so a single-line `sudo`, an ESC-laced control-char paste, or a bare-`\r` paste would otherwise
     /// reach the shell SILENTLY for ANY libghostty-initiated paste path. On a danger we present
     /// ``PasteProtectionSheet`` and paste with `allow_unsafe` only on approve; a safe payload (or protection
     /// off) pastes straight through, which still applies bracketed-paste framing.
@@ -2694,7 +2694,7 @@ final class GhosttyLayerBackedView: UIView {
         // (macOS works because libghostty makes its layer the view's *backing* layer,
         // which AppKit auto-sizes.) Size every sublayer to our bounds + scale.
         //
-        // FLAT PANE (otty flat design, iOS): NO corner radius; `masksToBounds = true` clips the
+        // FLAT PANE design (iOS): NO corner radius; `masksToBounds = true` clips the
         // Metal sublayer to the exact bounds RECTANGLE. Matches the macOS clip in
         // GhosttyLayerBackedView.layout().
         layer.cornerRadius = 0

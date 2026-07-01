@@ -155,7 +155,7 @@ final class TerminalConfigBuilderControlsTests: XCTestCase {
 
     /// The FACTORY control bundle must emit `mouse-shift-capture = false` — the libghostty token whose docs
     /// say the shift key is NOT sent to the program and EXTENDS THE SELECTION (and libghostty's own default).
-    /// This pins otty's "Allow Shift with Mouse Click" default (hold ⇧ to select even when an app captures the
+    /// This pins the "Allow Shift with Mouse Click" default (hold ⇧ to select even when an app captures the
     /// mouse): a regression that flips the leaf default back to a capture token (`true`/`always`) would defeat
     /// the shift-to-select escape hatch, and is caught here independently of the `MouseShiftCapture` enum.
     func testDefaultMouseShiftCaptureExtendsSelection() {
@@ -185,7 +185,7 @@ final class TerminalConfigBuilderControlsTests: XCTestCase {
     }
 
     /// The FACTORY control bundle keeps libghostty's own default Right-Click Action (`context-menu`), so a
-    /// fresh terminal shows the native menu on right-click — matching otty's `right-click-action` default.
+    /// fresh terminal shows the native menu on right-click by default.
     func testDefaultRightClickActionIsContextMenu() {
         let map = parse(TerminalConfigBuilder.string(
             for: TerminalPreferences(), controls: TerminalControlsConfig(),
@@ -196,7 +196,7 @@ final class TerminalConfigBuilderControlsTests: XCTestCase {
     /// The scroll multiplier rides BOTH axes but PRESERVES libghostty's native per-axis ratio (precision:1,
     /// discrete:3) — precision = `m`, discrete = `3 × m`. FAILS before the fix: the builder emitted the SAME
     /// factor on both axes, so at the default `m == 1.0` discrete (mouse-wheel) scroll ran 3× slower than
-    /// stock ghostty/otty. `2.5` → `precision:2.5,discrete:7.5` (the integral-aware `formatSize` mirror).
+    /// stock ghostty. `2.5` → `precision:2.5,discrete:7.5` (the integral-aware `formatSize` mirror).
     func testScrollMultiplierPreservesGhosttyDiscreteRatio() {
         let custom = parse(TerminalConfigBuilder.string(
             for: TerminalPreferences(), controls: TerminalControlsConfig(scrollMultiplier: 2.5),
@@ -205,7 +205,7 @@ final class TerminalConfigBuilderControlsTests: XCTestCase {
     }
 
     /// The DEFAULT control bundle (`m == 1.0`) must emit ghostty's NATIVE per-axis defaults —
-    /// `precision:1,discrete:3` — so out of the box mouse-wheel scroll matches stock ghostty/otty (not the
+    /// `precision:1,discrete:3` — so out of the box mouse-wheel scroll matches stock ghostty (not the
     /// pre-fix `discrete:1`, which was 3× too slow). The pin for the default-scroll behaviour.
     func testDefaultScrollMultiplierMatchesGhosttyNativeDefaults() {
         let unit = parse(TerminalConfigBuilder.string(
@@ -230,7 +230,7 @@ final class TerminalConfigBuilderControlsTests: XCTestCase {
     }
 
     /// The FACTORY control bundle keeps libghostty's own default (`macos-option-as-alt = false`), so out of the
-    /// box Option composes accented characters — matching otty's "Option as Alt" default OFF.
+    /// box Option composes accented characters — the "Option as Alt" default stays OFF.
     func testDefaultOptionAsAltIsFalse() {
         let map = parse(TerminalConfigBuilder.string(
             for: TerminalPreferences(), controls: TerminalControlsConfig(),

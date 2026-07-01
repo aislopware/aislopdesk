@@ -1,17 +1,17 @@
-// SnippetEditorSheet — the "Edit Text Snippet" modal (E16 WI-7, `docs/otty-clone/screenshots/textsnippet-
+// SnippetEditorSheet — the "Edit Text Snippet" modal (E16 WI-7, `docs/ui-shell/screenshots/textsnippet-
 // setting.png`). A self-contained SwiftUI sheet that edits a snippet's Name / Alias / Text and hands the
 // three strings back to its presenter (Settings → Recipes) via `onSave`; it never touches the store directly,
 // so it is pure-view + cross-platform (macOS Settings window + the iOS settings sheet host the same struct).
 //
 // FIDELITY (textsnippet-setting.png): a card-surface sheet with a bold title + `×` close, then three labeled
-// fields each with the exact otty helper line — **Name** ("Shown in the command palette and this list."),
+// fields each with the exact helper line — **Name** ("Shown in the command palette and this list."),
 // **Alias** ("Trigger word typed at the shell prompt to expand this snippet.", monospaced), **Text** (a
 // multiline monospaced editor) — a placeholder reference line (`{{cursor}} · {{clipboard}} · {{date}} ·
 // {{time}}`), and a footer with a plain **Cancel** and a solid-accent **Save Changes**. The literal white of
-// the screenshot is the otty Paper theme; here every surface reads the live `Otty` theme tokens (so it adapts
-// to the Monokai-Pro default) — match the design SYSTEM, not the captured pixels.
+// the reference screenshot is a light Paper-style theme; here every surface reads the live `Slate` theme
+// tokens (so it adapts to the Monokai-Pro default) — match the design SYSTEM, not the captured pixels.
 //
-// Otty.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
+// Slate.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
 import SFSafeSymbols
@@ -61,7 +61,7 @@ struct SnippetEditorSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space4) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space4) {
             header
             field(
                 label: "Name",
@@ -78,14 +78,14 @@ struct SnippetEditorSheet: View {
             textArea
             footer
         }
-        .padding(Otty.Metric.space4)
+        .padding(Slate.Metric.space4)
         #if os(macOS)
             .frame(width: 520)
         #else
             .frame(maxWidth: 520)
         #endif
-            .background(Otty.Surface.card)
-            .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard))
+            .background(Slate.Surface.card)
+            .clipShape(RoundedRectangle(cornerRadius: Slate.Metric.radiusCard))
     }
 
     // MARK: Header (title + close)
@@ -93,13 +93,13 @@ struct SnippetEditorSheet: View {
     private var header: some View {
         HStack {
             Text(isNew ? "New Text Snippet" : "Edit Text Snippet")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
             Spacer(minLength: 0)
             Button { dismiss() } label: {
                 Image(systemSymbol: .xmark)
-                    .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                    .foregroundStyle(Slate.Text.tertiary)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -110,60 +110,60 @@ struct SnippetEditorSheet: View {
     // MARK: Single-line field (Name / Alias)
 
     private func field(label: String, helper: String, text: Binding<String>, mono: Bool) -> some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Text(label)
-                .font(.system(size: Otty.Typeface.base, weight: .medium))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.base, weight: .medium))
+                .foregroundStyle(Slate.Text.primary)
             TextField("", text: text)
                 .textFieldStyle(.plain)
                 .font(mono
-                    ? .system(size: Otty.Typeface.body).monospaced()
-                    : .system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent)
-                .padding(Otty.Metric.space2)
+                    ? .system(size: Slate.Typeface.body).monospaced()
+                    : .system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.primary)
+                .tint(Slate.State.accent)
+                .padding(Slate.Metric.space2)
                 .background(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                        .fill(Otty.Surface.element),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                        .fill(Slate.Surface.element),
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                        .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                        .strokeBorder(Slate.Line.subtle, lineWidth: Slate.Metric.hairline),
                 )
             Text(helper)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.tertiary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.tertiary)
         }
     }
 
     // MARK: Multiline text area (Text + the placeholder reference line)
 
     private var textArea: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Text("Text")
-                .font(.system(size: Otty.Typeface.base, weight: .medium))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.base, weight: .medium))
+                .foregroundStyle(Slate.Text.primary)
             TextEditor(text: $snippetText)
-                .font(.system(size: Otty.Typeface.body).monospaced())
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent)
+                .font(.system(size: Slate.Typeface.body).monospaced())
+                .foregroundStyle(Slate.Text.primary)
+                .tint(Slate.State.accent)
                 .scrollContentBackground(.hidden)
                 .frame(height: textAreaHeight)
-                .padding(Otty.Metric.space1)
+                .padding(Slate.Metric.space1)
                 .background(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                        .fill(Otty.Surface.element),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                        .fill(Slate.Surface.element),
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                        .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                        .strokeBorder(Slate.Line.subtle, lineWidth: Slate.Metric.hairline),
                 )
                 .overlay(alignment: .bottomTrailing) { resizeGrip }
-            // The reserved template vars (resolved by `ReservedSnippetVars`, never user-prompted) — the otty
+            // The reserved template vars (resolved by `ReservedSnippetVars`, never user-prompted) — the
             // helper line, verbatim, so the user knows the four built-in placeholders exist.
             Text("Placeholders: {{cursor}} · {{clipboard}} · {{date}} · {{time}}")
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.tertiary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.tertiary)
         }
     }
 
@@ -173,9 +173,9 @@ struct SnippetEditorSheet: View {
     /// ordered, NaN-faithful `CGFloat.maximum` — the house float idiom, never a bare clamp).
     private var resizeGrip: some View {
         SnippetResizeGrip()
-            .fill(Otty.Text.tertiary)
+            .fill(Slate.Text.tertiary)
             .frame(width: 11, height: 11)
-            .padding(Otty.Metric.space1 + 2)
+            .padding(Slate.Metric.space1 + 2)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 1)
@@ -195,27 +195,27 @@ struct SnippetEditorSheet: View {
     // MARK: Footer (Cancel + Save Changes)
 
     private var footer: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Spacer(minLength: 0)
             Button("Cancel") { dismiss() }
                 .buttonStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
-                .padding(.horizontal, Otty.Metric.space3)
-                .padding(.vertical, Otty.Metric.space1)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
+                .padding(.horizontal, Slate.Metric.space3)
+                .padding(.vertical, Slate.Metric.space1)
 
             Button {
                 onSave(name, alias, snippetText)
                 dismiss()
             } label: {
                 Text("Save Changes")
-                    .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                    .foregroundStyle(Otty.Surface.card)
-                    .padding(.horizontal, Otty.Metric.space3)
-                    .padding(.vertical, Otty.Metric.space1)
+                    .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                    .foregroundStyle(Slate.Surface.card)
+                    .padding(.horizontal, Slate.Metric.space3)
+                    .padding(.vertical, Slate.Metric.space1)
                     .background(
-                        RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                            .fill(Otty.State.accent),
+                        RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                            .fill(Slate.State.accent),
                     )
             }
             .buttonStyle(.plain)

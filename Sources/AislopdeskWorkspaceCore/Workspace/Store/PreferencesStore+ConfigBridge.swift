@@ -1,6 +1,6 @@
 // E20 (config review fix) — the LIVE typed-key bridge the `aislopdesk config` CLI drives.
 //
-// `WorkspaceControlBackend.configGet/Set/Unset/Show` route the otty-documented render/appearance config
+// `WorkspaceControlBackend.configGet/Set/Unset/Show` route the documented render/appearance config
 // keys (`reference__cli.md`: `theme`, `font-family`, `font-size`, `cursor-style`, …) through THESE
 // methods so a `config set` genuinely reflows the terminal / retints the chrome live AND persists (the
 // typed model's `didSet`), and `config get`/`config show` reflect the LIVE value — not a dead
@@ -62,7 +62,7 @@ public extension PreferencesStore {
         return true
     }
 
-    /// Reset a render/appearance config key to its model default (otty `config unset`). Returns `false`
+    /// Reset a render/appearance config key to its model default (`config unset`). Returns `false`
     /// for a key this store does not own.
     @discardableResult
     func unsetRenderConfig(forKey key: String) -> Bool {

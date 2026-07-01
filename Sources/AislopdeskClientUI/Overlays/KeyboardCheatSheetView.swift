@@ -4,10 +4,10 @@
 // (left) with its chord rendered as per-symbol keycap chips (right) — so a displayed glyph can never drift
 // from the chord the keyboard dispatcher actually fires (both read the SAME registry).
 //
-// Shares the PaletteView panel shell (`Otty.Surface.card` body, `Otty.Metric.radiusCard` corners,
-// `Otty.Line.card` hairline stroke, `Otty.State.shadow` drop shadow) so the floating overlays read as one
+// Shares the PaletteView panel shell (`Slate.Surface.card` body, `Slate.Metric.radiusCard` corners,
+// `Slate.Line.card` hairline stroke, `Slate.State.shadow` drop shadow) so the floating overlays read as one
 // family; the scrim + centering + fade are added by the `OverlayHostView` (WI-5) that mounts this — the
-// view IS the panel. `Otty.*` tokens ONLY (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
+// view IS the panel. `Slate.*` tokens ONLY (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
 //
 // SEAM discipline: the cheat sheet owns NO state — its rows are the pure registry table and its only
 // mutation is `closeCheatSheet()` on Esc / scrim-tap. ⌘/ is NOT bound here: the app-level
@@ -53,18 +53,18 @@ struct KeyboardCheatSheetView: View {
         VStack(spacing: 0) {
             titleBar
             Rectangle()
-                .fill(Otty.Line.divider)
-                .frame(height: Otty.Metric.hairline)
+                .fill(Slate.Line.divider)
+                .frame(height: Slate.Metric.hairline)
             sectionList
         }
         .frame(width: panelWidth)
-        .background(Otty.Surface.card)
-        .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard))
+        .background(Slate.Surface.card)
+        .clipShape(RoundedRectangle(cornerRadius: Slate.Metric.radiusCard))
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusCard)
-                .stroke(Otty.Line.card, lineWidth: Otty.Metric.hairline),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusCard)
+                .stroke(Slate.Line.card, lineWidth: Slate.Metric.hairline),
         )
-        .shadow(color: Otty.State.shadow, radius: 30, x: 0, y: 12)
+        .shadow(color: Slate.State.shadow, radius: 30, x: 0, y: 12)
         // Make the panel itself focusable (no text field here) so Esc lands; suppress the focus ring so the
         // read-only panel doesn't draw a highlight outline. The deferred focus mirrors the palette idiom (a
         // `@FocusState` set in the same tick the view appears is dropped before its responder exists).
@@ -85,16 +85,16 @@ struct KeyboardCheatSheetView: View {
     // MARK: - Title bar
 
     private var titleBar: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Image(systemSymbol: .keyboard)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
             Text("Keyboard Shortcuts")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
-            Spacer(minLength: Otty.Metric.space2)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
+            Spacer(minLength: Slate.Metric.space2)
         }
-        .padding(.horizontal, Otty.Metric.space4)
+        .padding(.horizontal, Slate.Metric.space4)
         .frame(height: 48)
     }
 
@@ -110,56 +110,56 @@ struct KeyboardCheatSheetView: View {
                     }
                 }
             }
-            .padding(.vertical, Otty.Metric.space1)
+            .padding(.vertical, Slate.Metric.space1)
         }
         .frame(maxHeight: listMaxHeight)
     }
 
     private func sectionHeader(_ category: WorkspaceAction.Category) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Text(category.rawValue.uppercased())
-                .font(.system(size: Otty.Typeface.small, weight: .semibold))
+                .font(.system(size: Slate.Typeface.small, weight: .semibold))
                 .tracking(0.8)
-                .foregroundStyle(Otty.State.header)
-            Spacer(minLength: Otty.Metric.space2)
+                .foregroundStyle(Slate.State.header)
+            Spacer(minLength: Slate.Metric.space2)
         }
-        .padding(.horizontal, Otty.Metric.space3)
-        .padding(.top, Otty.Metric.space3)
-        .padding(.bottom, Otty.Metric.space1)
+        .padding(.horizontal, Slate.Metric.space3)
+        .padding(.top, Slate.Metric.space3)
+        .padding(.bottom, Slate.Metric.space1)
     }
 
     // MARK: - Binding row
 
     private func bindingRow(_ binding: WorkspaceBinding) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Text(binding.title)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.primary)
                 .lineLimit(1)
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             if let glyph = chordGlyph(binding) {
-                HStack(spacing: Otty.Metric.space1) {
+                HStack(spacing: Slate.Metric.space1) {
                     ForEach(Array(keycaps(glyph).enumerated()), id: \.offset) { _, key in
                         keycapChip(key)
                     }
                 }
             }
         }
-        .padding(.horizontal, Otty.Metric.space3)
+        .padding(.horizontal, Slate.Metric.space3)
         .frame(height: 34)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, Otty.Metric.space2)
+        .padding(.horizontal, Slate.Metric.space2)
     }
 
     private func keycapChip(_ key: String) -> some View {
         Text(key)
-            .font(.system(size: Otty.Typeface.small, weight: .medium))
-            .foregroundStyle(Otty.Text.secondary)
+            .font(.system(size: Slate.Typeface.small, weight: .medium))
+            .foregroundStyle(Slate.Text.secondary)
             .frame(minWidth: 18, minHeight: 18)
-            .padding(.horizontal, Otty.Metric.space1)
+            .padding(.horizontal, Slate.Metric.space1)
             .background(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
-                    .fill(Otty.Surface.element),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
+                    .fill(Slate.Surface.element),
             )
     }
 

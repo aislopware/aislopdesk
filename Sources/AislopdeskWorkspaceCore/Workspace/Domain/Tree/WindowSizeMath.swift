@@ -4,7 +4,7 @@ import Foundation
 
 // MARK: - WindowSizeMath (E19 A29: pure window-sizing arithmetic)
 
-/// PURE window-sizing arithmetic for the otty `window-size` modes (`grid` / `frame` / `remember`). The
+/// PURE window-sizing arithmetic for the `window-size` modes (`grid` / `frame` / `remember`). The
 /// single source of truth the (macOS-only, hang-unsafe) `NSWindow` glue calls to decide a new window's
 /// initial CONTENT size; headlessly unit-testable so the math is proven apart from any AppKit instantiation.
 ///
@@ -22,7 +22,7 @@ public enum WindowSizeMath {
     // MARK: Clamp bands (validate-then-drop — never 0, never gigantic)
 
     /// The inclusive column / row band: at least 1 (a 0-row window is degenerate) and capped at a sane
-    /// 1000 (otty's `window-cols`/`window-rows` are small cell counts; a 5-figure value is a typo / hostile).
+    /// 1000 (`window-cols`/`window-rows` are small cell counts; a 5-figure value is a typo / hostile).
     public static let minCells = 1
     public static let maxCells = 1000
     /// The inclusive pixel band for `frame` mode: a 64pt floor (smaller than a usable window) up to 16384
@@ -141,7 +141,7 @@ public enum WindowSizeMath {
     ///
     /// `chromeOverhead` is the WINDOW content's NON-terminal extent — the revealed sidebar (TABS panel) + the
     /// shown inspector (Details panel) widths + any terminal pane content inset. It is added in `grid` mode so
-    /// the resolved WINDOW content yields a TERMINAL of exactly `cols × rows` (otty's `window-cols`/`window-rows`
+    /// the resolved WINDOW content yields a TERMINAL of exactly `cols × rows` (`window-cols`/`window-rows`
     /// size the TERMINAL, not the whole window). `frame` mode ignores it — `window-width-px`/`window-height-px`
     /// are the explicit WHOLE-window pixel size. (`chromeInsets` stays the OUT-of-content overhead: title bar /
     /// borders.) A separate `+` per axis (NEVER `fma` — CLAUDE.md §2).

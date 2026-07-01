@@ -1,6 +1,6 @@
 // OutlineView — the Details Panel's Outline tab (E9, WI-5).
 //
-// Ports the otty Outline sidebar (spec/user-interface__outline.md §"Outline in Details Panel"): a FLAT,
+// The Outline tab (spec/user-interface__outline.md §"Outline in Details Panel"): a FLAT,
 // CHRONOLOGICAL (oldest→newest) list of the active pane's shell command marks — one row per `CommandBlock`,
 // built from the per-pane OSC-133 index (`TerminalBlockModel`). Each row carries a left exit-status gutter
 // (green ✓ on success / red ✗ on failure / grey · while running, via `OutlinePresentation.gutter`), the
@@ -9,13 +9,13 @@
 // scrollback to that command (`onJump` → `WorkspaceStore.jumpToNavigatorBlockInActivePane`); a right-click
 // menu offers "Jump to" + "Copy" (the row's command text → pasteboard).
 //
-// AGENT-PROMPT ROWS — DOCUMENTED PARTIAL (DECISIONS.md). otty's Outline also lists an agent session's history
-// PROMPTS, but Aislopdesk carries no prompt-mark signal on the wire (the block index is shell command marks
+// AGENT-PROMPT ROWS — DOCUMENTED PARTIAL (DECISIONS.md). An agent session's history PROMPTS are not listed
+// here: Aislopdesk carries no prompt-mark signal on the wire (the block index is shell command marks
 // only). Under the Claude-first scope reduction, E9 renders the command-mark Outline FAITHFULLY for both
 // terminal and agent panes (the agent's shell marks ARE captured) and DEFERS prompt-row decoration — no
 // prompt row is invented.
 //
-// otty tokens / fonts only. The only theme-coupled part is the `Gutter → colour` map; the classification +
+// Slate tokens / fonts only. The only theme-coupled part is the `Gutter → colour` map; the classification +
 // the relative-time string are the PURE, headlessly-tested `OutlinePresentation` (WI-4). `TimelineView`
 // re-renders the rows periodically so an idle pane's "4m" relative stamps still tick.
 
@@ -62,7 +62,7 @@ struct OutlineView: View {
                     row(for: block, now: now)
                 }
             }
-            .padding(.vertical, Otty.Metric.space1)
+            .padding(.vertical, Slate.Metric.space1)
         }
     }
 
@@ -71,21 +71,21 @@ struct OutlineView: View {
         return Button {
             onJump(block.index)
         } label: {
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 gutter(for: block)
                     .frame(width: 14, alignment: .center)
                 Text(displayText(block))
-                    .font(.system(size: Otty.Typeface.base))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.base))
+                    .foregroundStyle(Slate.Text.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Spacer(minLength: Otty.Metric.space2)
+                Spacer(minLength: Slate.Metric.space2)
                 Text(OutlinePresentation.relativeTime(from: firstSeen, now: now))
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.tertiary)
                     .monospacedDigit()
             }
-            .padding(.horizontal, Otty.Metric.space3)
+            .padding(.horizontal, Slate.Metric.space3)
             .padding(.vertical, 4)
             .contentShape(.rect)
         }
@@ -100,15 +100,15 @@ struct OutlineView: View {
         switch OutlinePresentation.gutter(for: block) {
         case .succeeded:
             Image(systemName: "checkmark")
-                .font(.system(size: Otty.Typeface.small, weight: .bold))
-                .foregroundStyle(Otty.Status.ok)
+                .font(.system(size: Slate.Typeface.small, weight: .bold))
+                .foregroundStyle(Slate.Status.ok)
         case .failed:
             Image(systemName: "xmark")
-                .font(.system(size: Otty.Typeface.small, weight: .bold))
-                .foregroundStyle(Otty.Status.err)
+                .font(.system(size: Slate.Typeface.small, weight: .bold))
+                .foregroundStyle(Slate.Status.err)
         case .running:
             Circle()
-                .fill(Otty.Text.tertiary)
+                .fill(Slate.Text.tertiary)
                 .frame(width: 5, height: 5)
         }
     }
@@ -146,7 +146,7 @@ struct OutlineView: View {
         block.commandText.isEmpty ? "—" : block.commandText
     }
 
-    /// Copies a row's command text to the platform pasteboard (the otty Outline right-click "Copy" action),
+    /// Copies a row's command text to the platform pasteboard (the Outline row's right-click "Copy" action),
     /// using the same `AppKit`/`UIKit` idiom as `RemoteFileTreeView.copyPath`. A no-op for an empty command.
     private func copyToPasteboard(_ text: String) {
         guard !text.isEmpty else { return }

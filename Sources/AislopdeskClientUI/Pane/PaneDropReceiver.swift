@@ -1,5 +1,5 @@
 // PaneDropReceiver — the SwiftUI `DropDelegate` behind the external-drag overlay on a pane (E18 WI-5;
-// otty `spec/user-interface__drag-and-drop.md`, `screenshots/drop-overlay-frame-action.png`).
+// see `docs/ui-shell/spec/user-interface__drag-and-drop.md`, `screenshots/drop-overlay-frame-action.png`).
 //
 // One receiver is attached per ``PaneContainer`` via `.onDrop(of:delegate:)`. It owns the drag lifecycle:
 //   1. validate — a drag must carry a supported type (`.fileURL` / `.url` / `.text`), else the receiver
@@ -101,7 +101,7 @@ final class PaneDropOverlayModel {
 /// and a `@MainActor` `Task` for the async pasteboard loads. Every injected dependency is a `@MainActor`
 /// reference type (Sendable), so the struct stays Sendable across those hops.
 struct PaneDropReceiver: DropDelegate {
-    /// THIS pane's id — the pane being dragged ONTO (otty's overlay covers the pane under the cursor and its
+    /// THIS pane's id — the pane being dragged ONTO (the overlay covers the pane under the cursor and its
     /// zones act on THAT pane). On commit the receiver focuses it FIRST so the active-pane-reading store
     /// ingress (`splitActivePane` / `openWebPane`) resolves to the dropped-on pane, not whichever pane
     /// happened to be focused — a drop never changes focus on its own (the pane is focused only on tap), so
@@ -265,8 +265,8 @@ struct PaneDropReceiver: DropDelegate {
         }
     }
 
-    /// The host-resolved advisory toast for a dropped folder → New-Tab `cd` (E18 ES-E18-2): otty is a LOCAL
-    /// terminal, we are REMOTE, so the dropped path is resolved on the HOST and may not exist there — advise,
+    /// The host-resolved advisory toast for a dropped folder → New-Tab `cd` (E18 ES-E18-2): we are a REMOTE
+    /// terminal, so the dropped path is resolved on the HOST and may not exist there — advise,
     /// never block. A fixed `id` de-dupes repeated drops to one toast (the warp `object_id` discipline).
     @MainActor
     private static func cwdAdvisoryToast(for path: String) -> Toast {

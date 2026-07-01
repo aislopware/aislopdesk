@@ -1,6 +1,6 @@
 // ThemeEditorView Duplicate materialisation tests (E15 WI-7) — the pure piece behind the Theme editor's
-// "Duplicate" button: turning a resolved built-in ``OttyTheme`` into a writable custom ``ThemeDocument`` so a
-// read-only built-in can be copied into an editable `.ottytheme`. The UI itself (swatch grid / ColorPickers /
+// "Duplicate" button: turning a resolved built-in ``SlateTheme`` into a writable custom ``ThemeDocument`` so a
+// read-only built-in can be copied into an editable `.aislopdesktheme`. The UI itself (swatch grid / ColorPickers /
 // open panel) is GUI-verified (`scripts/check-macos.sh`); this pins the materialisation + the round-trip that
 // guarantees the duplicated theme is a VALID, re-readable file. Pure logic; no SCStream/VT/Metal/surface.
 
@@ -16,7 +16,7 @@ final class ThemeEditorDuplicationTests: XCTestCase {
     /// A dark built-in materialises into a valid document whose TERMINAL palette is byte-identical to the
     /// theme's canonical ANSI set (so the copy renders the same cells), in the dark slot.
     func testMaterializeDarkBuiltinCarriesPaletteAndMode() {
-        let theme = OttyTheme.monokaiProClassic
+        let theme = SlateTheme.monokaiProClassic
         let doc = ThemeDocument(materializing: theme, displayName: "Monokai Pro Classic", slug: "monokai-pro-classic")
 
         XCTAssertTrue(doc.isValid, "a materialised built-in must be a writable, valid document")
@@ -31,18 +31,18 @@ final class ThemeEditorDuplicationTests: XCTestCase {
 
     /// Duplicating a built-in PRESERVES its chrome accent. Monokai's accent (cyan, #78DCE8) is NOT in the ANSI
     /// "blue" palette slot (idx 4 = the filter's ORANGE), so a materialise that left `accent` unset would let
-    /// ``OttyTheme/init(document:)`` derive the accent from palette[4] and silently flip cyan → orange. The
+    /// ``SlateTheme/init(document:)`` derive the accent from palette[4] and silently flip cyan → orange. The
     /// materialised document must carry the source accent, and the rebuilt chrome theme must keep cyan.
     /// REVERT-TO-CONFIRM-FAIL: drop `accent: theme.accentHex` from `init(materializing:)` and this fails (the
     /// rebuilt accent becomes the orange palette[4]).
     func testMaterializeBuiltinPreservesChromeAccent() {
-        let theme = OttyTheme.monokaiProClassic
+        let theme = SlateTheme.monokaiProClassic
         let doc = ThemeDocument(materializing: theme, displayName: "Copy", slug: "copy")
 
         XCTAssertEqual(doc.accent, "78DCE8", "the duplicate carries the source chrome accent (cyan), not nil")
         XCTAssertEqual(doc.accent, theme.accentHex)
 
-        let rebuilt = OttyTheme(document: doc)
+        let rebuilt = SlateTheme(document: doc)
         XCTAssertEqual(rebuilt.accentHex, "78DCE8", "the rebuilt chrome keeps the cyan accent")
         XCTAssertNotEqual(
             rebuilt.accentHex, theme.ansiPalette[4],
@@ -75,7 +75,7 @@ final class ThemeEditorDuplicationTests: XCTestCase {
 
     /// The materialised document round-trips through the SAME serialiser/parser the editor writes with
     /// (`ThemeLibrary.serialize` → `ThemeTOMLParser.parse`) back to an EQUAL document — proving Duplicate
-    /// writes a `.ottytheme` the scan can read back. This FAILS if materialisation emitted a short/invalid
+    /// writes a `.aislopdesktheme` the scan can read back. This FAILS if materialisation emitted a short/invalid
     /// palette or a malformed hex (the parser would then drop it to `nil`).
     func testMaterialisedDocumentRoundTripsThroughDisk() throws {
         let name = "Monokai Pro Classic"
@@ -101,7 +101,7 @@ final class ThemeEditorDuplicationTests: XCTestCase {
         XCTAssertEqual(ThemeEditorView.friendlyName(for: .paper), "Paper")
         XCTAssertEqual(ThemeEditorView.friendlyName(for: .dark), "Dark")
 
-        let custom = OttyTheme(document: ThemeDocument(
+        let custom = SlateTheme(document: ThemeDocument(
             displayName: "My Theme", slug: "my-theme", mode: .dark,
             foreground: "FFFFFF", background: "000000",
             palette: Array(repeating: "808080", count: 16),

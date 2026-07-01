@@ -1,4 +1,4 @@
-// PasteProtectionSheet — the macOS confirmation surface for otty's Paste Protection (E8 / ES-E8-3).
+// PasteProtectionSheet — the macOS confirmation surface for Paste Protection (E8 / ES-E8-3).
 //
 // libghostty already TRIPS the gate (`clipboard-paste-protection`) and hands the embedder an
 // approve/deny decision via `confirm_read_clipboard_cb`; this is the user-facing dialog that decision
@@ -12,7 +12,7 @@
 import AislopdeskWorkspaceCore
 import AppKit
 
-/// Presents otty's paste-protection confirmation. AppKit-thin: ALL danger classification lives in the
+/// Presents the paste-protection confirmation. AppKit-thin: ALL danger classification lives in the
 /// pure ``PasteSafetyAnalyzer`` (headless-tested) — this type only renders the verdict and relays the
 /// user's choice, so the GUI stays compile-and-review while the decision logic stays unit-tested.
 @preconcurrency

@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - SnippetAliasExpander (E16 ES-E16-4 — at-prompt alias auto-expansion)
 
-/// The PURE, headless-tested brain for otty's "typing a snippet alias at the shell prompt expands it" feature
+/// The PURE, headless-tested brain for the "typing a snippet alias at the shell prompt expands it" feature
 /// (`customization__custom-commands.md` §Text Snippets + `textsnippet-apply.gif`). The spec's Aislopdesk
 /// Mapping Notes call this a 1:1 **client-side** interceptor on the terminal input path, "before bytes reach
 /// `libghostty` or the PTY write path" — so this type owns the decision and the per-surface key path is a thin

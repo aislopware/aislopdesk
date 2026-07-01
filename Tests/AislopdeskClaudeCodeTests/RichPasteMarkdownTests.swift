@@ -182,10 +182,10 @@ final class RichPasteMarkdownTests: XCTestCase {
     /// longer inserts the plain string unchanged).
     func testContextMenuClipboardHTMLConvertsToMarkdown() {
         let clipboardHTML = "<h2>Plan</h2><p>Refactor the <strong>composer</strong> " +
-            "(<a href=\"https://otty.dev\">spec</a>).</p>"
+            "(<a href=\"https://example.com/spec\">spec</a>).</p>"
         XCTAssertEqual(
             md(clipboardHTML),
-            "## Plan\n\nRefactor the **composer** ([spec](https://otty.dev)).",
+            "## Plan\n\nRefactor the **composer** ([spec](https://example.com/spec)).",
             "the context-menu paste path converts clipboard HTML to Markdown, not plain text",
         )
     }

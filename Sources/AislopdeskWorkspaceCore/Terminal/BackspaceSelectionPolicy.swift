@@ -24,7 +24,7 @@ public enum BackspaceAction: Equatable, Sendable {
     case forward
 }
 
-/// The PURE, headless decision behind otty's "Backspace deletes selection" (I7): given the live selection
+/// The PURE, headless decision behind the "Backspace deletes selection" feature (I7): given the live selection
 /// state, the setting, and whether a full-screen program owns the screen / the terminal is at an editable
 /// shell prompt, what should a Backspace press do?
 ///
@@ -33,12 +33,12 @@ public enum BackspaceAction: Equatable, Sendable {
 /// cursor-geometry API** in the pinned fork (`TerminalViewModel` current-state note). So a *faithful*
 /// "delete the whole selection wherever it sits" — which needs to know the selection's start/end columns
 /// relative to the cursor to emit the right edit — is not achievable. The closest faithful equivalent (and
-/// the otty common case) is a single prompt-line run that ENDS AT THE CURSOR: there, sending
+/// the common case in practice) is a single prompt-line run that ENDS AT THE CURSOR: there, sending
 /// `readSelection().count` DEL (`0x7F`) bytes makes the host readline erase exactly that run. This enum is
 /// the **testable heart** of the feature; the GUI surface (`GhosttyTerminalView`, compile-only behind
 /// `#if canImport(CGhostty)`) is the thin actuator that applies the DEL-count / falls back per the ceiling.
 ///
-/// ## The gates (mirroring the otty spec + the safe defaults)
+/// ## The gates (the safe defaults)
 /// 1. **No selection** → ``BackspaceAction/forward``: an ordinary Backspace.
 /// 2. **Feature off** → ``BackspaceAction/forward``: libghostty's `selection-clear-on-typing` still clears
 ///    the highlight on the keystroke; we add nothing.
@@ -59,7 +59,7 @@ public enum BackspaceSelectionPolicy {
     /// - Parameters:
     ///   - hasSelection: whether the surface currently holds a text selection
     ///     (`GhosttySurface.hasSelection()`).
-    ///   - setting: the live otty "Backspace deletes selection" toggle
+    ///   - setting: the live "Backspace deletes selection" toggle
     ///     (``SettingsKey/backspaceDeletesSelectionEnabled``, default OFF — honest-disclosure: the faithful
     ///     whole-run delete is a documented geometry ceiling, so the feature ships non-default).
     ///   - isAlternateScreen: whether a full-screen / foreground program owns the screen — the GUI derives

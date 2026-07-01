@@ -21,7 +21,7 @@ public enum ProgressState: UInt8, Sendable, Equatable {
     case indeterminate = 3
 
     // States 4 (paused/warning) and 5 (finished + exit) are deliberately NOT carried here:
-    //  - 4 is ignored (otty ignores it too — no determinate-paused render surface).
+    //  - 4 is ignored (no determinate-paused render surface exists for it).
     //  - 5 (OSC 9;4;5;<exit>[;watch]) maps onto the EXISTING `commandStatus(.idle(exitCode:))` path
     //    (OSC-133-D), not a new progress state; the `watch` finish suffix is deferred to E20's watch
     //    command. See `docs/DECISIONS.md` "E14 progress + notifications + privilege parity".

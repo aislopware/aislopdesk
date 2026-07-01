@@ -19,7 +19,7 @@ public enum RecipeSaveContent: String, Sendable, Equatable, CaseIterable {
 public enum RecipeSource: Sendable, Equatable {
     /// An internally-saved recipe from the library (`~/.config/aislopdesk/recipes/`).
     case savedLibrary
-    /// An externally-opened `.ottyrecipe` file (Finder drop / File ▸ Open Recipe…).
+    /// An externally-opened `.aislopdeskrecipe` file (Finder drop / File ▸ Open Recipe…).
     case file
 }
 
@@ -37,7 +37,7 @@ public struct RecipeTrustPrompt: Sendable, Equatable {
     public var commands: [String]
     /// Whether the recipe came from the library or a file (selects the replay-mode default on confirm).
     public var source: RecipeSource
-    /// The folder containing the `.ottyrecipe` (resolves `{{recipe_location}}` cwds on restore); `""` for a
+    /// The folder containing the `.aislopdeskrecipe` (resolves `{{recipe_location}}` cwds on restore); `""` for a
     /// library/in-memory recipe.
     public var recipeLocation: String
 
@@ -118,7 +118,7 @@ public struct RecipeReplayRequest: Sendable, Equatable {
 /// show / label / preview decision is unit-tested headlessly (no NSWindow). ``WorkspaceStore/recipeReplayPrompt(for:)``
 /// returns `nil` whenever no banner should show (no replay, or an Auto / Skip run mid-drain that needs no
 /// user action). This is THE surface that makes Ask-Once / Manually reachable: without a control reading it,
-/// those two modes (Ask-Once is the DEFAULT for opened `.ottyrecipe` files) queue their commands and never run.
+/// those two modes (Ask-Once is the DEFAULT for opened `.aislopdeskrecipe` files) queue their commands and never run.
 public struct RecipeReplayPrompt: Equatable, Sendable {
     /// Which kind of confirmation the banner is asking for (so the UI + tests branch without string-matching).
     public enum Kind: Equatable, Sendable {
@@ -199,7 +199,7 @@ public extension WorkspaceStore {
     /// The app consumed the save-sheet request (presented / dismissed it).
     func clearSaveRecipeRequest() { recipes.pendingSaveRecipe = false }
 
-    /// Snapshot the live tree into a `.ottyrecipe` and write it to the recipes library, returning the written
+    /// Snapshot the live tree into a `.aislopdeskrecipe` and write it to the recipes library, returning the written
     /// URL (or `nil` on failure / an empty commands-scope save).
     ///
     /// - `scope`: `.tab` (the focused tab), `.window` (every tab), or `.commands` (the focused pane's recent
@@ -267,7 +267,7 @@ public extension WorkspaceStore {
     /// The app consumed the open-picker request.
     func clearOpenRecipeRequest() { recipes.pendingOpenRecipe = false }
 
-    /// The saved `.ottyrecipe` files in the library folder (`~/.config/aislopdesk/recipes/`) — the Open-Recipe
+    /// The saved `.aislopdeskrecipe` files in the library folder (`~/.config/aislopdesk/recipes/`) — the Open-Recipe
     /// picker's in-app list, parsed + sorted by filename. A malformed file keeps its slot with a `nil`
     /// ``RecipeLibrary/RecipeFile/recipe`` so the picker can grey it honestly; an absent folder yields `[]`.
     func savedRecipeFiles() -> [RecipeLibrary.RecipeFile] {
@@ -275,7 +275,7 @@ public extension WorkspaceStore {
         return RecipeLibrary.scan(directory: dir)
     }
 
-    /// Open a `.ottyrecipe` from a library file (resolving its on-disk location for `{{recipe_location}}`).
+    /// Open a `.aislopdeskrecipe` from a library file (resolving its on-disk location for `{{recipe_location}}`).
     /// `launchGrace` defers the restored panes' cwd `cd` + the command replay (the production default lets a
     /// freshly-mounted shell's prompt come up first); a test injects `.zero` for a synchronous read.
     func openRecipe(at url: URL, source: RecipeSource = .file, launchGrace: Duration = .milliseconds(1400)) {

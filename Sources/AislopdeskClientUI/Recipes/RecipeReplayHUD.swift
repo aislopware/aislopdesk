@@ -1,5 +1,5 @@
 // RecipeReplayHUD — the in-pane command-replay banner (E16 WI-9, spec `customization__custom-commands.md`
-// §Command Replay). When a recipe opens in **Ask Once** (the DEFAULT for opened `.ottyrecipe` files) or
+// §Command Replay). When a recipe opens in **Ask Once** (the DEFAULT for opened `.aislopdeskrecipe` files) or
 // **Manually**, the store parks the captured commands in a per-pane `RecipeReplayMachine` that waits for the
 // user — it injects NOTHING until a confirm. Without a control driving that confirm those two modes silently
 // never replay (the OSC-133;D prompt-return edge only resumes a shell-handoff pause, never an
@@ -10,7 +10,7 @@
 // surfaces a "Continue" past a shell handoff (`ssh`/…) so the user can step the queue even when the inner
 // session never returns a local prompt.
 //
-// Faithful to otty's replay affordance (a banner that shows the queued commands + a run control). `Otty.*`
+// The replay affordance is a banner that shows the queued commands + a run control. `Slate.*`
 // tokens only (raw font / radius / colour literals fail `scripts/check-ds-leaks.sh`). No libghostty / Metal /
 // VideoToolbox is touched: it is a plain SwiftUI banner driven by the store's OBSERVABLE replay state.
 
@@ -38,54 +38,54 @@ struct RecipeReplayHUD: View {
     }
 
     private func banner(_ prompt: RecipeReplayPrompt) -> some View {
-        HStack(alignment: .center, spacing: Otty.Metric.space2) {
+        HStack(alignment: .center, spacing: Slate.Metric.space2) {
             Image(systemName: "play.circle")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.State.accent)
-            VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.State.accent)
+            VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                 Text(prompt.message)
-                    .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                    .foregroundStyle(Slate.Text.primary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                 if let next = prompt.commands.first {
                     Text(next)
-                        .font(.system(size: Otty.Typeface.small).monospaced())
-                        .foregroundStyle(Otty.Text.secondary)
+                        .font(.system(size: Slate.Typeface.small).monospaced())
+                        .foregroundStyle(Slate.Text.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
             }
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             runButton(prompt.actionLabel)
         }
-        .padding(.horizontal, Otty.Metric.space3)
-        .padding(.vertical, Otty.Metric.space2)
-        .background(Otty.Surface.card, in: .rect(cornerRadius: Otty.Metric.radiusControl))
+        .padding(.horizontal, Slate.Metric.space3)
+        .padding(.vertical, Slate.Metric.space2)
+        .background(Slate.Surface.card, in: .rect(cornerRadius: Slate.Metric.radiusControl))
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                .strokeBorder(Slate.Line.subtle, lineWidth: Slate.Metric.hairline),
         )
-        .shadow(color: Otty.State.shadow, radius: 4, x: 0, y: 1)
+        .shadow(color: Slate.State.shadow, radius: 4, x: 0, y: 1)
         .frame(maxWidth: 420)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Command replay")
         .accessibilityHint(prompt.message)
     }
 
-    /// The single live "advance replay" control — a solid accent button (otty's run affordance). Drives THIS
+    /// The single live "advance replay" control — a solid accent button. Drives THIS
     /// banner's own pane (``paneID``), so clicking a non-active pane's banner advances that pane's machine, not
     /// the active pane's.
     private func runButton(_ title: String) -> some View {
         Button { store.continueRecipeReplay(for: paneID) } label: {
             Text(title)
-                .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
-                .foregroundStyle(Otty.Surface.card)
-                .padding(.horizontal, Otty.Metric.space3)
-                .padding(.vertical, Otty.Metric.space1)
+                .font(.system(size: Slate.Typeface.footnote, weight: .semibold))
+                .foregroundStyle(Slate.Surface.card)
+                .padding(.horizontal, Slate.Metric.space3)
+                .padding(.vertical, Slate.Metric.space1)
                 .background(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                        .fill(Otty.State.accent),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                        .fill(Slate.State.accent),
                 )
                 .contentShape(.rect)
         }

@@ -1,10 +1,10 @@
 import Foundation
 
-// MARK: - Recipe domain (the in-memory shape of a `.ottyrecipe`)
+// MARK: - Recipe domain (the in-memory shape of a `.aislopdeskrecipe`)
 
 /// A **recipe** is a portable snapshot of repeatable work — a window's tabs + split panes + working
 /// directories and, optionally, the exact commands to replay on open. It serialises to a plain-TOML
-/// `.ottyrecipe` file via ``RecipeTOMLCodec`` and is otherwise a pure, headless value type (no I/O, no
+/// `.aislopdeskrecipe` file via ``RecipeTOMLCodec`` and is otherwise a pure, headless value type (no I/O, no
 /// view, no store) — the file engine (`RecipeLibrary`) and the store glue (`WorkspaceStore+Recipes`) sit
 /// above it.
 ///

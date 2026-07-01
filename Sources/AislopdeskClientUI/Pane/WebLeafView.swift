@@ -1,7 +1,7 @@
-// WebLeafView — the content of a LOCAL web pane (`PaneKind.web`) leaf (E18 WI-4; otty
+// WebLeafView — the content of a LOCAL web pane (`PaneKind.web`) leaf (E18 WI-4;
 // `spec/user-interface__files-and-links.md` › Web Browser Pane, `web-broswer.png`).
 //
-// The web parallel of ``TerminalLeafView`` / ``GuiLeafView``: it renders the otty browser chrome — the
+// The web parallel of ``TerminalLeafView`` / ``GuiLeafView``: it renders the browser chrome — the
 // address bar + back / forward / reload / close controls — over the headless-safe ``WebRendererFactory``
 // seam. The real `WKWebView` is built ONLY by the Xcode app target (which links `WebKit`) and registered as
 // `WebRendererFactory.shared` at launch, exactly like `VideoWindowFactory`; this cross-platform library
@@ -24,7 +24,7 @@
 // Forward stay disabled and Reload re-issues the current address through the navigate channel.
 //
 // The whole pane is keyed `.id(PaneID)` by ``SplitContainer``, so this view's `@State WebPaneModel` is
-// per-pane (no cross-pane bleed). `Otty.*` tokens only (raw font / radius literals fail
+// per-pane (no cross-pane bleed). `Slate.*` tokens only (raw font / radius literals fail
 // `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
@@ -163,14 +163,14 @@ struct WebLeafView: View {
         VStack(spacing: 0) {
             addressChrome
             Rectangle()
-                .fill(Otty.Line.divider)
-                .frame(height: Otty.Metric.hairline)
+                .fill(Slate.Line.divider)
+                .frame(height: Slate.Metric.hairline)
             webContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(NativePaneColor.terminalBackground)
-        // The otty web-browser chords (web-broswer.png / files-and-links.md › Web Browser Pane), SCOPED to
+        // The web-browser chords (web-broswer.png / files-and-links.md › Web Browser Pane), SCOPED to
         // THIS pane's focus — see `webShortcuts`.
         .background(webShortcuts)
         // External address changes (the initial `openWebPane` stamp, or an Open-In-Place re-nav of THIS pane)
@@ -178,7 +178,7 @@ struct WebLeafView: View {
         .onChange(of: specAddress) { _, address in model.syncExternal(address: address) }
     }
 
-    // MARK: - Focus-scoped browser keyboard shortcuts (otty: ⌘[ ⌘] ⌘R ⌘⇧R ⌘F)
+    // MARK: - Focus-scoped browser keyboard shortcuts (⌘[ ⌘] ⌘R ⌘⇧R ⌘F)
 
     /// The documented web-pane chords (`spec/user-interface__files-and-links.md` › Web Browser Pane) as
     /// hidden, focus-gated `.keyboardShortcut` buttons. They are SCOPED to this pane via `.disabled(!isFocused)`
@@ -213,10 +213,10 @@ struct WebLeafView: View {
     // MARK: - Address-bar chrome (matches web-broswer.png: ✕ ‹ › ↻ [address] ⬆)
 
     private var addressChrome: some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             // Leftmost ✗ (web-broswer.png): STOP the in-flight load while the page is loading, else CLOSE the
             // pane — the browser stop/close idiom (same glyph, role flips with `model.isLoading`).
-            OttyPlateButton(
+            SlatePlateButton(
                 symbol: .xmark,
                 help: model.isLoading ? "Stop loading" : "Close pane",
             ) {
@@ -225,34 +225,34 @@ struct WebLeafView: View {
             // Back / Forward drive the live page through the `WebPaneController` the production WebPaneView
             // publishes; enabled by its `canGoBack` / `canGoForward` history (greyed when there is no live
             // view or at the ends of history — faithful to web-broswer.png).
-            OttyPlateButton(symbol: .chevronLeft, help: "Back") { model.goBack() }
+            SlatePlateButton(symbol: .chevronLeft, help: "Back") { model.goBack() }
                 .disabled(!model.canGoBack)
-            OttyPlateButton(symbol: .chevronRight, help: "Forward") { model.goForward() }
+            SlatePlateButton(symbol: .chevronRight, help: "Forward") { model.goForward() }
                 .disabled(!model.canGoForward)
-            OttyPlateButton(symbol: .arrowClockwise, help: "Reload") { model.reload(onCommit: commit) }
+            SlatePlateButton(symbol: .arrowClockwise, help: "Reload") { model.reload(onCommit: commit) }
             addressField
-            OttyPlateButton(symbol: .squareAndArrowUp, help: "Open in browser") { openExternally() }
+            SlatePlateButton(symbol: .squareAndArrowUp, help: "Open in browser") { openExternally() }
         }
-        .padding(.horizontal, Otty.Metric.space2)
-        .padding(.vertical, Otty.Metric.space1)
-        .background(Otty.Surface.window)
+        .padding(.horizontal, Slate.Metric.space2)
+        .padding(.vertical, Slate.Metric.space1)
+        .background(Slate.Surface.window)
     }
 
     private var addressField: some View {
         TextField("Search or enter address", text: addressBinding)
             .textFieldStyle(.plain)
-            .font(.system(size: Otty.Typeface.body))
-            .foregroundStyle(Otty.Text.primary)
-            .tint(Otty.State.accent) // the active caret is the accent colour (otty parity)
+            .font(.system(size: Slate.Typeface.body))
+            .foregroundStyle(Slate.Text.primary)
+            .tint(Slate.State.accent) // the active caret is the accent colour
             .lineLimit(1)
             .truncationMode(.middle)
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, Otty.Metric.space2)
-            .padding(.vertical, Otty.Metric.space1)
-            .background(Otty.Surface.element, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusControl))
+            .padding(.horizontal, Slate.Metric.space2)
+            .padding(.vertical, Slate.Metric.space1)
+            .background(Slate.Surface.element, in: RoundedRectangle(cornerRadius: Slate.Metric.radiusControl))
             .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                    .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                    .strokeBorder(Slate.Line.subtle, lineWidth: Slate.Metric.hairline),
             )
             .onSubmit { _ = model.navigate(onCommit: commit) }
     }
@@ -290,8 +290,8 @@ struct WebLeafView: View {
                 model?.didNavigate(to: url)
                 store.setPaneWebURL(url.absoluteString, for: paneID)
             },
-            // The loaded page's `<title>` promotes into the pane / rail tab label (otty parity): persist it
-            // onto the spec's `lastKnownTitle` (dirty-guarded), which the rail + titlebar resolve ahead of the
+            // The loaded page's `<title>` promotes into the pane / rail tab label: persist it onto the
+            // spec's `lastKnownTitle` (dirty-guarded), which the rail + titlebar resolve ahead of the
             // static "Web" default. Captures the store + paneID locals (not `self`), like `onNavigated`.
             onTitle: { title in store.setPaneWebTitle(title, for: paneID) },
             // The live WebPaneView hands back its navigation controller (and `nil` on teardown); hold it on
@@ -302,28 +302,28 @@ struct WebLeafView: View {
     }
 
     private var placeholder: some View {
-        VStack(spacing: Otty.Metric.space3) {
+        VStack(spacing: Slate.Metric.space3) {
             Image(systemSymbol: .globe)
-                .font(.system(size: Otty.Typeface.display, weight: .regular))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.display, weight: .regular))
+                .foregroundStyle(Slate.Text.secondary)
             Text("web pane")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
             Text(
                 "The built-in browser (WKWebView) is registered by the app target. The headless build renders this panel.",
             )
-            .font(.system(size: Otty.Typeface.footnote))
-            .foregroundStyle(Otty.Text.secondary)
+            .font(.system(size: Slate.Typeface.footnote))
+            .foregroundStyle(Slate.Text.secondary)
             .multilineTextAlignment(.center)
             if let address = model.requestedURL?.absoluteString {
                 Text(address)
-                    .font(.system(size: Otty.Typeface.footnote).monospaced())
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote).monospaced())
+                    .foregroundStyle(Slate.Text.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
         }
-        .padding(Otty.Metric.space4)
+        .padding(Slate.Metric.space4)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(NativePaneColor.terminalBackground)
     }

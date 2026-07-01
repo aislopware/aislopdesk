@@ -3,8 +3,8 @@
 // macOS: an `NSViewControllerRepresentable` (`WorkspaceSplitRepresentable`) owning an
 // `AislopdeskSplitViewController` (an `NSSplitViewController` with sidebar | content | inspector items,
 // each an `NSHostingController` over a SwiftUI column). Modelled on CodeEdit's split shell. The window runs
-// `.windowStyle(.hiddenTitleBar)` — there is NO system unified toolbar; otty's own hover-reveal titlebar
-// (`OttyTitlebar`, hosted as a top overlay inside `ContentColumn`) IS the chrome (sidebar/Details toggles,
+// `.windowStyle(.hiddenTitleBar)` — there is NO system unified toolbar; the workspace's own hover-reveal
+// titlebar (`SlateTitlebar`, hosted as a top overlay inside `ContentColumn`) IS the chrome (sidebar/Details toggles,
 // "New Tab", the centred title menu). iOS: a stock `NavigationSplitView` over the same three columns + its
 // own toolbar.
 //
@@ -40,7 +40,7 @@ public struct WorkspaceRootView: View {
     /// menu can surface the "Prevent Sleep While Processing" flag (Batch 4). Cross-platform (was iOS-only). `nil`
     /// (no scene injection / a preview) → the gear presents nothing and the Prevent-Sleep row is hidden.
     @Environment(\.preferencesStore) private var preferencesStore
-    /// E19/A18 (WI-7): the live otty `auto-hide-tabs-panel` mode. Read via `@Default` (NOT the plain
+    /// E19/A18 (WI-7): the live `auto-hide-tabs-panel` mode. Read via `@Default` (NOT the plain
     /// ``SettingsKey/autoHideTabsPanel`` accessor) so SwiftUI re-evaluates the body — and thus re-fires the
     /// `.onChange(of: autoHideTabsPanel)` observer below — when the user flips the Settings picker. Drives the
     /// vertical TABS panel auto-hide together with the active session's tab count (see ``applyAutoHide``).
@@ -90,13 +90,13 @@ public struct WorkspaceRootView: View {
     #endif
     /// Installs the Details-panel toggle on the app-level keybinding dispatcher. The dispatcher is built at
     /// app `init` (before this view's `chrome` exists), so on appear the root view hands it
-    /// `chrome.toggleInspector` and ⌘⇧R (otty's Toggle Details Panel) routes through the SAME NSEvent monitor
+    /// `chrome.toggleInspector` and ⌘⇧R (the Toggle Details Panel chord) routes through the SAME NSEvent monitor
     /// that owns every other chord. `nil` (the default / iOS / tests) leaves the chord a graceful no-op. A
     /// plain closure keeps `WorkspaceKeyDispatcher` internal (no public-API widening).
     private let installDetailsToggle: ((@escaping () -> Void) -> Void)?
     /// Installs the sidebar / Tabs-panel toggle on the app-level keybinding dispatcher (same late-wiring story
-    /// as `installDetailsToggle`): on appear the root view hands it `chrome.toggleSidebar` so ⌘⇧L (otty's
-    /// Toggle Tabs Panel) flips the LIVE `chrome.sidebarCollapsed` the native split reads — not the legacy
+    /// as `installDetailsToggle`): on appear the root view hands it `chrome.toggleSidebar` so ⌘⇧L (the
+    /// Toggle Tabs Panel chord) flips the LIVE `chrome.sidebarCollapsed` the native split reads — not the legacy
     /// `store.sidebarCollapsed` (which nothing reads on macOS). `nil` (the default / iOS / tests) is a no-op.
     private let installSidebarToggle: ((@escaping () -> Void) -> Void)?
     /// Installs the four `Details: *` jump commands' tab-selector on the app-level keybinding dispatcher
@@ -155,15 +155,15 @@ public struct WorkspaceRootView: View {
 
     public var body: some View {
         #if os(macOS)
-        // No system unified toolbar / header — the window runs `.hiddenTitleBar` and otty's hover-reveal
-        // titlebar (`OttyTitlebar`, hosted inside `ContentColumn`) IS the chrome.
+        // No system unified toolbar / header — the window runs `.hiddenTitleBar` and its own hover-reveal
+        // titlebar (`SlateTitlebar`, hosted inside `ContentColumn`) IS the chrome.
         WorkspaceSplitRepresentable(
             store: store, connection: connection, chrome: chrome, details: details, overlay: overlay,
             preferences: preferencesStore,
         )
         .ignoresSafeArea()
         // E12 WI-6 (pin): a PINNED composer is promoted OUT of its pane subtree to a WINDOW-level bottom
-        // mount, so it rides along across tab switches (the otty pin). Mounted UNDER the overlay host (the
+        // mount, so it rides along across tab switches (the pin behaviour). Mounted UNDER the overlay host (the
         // palette / toasts stay above it). Self-hides when nothing is pinned / when the pinned composer is
         // floating. `store.pinnedComposer` resolves it across ALL live panes, so a tab switch never tears
         // it down.
@@ -189,7 +189,7 @@ public struct WorkspaceRootView: View {
         .background {
             ComposerFloatPanelHost(floating: store.floatingComposer)
         }
-        // E12 WI-6: the otty "pinned state is persisted" rule is honoured PER-PANE — `LivePaneSession.adopt`
+        // E12 WI-6: the "pinned state is persisted" rule is honoured PER-PANE — `LivePaneSession.adopt`
         // restores each pane's pin (keyed by its stable `PaneID`) on launch and wires `onPinnedChange` to
         // persist later toggles. No window-level write here: a single global Bool could not say WHICH pane
         // was pinned.
@@ -313,7 +313,7 @@ public struct WorkspaceRootView: View {
         installDetailsToggle? { [chrome] in chrome.toggleInspector() }
         installSidebarToggle? { [chrome] in chrome.toggleSidebar() }
         // The four `Details: *` jump commands (ES-E9-5): set the shared tab selection AND reveal the panel
-        // (otty opens a hidden Details panel on a tab jump). `[chrome, details]` captures the SAME instances
+        // (a hidden Details panel is opened when the jump targets it). `[chrome, details]` captures the SAME instances
         // the representable + the hosted `InspectorColumn` read, so a routed `selectDetailsTab(_:)` switches
         // the visible tab and un-collapses the inspector split item in one shot.
         installSelectDetailsTab? { [chrome, details] tab in
@@ -442,7 +442,7 @@ public struct WorkspaceRootView: View {
     ///
     /// The decision the `.auto` opinion encodes flips ONLY across the 1↔>1 tab-count regime (`desired == tabCount
     /// <= 1`), so the actuation is gated on a regime EDGE — the first application (`lastAutoHideCollapsed == nil`)
-    /// or a `desired` that differs from the last value the policy itself drove. ON that edge the otty default-state
+    /// or a `desired` that differs from the last value the policy itself drove. ON that edge the default-state
     /// opinion ("hidden when only one tab") legitimately re-asserts: clear any manual override and actuate. WITHIN
     /// a regime (an UNRELATED tab open/close — e.g. 2→3 tabs — that does not flip `desired`) a manual ⌘⇧L is
     /// honored and NEVER fought (E19-carryovers WI-7: "do NOT fight a manual ⌘⇧L"). The `!= desired` write guard
@@ -522,7 +522,7 @@ public struct WorkspaceRootView: View {
 
 #if os(macOS)
 /// E12 WI-6 — the WINDOW-level mount for a PINNED composer (the architecturally non-trivial "promote out of
-/// the pane subtree"). otty's pin keeps the composer visible across ALL tab switches; here it mounts as a
+/// the pane subtree"). Pinning keeps the composer visible across ALL tab switches; here it mounts as a
 /// bottom strip ABOVE the AppKit split (a SwiftUI `.overlay` composes over the
 /// `NSViewControllerRepresentable`). `store.pinnedComposer` resolves the pinned composer across EVERY live
 /// pane, so switching to another tab never tears it down — the bar rides along. Hidden when nothing is
@@ -544,10 +544,10 @@ struct PinnedComposerBar: View {
             .frame(maxWidth: .infinity)
             .background(NativePaneColor.terminalBackground)
             .overlay(alignment: .top) {
-                Rectangle().fill(Otty.Line.divider).frame(height: Otty.Metric.hairline)
+                Rectangle().fill(Slate.Line.divider).frame(height: Slate.Metric.hairline)
             }
             .transition(.move(edge: .bottom).combined(with: .opacity))
-            .animation(Otty.Anim.reveal, value: composer.isVisible)
+            .animation(Slate.Anim.reveal, value: composer.isVisible)
         }
     }
 

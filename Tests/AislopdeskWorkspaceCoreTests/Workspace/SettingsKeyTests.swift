@@ -191,7 +191,7 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertEqual(SettingsKey.commandBadgeGates, .allOn, "the resolved global command gates default all-on")
         // The resolved bundle the notifier reads equals the spec baseline (the two default sources agree).
         XCTAssertEqual(SettingsKey.notificationSettings, NotificationSettings())
-        // Round-trip the enum from its persisted otty raw value + repair a stale value.
+        // Round-trip the enum from its persisted raw value + repair a stale value.
         UserDefaults.standard.set("tab-unfocused", forKey: SettingsKey.notifyWhileForegroundKey)
         XCTAssertEqual(SettingsKey.notifyWhileForeground, .tabUnfocused)
         UserDefaults.standard.set("garbage-from-a-future-version", forKey: SettingsKey.notifyWhileForegroundKey)
@@ -203,7 +203,7 @@ final class SettingsKeyTests: XCTestCase {
 
     /// The new E14 wire key strings are the single source of truth shared with every `@Default`/`@AppStorage`
     /// consumer + the All-Settings catalog + the WI-7 navigator — a rename that would split-brain them fails
-    /// this pin. The `notifyWhileForeground` enum raw values are the otty config tokens.
+    /// this pin. The `notifyWhileForeground` enum raw values are the declared persisted config tokens.
     func testNotificationKeyStringsAreStable() {
         XCTAssertEqual(SettingsKey.notifyOnFinish, "notifications.onFinish")
         XCTAssertEqual(SettingsKey.notifyOnError, "notifications.onError")
@@ -237,7 +237,7 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertEqual(SettingsKey.replayModeFiles, .askOnce, "opened files default to Ask Once")
         XCTAssertFalse(SettingsKey.snippetAutoExpandEnabled, "at-prompt auto-expand defaults OFF (opt-in)")
 
-        // Round-trip each mode from its persisted otty raw value.
+        // Round-trip each mode from its persisted raw value.
         UserDefaults.standard.set(RecipeReplayMode.manually.rawValue, forKey: SettingsKey.replayModeSavedKey)
         XCTAssertEqual(SettingsKey.replayModeSaved, .manually)
         UserDefaults.standard.set(RecipeReplayMode.skip.rawValue, forKey: SettingsKey.replayModeFilesKey)
@@ -256,7 +256,7 @@ final class SettingsKeyTests: XCTestCase {
 
     /// The E16 key strings are the single source of truth shared with every `@Default` consumer + the WI-7
     /// Recipes navigator — a rename that would split-brain the picker from the persisted value fails this pin.
-    /// The ``RecipeReplayMode`` raw values are the otty config tokens.
+    /// The ``RecipeReplayMode`` raw values are the declared persisted config tokens.
     func testRecipeReplayKeyStringsAreStable() {
         XCTAssertEqual(SettingsKey.replayModeSavedKey, "recipes.replayMode.saved")
         XCTAssertEqual(SettingsKey.replayModeFilesKey, "recipes.replayMode.files")
@@ -331,10 +331,10 @@ final class SettingsKeyTests: XCTestCase {
     func testOnLaunchDefaultsToRestore() {
         // Default when unset.
         XCTAssertEqual(SettingsKey.onLaunch, .restoreLastSession)
-        // Round-trips the alternative case from its persisted otty raw value.
+        // Round-trips the alternative case from its persisted raw value.
         UserDefaults.standard.set("new-window", forKey: SettingsKey.onLaunchKey)
         XCTAssertEqual(SettingsKey.onLaunch, .newWindow)
-        // The case's raw value matches the otty config string.
+        // The case's raw value matches the declared config string.
         XCTAssertEqual(OnLaunchBehavior.newWindow.rawValue, "new-window")
         XCTAssertEqual(OnLaunchBehavior.restoreLastSession.rawValue, "restore-last-session")
         // A stale / hostile persisted raw value repairs to the default rather than trapping.
@@ -346,7 +346,7 @@ final class SettingsKeyTests: XCTestCase {
     /// fire-time `Defaults.Keys` flags, not typed-model fields → golden-safe). E8 owns the behaviour; this
     /// pins the persisted defaults + round-trip so the Controls picker is faithful today.
     func testNewControlsToggleDefaults() {
-        // Declared defaults (mirror the otty Controls config values).
+        // Declared defaults for the Controls config values.
         XCTAssertFalse(SettingsKey.copyOnSelectEnabled, "copy-on-select defaults OFF")
         XCTAssertTrue(SettingsKey.trimTrailingSpacesOnCopyEnabled, "trim trailing spaces defaults ON")
         XCTAssertTrue(SettingsKey.pasteProtectionEnabled, "paste protection defaults ON")
@@ -403,7 +403,7 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertFalse(SettingsKey.smoothScrollEnabled)
     }
 
-    /// The new enum-valued knobs default to the otty value when unset, round-trip the alternative case via
+    /// The new enum-valued knobs default to the declared value when unset, round-trip the alternative case via
     /// the persisted raw string (`Defaults.PreferRawRepresentable` → `RawRepresentableBridge`), and repair a
     /// stale / hostile persisted raw value to the default rather than trapping (the non-failable
     /// `init(rawValue:)`). Read through the public typed accessors + the raw `UserDefaults` the
@@ -498,7 +498,7 @@ final class SettingsKeyTests: XCTestCase {
 
     /// The new E10 wire key strings are the single source of truth shared with every `@Default`/`@AppStorage`
     /// consumer + the All-Settings catalog + the (E10 WI-5/6/8/9) fire-sites — a rename that would split-brain
-    /// the Settings UI from the fire-sites fails this pin. The enum raw values are the otty config tokens
+    /// the Settings UI from the fire-sites fails this pin. The enum raw values are the declared config tokens
     /// (shared with the host-route dispatch + `docs/20-wire-protocol.md`).
     func testE10LinkKeyStringsAreStable() {
         XCTAssertEqual(SettingsKey.linkDetection, "controls.linkDetection")
@@ -582,7 +582,7 @@ final class SettingsKeyTests: XCTestCase {
 
     // MARK: - E19/A29 + A18: window-size + auto-hide-tabs-panel keys (surfaced by the Appearance WI-6 rows)
 
-    /// The E19 window-size + auto-hide keys read their declared otty defaults when unset (`.remember`, 80, 24,
+    /// The E19 window-size + auto-hide keys read their declared defaults when unset (`.remember`, 80, 24,
     /// 1000, 600, `.default`), round-trip a written value via the persisted raw, and a stale / hostile persisted
     /// ENUM raw repairs to the default rather than trapping (the `Defaults.PreferRawRepresentable` bridge — a
     /// failable `init(rawValue:)` would otherwise return nil; the bridge falls back to the key default). The
@@ -619,8 +619,8 @@ final class SettingsKeyTests: XCTestCase {
 
     /// The new E19 wire key strings are the single source of truth shared with every `@Default`/`@AppStorage`
     /// consumer (the Appearance Window + Auto Hide Tabs Panel rows, the WI-7 auto-hide glue, the macOS NSWindow
-    /// size glue) — a rename that would split-brain them fails this pin. The enum raw values are the otty config
-    /// tokens (`window-size` = `remember`/`grid`/`frame`; `auto-hide-tabs-panel` = `default`/`always`/`auto`).
+    /// size glue) — a rename that would split-brain them fails this pin. The enum raw values are the declared
+    /// config tokens (`window-size` = `remember`/`grid`/`frame`; `auto-hide-tabs-panel` = `default`/`always`/`auto`).
     func testWindowSizeAndAutoHideKeyStringsAreStable() {
         XCTAssertEqual(SettingsKey.windowSizeKey, "window.size")
         XCTAssertEqual(SettingsKey.windowColsKey, "window.cols")

@@ -113,7 +113,7 @@ final class ComposerModelTests: XCTestCase {
     // MARK: ES-E12-4 (WI-6) — sending / cancelling a FLOATING composer docks it back
 
     func testSendDraftDocksFloatBack() {
-        // otty: "sending docks the float back into the pane." A real send clears isFloating so the
+        // Sending docks the float back into the pane. A real send clears isFloating so the
         // window-level / panel presentation closes. REVERT-TO-CONFIRM-FAIL: without the `isFloating = false`
         // line in `sendDraft`, this asserts true.
         let model = ComposerModel(send: { _ in })

@@ -3,13 +3,13 @@ import Foundation
 
 // E20 WI-5 — `aislopdesk jump` path resolution (PURE).
 //
-// The headless core of the `jump [query]` / `--no-cd` command (otty `reference__cli.md`): resolve a
+// The headless core of the `jump [query]` / `--no-cd` command (see `docs/ui-shell/spec/reference__cli.md`): resolve a
 // target directory over the client's frecency database. No I/O, no store, no socket, no SwiftUI — the
 // running app's `WorkspaceControlBackend` feeds it the frecency entries + the focused pane's cached
 // OSC-7 cwd + the `$HOME` path + the persisted last-jump-source, then applies the result (sends
 // `cd <path>` VERBATIM unless `--no-cd`). Unit-tested in isolation (`JumpResolverTests`).
 //
-// otty semantics (faithful to `reference__cli.md`):
+// Jump semantics (faithful to `docs/ui-shell/spec/reference__cli.md`):
 //   - **With a query** → the most-frecent visited folder whose path CONTAINS the query (case-insensitive
 //     substring), ranked by the shared ``FolderFrecency`` scorer. No match → `nil` (the caller errors).
 //     A query jump does NOT touch the `$HOME` toggle state.

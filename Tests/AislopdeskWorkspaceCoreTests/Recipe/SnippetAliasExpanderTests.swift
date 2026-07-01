@@ -4,7 +4,7 @@ import XCTest
 
 // MARK: - SnippetAliasExpanderTests (E16 ES-E16-4 — at-prompt alias auto-expansion engine)
 
-/// Pins the PURE ``SnippetAliasExpander`` brain that drives otty's "typing an alias at the shell prompt expands
+/// Pins the PURE ``SnippetAliasExpander`` brain that drives the "typing an alias at the shell prompt expands
 /// it" feature (`textsnippet-apply.gif`). Everything is headless — no view, no NSWindow, no surface: the engine
 /// is fed a prompt mark + outbound bytes and asked for the expansion to send. The wiring into the live input
 /// path (`TerminalViewModel.sendInput` / `ingestOutput` / `expandSnippetAlias`) is pinned by

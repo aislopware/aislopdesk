@@ -87,7 +87,7 @@ public extension WorkspaceStore {
     }
 
     /// TOGGLES MANUAL Secure Keyboard Entry over the ACTIVE pane (E17 ES-E17-4 / WI-7 — the
-    /// `.secureKeyboardEntry` action / otty Edit ▸ Secure Keyboard Entry / the palette term). Flips the active
+    /// `.secureKeyboardEntry` action / the Edit ▸ Secure Keyboard Entry menu item / the palette term). Flips the active
     /// terminal model's ``TerminalViewModel/manualSecureInput``, whose `didSet` refreshes the
     /// ``TerminalViewModel/secureInputActive`` pill mirror and fires `onManualSecureInputChanged` — the macOS
     /// leaf forwards that to the pane's ``SecureKeyboardEntryController`` to engage / disengage process-global

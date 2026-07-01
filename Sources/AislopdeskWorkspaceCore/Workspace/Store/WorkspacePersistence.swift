@@ -202,9 +202,9 @@ public struct WorkspacePersistence: @unchecked Sendable {
         return result
     }
 
-    // MARK: On-Launch behaviour (O1 — the otty `On Launch` general setting → actual launch behaviour)
+    // MARK: On-Launch behaviour (O1 — the `On Launch` general setting → actual launch behaviour)
 
-    /// Resolves the tree the store should seed on launch, honouring the otty `On Launch` general setting
+    /// Resolves the tree the store should seed on launch, honouring the `On Launch` general setting
     /// (``OnLaunchBehavior``, persisted under ``SettingsKey/onLaunchKey``). This is the wiring that makes the
     /// General → On Launch picker a LIVE control instead of a dead accessor:
     ///

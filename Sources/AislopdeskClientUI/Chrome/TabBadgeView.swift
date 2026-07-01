@@ -1,8 +1,8 @@
 // TabBadgeView — the single trailing status badge on a sidebar tab row (E6 WI-4). Maps a pure
-// ``TabBadgeKind`` to its otty glyph via ``StatusPresentation/tabBadge(_:)``: a gray indeterminate spinner
+// ``TabBadgeKind`` to its glyph via ``StatusPresentation/tabBadge(_:)``: a gray indeterminate spinner
 // (running), a small filled accent dot (the settled `finished` marker), or a tinted SF-symbol fill
 // (completed / error / awaiting-input / caffeinate / sudo). One glyph, fixed ~16pt box, right-aligned per
-// `docs/otty-clone/screenshots/tab-badge.png`.
+// `docs/ui-shell/screenshots/tab-badge.png`.
 //
 // Hang-safety (CLAUDE.md rule #6): a badge NEVER instantiates an `SCStream` / `VTCompressionSession` /
 // `VTDecompressionSession` / Metal device — the "spinner" is a plain SwiftUI `ProgressView`, nothing more.
@@ -16,7 +16,7 @@ import SwiftUI
 struct TabBadgeView: View {
     let kind: TabBadgeKind
 
-    /// otty's trailing badge column is ~16px (`tab-badge.png`); the glyph centers in this fixed box so rows
+    /// The trailing badge column is ~16px (`tab-badge.png`); the glyph centers in this fixed box so rows
     /// with different badge shapes keep a stable trailing edge.
     private static let side: CGFloat = 16
 
@@ -35,12 +35,12 @@ struct TabBadgeView: View {
             ProgressView()
                 .progressViewStyle(.circular)
                 .controlSize(.small)
-                .tint(Otty.Text.secondary)
+                .tint(Slate.Text.secondary)
         case let .dot(color):
-            OttyStatusDot(color: color, size: 8)
+            SlateStatusDot(color: color, size: 8)
         case let .symbol(name, tint):
             Image(systemName: name)
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
                 .foregroundStyle(tint)
         }
     }

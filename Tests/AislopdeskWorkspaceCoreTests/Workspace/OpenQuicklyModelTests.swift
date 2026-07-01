@@ -3,7 +3,7 @@ import Foundation
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E11 WI-3 (ES-E11-1..4): the PURE Open-Quickly model — the otty `⌘⇧O` multi-source switcher's taxonomy +
+/// E11 WI-3 (ES-E11-1..4): the PURE Open-Quickly model — the `⌘⇧O` multi-source switcher's taxonomy +
 /// merge/rank/section/cycle/quick-pick logic, with zero SwiftUI/store coupling. These pin:
 /// - the pill set (SSH is a product cut; Recipes is now wired — E16 complete);
 /// - the per-filter pill metadata (label / icon / picker-chord) + the `.all` default;
@@ -91,8 +91,8 @@ final class OpenQuicklyModelTests: XCTestCase {
     /// REVERT-TO-CONFIRM-FAIL: removing the `.recipes` source filter from the builder yields an empty
     /// `recipeItems(from:)` result or a nil-kind row — failing the `kind == .recipe` assertion.
     func testRecipesItemsBuilderProducesRecipeKindRows() {
-        let url1 = URL(fileURLWithPath: "/tmp/my-layout.ottyrecipe")
-        let url2 = URL(fileURLWithPath: "/tmp/broken.ottyrecipe") // nil recipe → dropped
+        let url1 = URL(fileURLWithPath: "/tmp/my-layout.aislopdeskrecipe")
+        let url2 = URL(fileURLWithPath: "/tmp/broken.aislopdeskrecipe") // nil recipe → dropped
 
         // Simulate two RecipeFile entries: one valid, one malformed.
         let validFile = RecipeLibrary.RecipeFile(
@@ -120,7 +120,7 @@ final class OpenQuicklyModelTests: XCTestCase {
         XCTAssertEqual(OpenQuicklyFilter.pickerPills.first, .all)
     }
 
-    func testPickerChordKeysMatchOttySpec() {
+    func testPickerChordKeysMatchSlateSpec() {
         XCTAssertEqual(OpenQuicklyFilter.all.pickerChordKey, "0")
         XCTAssertEqual(OpenQuicklyFilter.opened.pickerChordKey, "w")
         XCTAssertEqual(OpenQuicklyFilter.recent.pickerChordKey, "r")
@@ -408,15 +408,15 @@ final class OpenQuicklyModelTests: XCTestCase {
     // MARK: - Folders builder (ES-E11-4)
 
     func testFolderItemsMapNameAndFullPath() {
-        let entries = [FolderEntry(path: "/Users/abc/Workplace/otty", accessCount: 3, lastAccess: t0)]
+        let entries = [FolderEntry(path: "/Users/abc/Workplace/myproject", accessCount: 3, lastAccess: t0)]
         let items = OpenQuicklyModel.folderItems(from: entries)
         XCTAssertEqual(items.first?.kind, .folder)
-        XCTAssertEqual(items.first?.title, "otty", "the display title is the last path component")
-        XCTAssertEqual(items.first?.subtitle, "/Users/abc/Workplace/otty")
-        XCTAssertEqual(items.first?.searchText, "/Users/abc/Workplace/otty", "the full path is the fuzzy haystack")
+        XCTAssertEqual(items.first?.title, "myproject", "the display title is the last path component")
+        XCTAssertEqual(items.first?.subtitle, "/Users/abc/Workplace/myproject")
+        XCTAssertEqual(items.first?.searchText, "/Users/abc/Workplace/myproject", "the full path is the fuzzy haystack")
         XCTAssertEqual(items.first?.timestamp, t0)
         if case let .openFolder(path) = items.first?.act {
-            XCTAssertEqual(path, "/Users/abc/Workplace/otty")
+            XCTAssertEqual(path, "/Users/abc/Workplace/myproject")
         } else {
             XCTFail("a folder row opens its path")
         }

@@ -1,10 +1,10 @@
 import AislopdeskProtocol
 import Foundation
 
-// `aislopdesk watch <cmd>` (otty-clone E20, WI-7) — the PURE byte vocabulary the watch wrapper
+// `aislopdesk watch <cmd>` (ui-shell E20, WI-7) — the PURE byte vocabulary the watch wrapper
 // prints to its controlling terminal so the host's OSC sniffer turns it into a tab spinner/badge.
 //
-// otty's `watch` shows an indeterminate spinner while the wrapped command runs, then a success or
+// `watch` shows an indeterminate spinner while the wrapped command runs, then a success or
 // error badge on exit, and (unless `-q`/`--quiet`) posts a "Notify on Watch Finish" desktop
 // notification. aislopdesk already parses the ConEmu `OSC 9;4` progress protocol on the host
 // (`HostOutputSniffer` → `ProgressOSCParser` → `ProgressState`) and the iTerm2 free-text `OSC 9`
@@ -13,11 +13,11 @@ import Foundation
 // `main.swift` is spawning the subprocess and writing these bytes (hang-safety rule: no subprocess
 // in a test).
 //
-// Why states 3 / 0 / 2 and not otty's `9;4;5;<exit>;watch`: aislopdesk's wire deliberately does NOT
-// carry the `5` (finished-with-exit) progress subtype — state ≥ 4 is dropped by `ProgressOSCParser`,
-// and the OSC-133-D exit mark already carries the exit code (see `ProgressState` doc). So the BADGE
-// rides the canonical indeterminate→clear/error states, and the watch-finish NOTIFICATION rides the
-// existing free-text `OSC 9` desktop-notification path (gated CLI-side by `-q`).
+// Why states 3 / 0 / 2 and not a `9;4;5;<exit>;watch` finished-with-exit form: aislopdesk's wire
+// deliberately does NOT carry the `5` (finished-with-exit) progress subtype — state ≥ 4 is dropped by
+// `ProgressOSCParser`, and the OSC-133-D exit mark already carries the exit code (see `ProgressState`
+// doc). So the BADGE rides the canonical indeterminate→clear/error states, and the watch-finish
+// NOTIFICATION rides the existing free-text `OSC 9` desktop-notification path (gated CLI-side by `-q`).
 
 public enum WatchProgress {
     // OSC framing bytes.

@@ -1,18 +1,18 @@
 import Foundation
 
-// MARK: - RecipeTOMLCodec (`.ottyrecipe` ⇄ Recipe)
+// MARK: - RecipeTOMLCodec (`.aislopdeskrecipe` ⇄ Recipe)
 
-/// The hand-rolled `.ottyrecipe` TOML codec: ``emit(_:)`` serialises a ``Recipe`` to plain TOML and
-/// ``parse(_:)`` reads an untrusted `.ottyrecipe` file back into a ``Recipe`` (or `nil`).
+/// The hand-rolled `.aislopdeskrecipe` TOML codec: ``emit(_:)`` serialises a ``Recipe`` to plain TOML and
+/// ``parse(_:)`` reads an untrusted `.aislopdeskrecipe` file back into a ``Recipe`` (or `nil`).
 ///
 /// **WHY hand-rolled (no TOML dependency).** Like ``ThemeTOMLParser`` (whose discipline this follows but
-/// whose flat reader can NOT do recipes' arrays-of-tables), `.ottyrecipe` needs only a small, well-defined
+/// whose flat reader can NOT do recipes' arrays-of-tables), `.aislopdeskrecipe` needs only a small, well-defined
 /// slice of TOML: a `[recipe]` table plus the two arrays-of-tables `[[window.tabs]]` and
 /// `[[window.tabs.panes]]`, with double-/single-quoted strings, integers, floats, and string arrays. Pulling
 /// in a full TOML library across the `#if os(iOS)` slice is unjustified weight. This is a pure, headless,
 /// `String` ⇄ struct transform with NO I/O (the file engine `RecipeLibrary` owns disk).
 ///
-/// **VALIDATE-THEN-DROP (CLAUDE.md §3).** A `.ottyrecipe` is an untrusted user/teammate file and — because
+/// **VALIDATE-THEN-DROP (CLAUDE.md §3).** A `.aislopdeskrecipe` is an untrusted user/teammate file and — because
 /// its `commands` drive shell replay — is handled with the same discipline as a hostile UDP datagram: any
 /// malformed shape DROPS the whole file (`nil`), never traps. The structure is bounded BEFORE allocating
 /// (``maxTabs`` / ``maxPanesPerTab``) so a pathological file can't exhaust memory; `size` is clamped to
@@ -27,7 +27,7 @@ public enum RecipeTOMLCodec {
 
     // MARK: Emit
 
-    /// Serialise `recipe` to plain TOML matching the documented `.ottyrecipe` shape (`[recipe]` →
+    /// Serialise `recipe` to plain TOML matching the documented `.aislopdeskrecipe` shape (`[recipe]` →
     /// `[[window.tabs]]` → `[[window.tabs.panes]]`). Strings are double-quoted with minimal escaping;
     /// optional pane fields are omitted when absent so a Layout-Only recipe stays clean. Ends with a
     /// trailing newline. `emit → parse` is an identity over a valid ``Recipe``.
@@ -85,7 +85,7 @@ public enum RecipeTOMLCodec {
 
     // MARK: Parse
 
-    /// Parse `text` (an untrusted `.ottyrecipe` file) into a validated ``Recipe``, or `nil` when the file is
+    /// Parse `text` (an untrusted `.aislopdeskrecipe` file) into a validated ``Recipe``, or `nil` when the file is
     /// malformed / incomplete (validate-then-drop). `nil` cases: missing `[recipe]`, missing / empty `name`,
     /// missing / unknown `scope`, any broken line, an unknown table / array-of-tables, panes declared before
     /// any tab, or a structure exceeding ``maxTabs`` / ``maxPanesPerTab``.

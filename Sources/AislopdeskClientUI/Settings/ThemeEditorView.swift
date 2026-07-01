@@ -1,12 +1,12 @@
-// ThemeEditorView — the otty Appearance → Theme editor (E15 WI-7).
+// ThemeEditorView — the Appearance → Theme editor (E15 WI-7).
 //
-// A faithful clone of `docs/otty-clone/screenshots/dark-mode-theme.png` + `import-theme.png`: a live
+// Follows `docs/ui-shell/screenshots/dark-mode-theme.png` + `import-theme.png`: a live
 // mini-preview strip, the SWATCH GRID (the big foreground/background pair on the left + the 16 ANSI colour
 // dots in two rows on the right), the CHROME-REGION label groups (Window / Container / Panel / Sidebar /
 // Titlebar / Tab / Accents / Cursor / Selection), then the Duplicate / Edit Selected Theme / Open Themes
 // Folder buttons and the "Import Theme…" dropdown (5 formats) + open panel.
 //
-// VERTICAL-TABS-ONLY (E15 binding constraint): otty's `dark-mode-theme.png` shows a "Tabbar" swatch group.
+// VERTICAL-TABS-ONLY (E15 binding constraint): `dark-mode-theme.png` shows a "Tabbar" swatch group.
 // aislopdesk is vertical-tabs-only by deliberate product decision (no horizontal/top tab strip), so the
 // "Tabbar" region is OMITTED here — its chrome folds into the vertical-rail Sidebar/Tab regions, which we
 // keep. A future reviewer must NOT read the missing Tabbar group as a gap to backfill.
@@ -14,15 +14,15 @@
 // EDIT MODEL: the swatch grid is a read-only DISPLAY of the ACTIVE theme cross-platform. On macOS, a CUSTOM
 // theme can be edited in place — "Edit Selected Theme" reveals `ColorPicker`s over the active custom theme's
 // ``ThemeDocument`` (reusing the `CursorColorHex` / `Color(cursorHex:)` glue from `CursorPreviewView`), and
-// each edit writes the `.ottytheme` file back, re-scans the catalog, and re-resolves the active theme so the
+// each edit writes the `.aislopdesktheme` file back, re-scans the catalog, and re-resolves the active theme so the
 // chrome + terminal cells reflect the change live. A BUILT-IN theme is read-only (Edit is disabled) — the
 // user must Duplicate it first (Duplicate materialises the built-in's palette into a fresh custom
-// `.ottytheme`, activates it, and drops straight into edit mode), exactly otty's flow.
+// `.aislopdesktheme`, activates it, and drops straight into edit mode).
 //
 // PLATFORM: every filesystem touch — Duplicate / Edit write-back / Open Themes Folder / Import — is
 // `#if os(macOS)` (custom themes live at `~/.config/aislopdesk/themes/`, which iOS has no analog for). iOS
 // renders the read-only swatch display + a note that editing/import is a macOS affordance today (a native
-// iOS document-picker import is explicitly DEFERRED, per E15 decision #1). Otty.* tokens only (no raw
+// iOS document-picker import is explicitly DEFERRED, per E15 decision #1). Slate.* tokens only (no raw
 // font/radius literals — `scripts/check-ds-leaks.sh`).
 //
 // GOLDEN-SAFE: nothing here reaches `EnvConfig` / the sidecar / the wire. A custom ``ThemeDocument`` is pure
@@ -39,19 +39,19 @@ import AppKit
 import UniformTypeIdentifiers
 #endif
 
-// MARK: - ThemeDocument ← OttyTheme (materialise a built-in theme into an editable custom document)
+// MARK: - ThemeDocument ← SlateTheme (materialise a built-in theme into an editable custom document)
 
 extension ThemeDocument {
-    /// Materialise a built-in (or any resolved) ``OttyTheme`` into a fresh ``ThemeDocument`` for Duplicate:
+    /// Materialise a built-in (or any resolved) ``SlateTheme`` into a fresh ``ThemeDocument`` for Duplicate:
     /// the terminal palette (`foreground`/`background`/the 16-entry ANSI `palette`/`selection`/`cursor`) comes
     /// straight from the theme's already-canonical 6-hex fields, so the copy renders byte-identical TERMINAL
     /// cells. The structural CHROME surfaces (window/sidebar/tab/panel) are intentionally left unset so
-    /// ``OttyTheme/init(document:)`` re-derives them from `background`/`foreground` with the same opacities the
+    /// ``SlateTheme/init(document:)`` re-derives them from `background`/`foreground` with the same opacities the
     /// built-in used (identical chrome geometry). The `accent` IS carried explicitly, though: its derivation
     /// otherwise falls through to the ANSI "blue" palette slot, which on a Monokai filter is ORANGE — so an
     /// unset accent would silently flip a duplicated Monokai's chrome accent from cyan to orange. Pure — no
     /// AppKit — so the Duplicate path is headlessly unit-testable.
-    init(materializing theme: OttyTheme, displayName: String, slug: String) {
+    init(materializing theme: SlateTheme, displayName: String, slug: String) {
         self.init(
             displayName: displayName,
             slug: slug,
@@ -104,48 +104,48 @@ struct ThemeEditorView: View {
             actionRow
             if let statusMessage {
                 Text(statusMessage)
-                    .font(.system(size: Otty.Typeface.small))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.small))
+                    .foregroundStyle(Slate.Text.tertiary)
             }
             #else
             Text("iOS shows the built-in palette read-only. Custom themes are created, edited, and stored on "
                 + "macOS (~/.config/aislopdesk/themes/); a native document-picker import on iOS is a planned "
                 + "addition.")
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
             #endif
         }
     }
 
     // MARK: Live preview strip
 
-    /// A compact terminal mock that re-renders with the (edited) palette — otty's preview row above the swatch
+    /// A compact terminal mock that re-renders with the (edited) palette — a preview row above the swatch
     /// grid. Foreground text + a handful of ANSI-coloured filenames on the theme background.
     private var previewStrip: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             HStack(spacing: 0) {
                 Text("~/project ").foregroundStyle(paletteColor(6))
                 Text("$ ").foregroundStyle(foregroundColor)
                 Text("ls -la").foregroundStyle(foregroundColor)
             }
-            HStack(spacing: Otty.Metric.space3) {
+            HStack(spacing: Slate.Metric.space3) {
                 Text("README.md").foregroundStyle(paletteColor(2))
                 Text("src").foregroundStyle(paletteColor(4))
                 Text("error.log").foregroundStyle(paletteColor(1))
                 Text("TODO").foregroundStyle(paletteColor(3))
             }
         }
-        .font(.system(size: Otty.Typeface.small, design: .monospaced))
-        .padding(.vertical, Otty.Metric.space2)
-        .padding(.horizontal, Otty.Metric.space3)
+        .font(.system(size: Slate.Typeface.small, design: .monospaced))
+        .padding(.vertical, Slate.Metric.space2)
+        .padding(.horizontal, Slate.Metric.space3)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusCard, style: .continuous)
-                .fill(displayColor(displayBackground, fallback: Otty.Surface.card)),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusCard, style: .continuous)
+                .fill(displayColor(displayBackground, fallback: Slate.Surface.card)),
         )
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusCard, style: .continuous)
-                .strokeBorder(Otty.Line.subtle, lineWidth: 1),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusCard, style: .continuous)
+                .strokeBorder(Slate.Line.subtle, lineWidth: 1),
         )
     }
 
@@ -153,12 +153,12 @@ struct ThemeEditorView: View {
 
     /// The big foreground/background pair on the left and the 16 ANSI colour dots (two rows of 8) on the right.
     private var swatchGrid: some View {
-        HStack(alignment: .top, spacing: Otty.Metric.space4) {
-            VStack(spacing: Otty.Metric.space2) {
+        HStack(alignment: .top, spacing: Slate.Metric.space4) {
+            VStack(spacing: Slate.Metric.space2) {
                 bigSwatch(\.foreground, hex: displayForeground)
                 bigSwatch(\.background, hex: displayBackground)
             }
-            VStack(spacing: Otty.Metric.space2) {
+            VStack(spacing: Slate.Metric.space2) {
                 ansiRow(0..<8)
                 ansiRow(8..<16)
             }
@@ -167,7 +167,7 @@ struct ThemeEditorView: View {
     }
 
     private func ansiRow(_ range: Range<Int>) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             ForEach(range, id: \.self) { index in ansiDot(index) }
         }
     }
@@ -180,7 +180,7 @@ struct ThemeEditorView: View {
     /// Selection map to clean ``ThemeDocument`` fields and are editable for a custom theme on macOS.
     private var chromeRegions: some View {
         let theme = activeTheme
-        return VStack(alignment: .leading, spacing: Otty.Metric.space2) {
+        return VStack(alignment: .leading, spacing: Slate.Metric.space2) {
             chromeGroup("Window", [theme.window])
             chromeGroup("Container", [theme.card, theme.cardBorder])
             chromeGroup("Panel", [theme.element, theme.content, theme.border])
@@ -191,7 +191,7 @@ struct ThemeEditorView: View {
                 theme.accent, theme.textPrimary, theme.textSecondary,
                 theme.textTertiary, theme.border, theme.hover,
             ])
-            HStack(spacing: Otty.Metric.space3) {
+            HStack(spacing: Slate.Metric.space3) {
                 cursorGroup
                 selectionGroup
             }
@@ -199,7 +199,7 @@ struct ThemeEditorView: View {
     }
 
     /// The Cursor region — block colour + glyph-under-cursor. Editable swatches on macOS while editing a custom
-    /// theme (cursor falls back to the foreground, cursor-text to the background — otty's "Default").
+    /// theme (cursor falls back to the foreground, cursor-text to the background — the "Default" behaviour).
     private var cursorGroup: some View {
         chromeContainer("Cursor") {
             #if os(macOS)
@@ -225,11 +225,11 @@ struct ThemeEditorView: View {
                 swatchPicker(optionalBinding(\.selectionBackground, fallback: displaySelectionFallback))
                 swatchSquare(foregroundColor)
             } else {
-                swatchSquare(displayColor(displaySelection, fallback: Otty.State.selected))
+                swatchSquare(displayColor(displaySelection, fallback: Slate.State.selected))
                 swatchSquare(foregroundColor)
             }
             #else
-            swatchSquare(displayColor(displaySelection, fallback: Otty.State.selected))
+            swatchSquare(displayColor(displaySelection, fallback: Slate.State.selected))
             swatchSquare(foregroundColor)
             #endif
         }
@@ -239,12 +239,12 @@ struct ThemeEditorView: View {
 
     /// A 16pt rounded chrome swatch with a hairline border.
     private func swatchSquare(_ color: Color) -> some View {
-        RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall, style: .continuous)
+        RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall, style: .continuous)
             .fill(color)
             .frame(width: 16, height: 16)
             .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall, style: .continuous)
-                    .strokeBorder(Otty.Line.subtle, lineWidth: 1),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall, style: .continuous)
+                    .strokeBorder(Slate.Line.subtle, lineWidth: 1),
             )
     }
 
@@ -257,21 +257,21 @@ struct ThemeEditorView: View {
 
     /// The rounded inset pill that wraps a chrome-region label + arbitrary swatch content.
     private func chromeContainer(_ label: String, @ViewBuilder content: () -> some View) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Text(label)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
             content()
         }
-        .padding(.vertical, Otty.Metric.space1)
-        .padding(.horizontal, Otty.Metric.space2)
+        .padding(.vertical, Slate.Metric.space1)
+        .padding(.horizontal, Slate.Metric.space2)
         .background(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusPill, style: .continuous)
-                .fill(Otty.Surface.element),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusPill, style: .continuous)
+                .fill(Slate.Surface.element),
         )
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusPill, style: .continuous)
-                .strokeBorder(Otty.Line.subtle, lineWidth: 1),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusPill, style: .continuous)
+                .strokeBorder(Slate.Line.subtle, lineWidth: 1),
         )
     }
 
@@ -294,12 +294,12 @@ struct ThemeEditorView: View {
     }
 
     private func bigSwatchTile(_ hex: String) -> some View {
-        RoundedRectangle(cornerRadius: Otty.Metric.radiusControl, style: .continuous)
-            .fill(displayColor(hex, fallback: Otty.Text.primary))
+        RoundedRectangle(cornerRadius: Slate.Metric.radiusControl, style: .continuous)
+            .fill(displayColor(hex, fallback: Slate.Text.primary))
             .frame(width: 52, height: 26)
             .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl, style: .continuous)
-                    .strokeBorder(Otty.Line.subtle, lineWidth: 1),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusControl, style: .continuous)
+                    .strokeBorder(Slate.Line.subtle, lineWidth: 1),
             )
     }
 
@@ -323,7 +323,7 @@ struct ThemeEditorView: View {
         Circle()
             .fill(paletteColor(index))
             .frame(width: 20, height: 20)
-            .overlay(Circle().strokeBorder(Otty.Line.subtle, lineWidth: 1))
+            .overlay(Circle().strokeBorder(Slate.Line.subtle, lineWidth: 1))
     }
 
     #if os(macOS)
@@ -339,7 +339,7 @@ struct ThemeEditorView: View {
 
     #if os(macOS)
     private var actionRow: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Button("Duplicate") { duplicateActive() }
             Button(isEditingActive ? "Done Editing" : "Edit Selected Theme") { toggleEdit() }
                 .disabled(!isActiveCustom)
@@ -357,7 +357,7 @@ struct ThemeEditorView: View {
             // imported theme immediately (otherwise the active theme is left untouched).
             Toggle("Switch to it now", isOn: $switchToImported)
                 .toggleStyle(.checkbox)
-                .font(.system(size: Otty.Typeface.footnote))
+                .font(.system(size: Slate.Typeface.footnote))
                 .help("When on, the imported theme becomes active immediately; otherwise it is only added.")
             Spacer(minLength: 0)
         }
@@ -366,7 +366,7 @@ struct ThemeEditorView: View {
 
     // MARK: - Active-theme resolution
 
-    private var activeTheme: OttyTheme { ThemeStore.shared.active }
+    private var activeTheme: SlateTheme { ThemeStore.shared.active }
 
     /// Whether the active theme is a scanned custom (`custom-<slug>` id) vs a built-in.
     private var isActiveCustom: Bool { activeTheme.id.hasPrefix(Self.customIDPrefix) }
@@ -391,8 +391,8 @@ struct ThemeEditorView: View {
     private var displayCursor: String? { editingDocument?.cursor ?? activeTheme.cursorHex }
     private var displayCursorText: String? { editingDocument?.cursorText ?? activeTheme.cursorTextHex }
     private var displaySelection: String? { editingDocument?.selectionBackground ?? activeTheme.selectionBackgroundHex }
-    private var foregroundColor: Color { displayColor(displayForeground, fallback: Otty.Text.primary) }
-    private var backgroundColor: Color { displayColor(displayBackground, fallback: Otty.Surface.card) }
+    private var foregroundColor: Color { displayColor(displayForeground, fallback: Slate.Text.primary) }
+    private var backgroundColor: Color { displayColor(displayBackground, fallback: Slate.Surface.card) }
 
     /// The Selection ColorPicker fallback when the document declares none (the foreground's lighter wash isn't
     /// available as a hex, so use the foreground itself as a visible seed).
@@ -404,7 +404,7 @@ struct ThemeEditorView: View {
     }
 
     private func paletteColor(_ index: Int) -> Color {
-        displayColor(paletteHex(index), fallback: Otty.Text.primary)
+        displayColor(paletteHex(index), fallback: Slate.Text.primary)
     }
 
     /// A cross-platform hex → `Color` (sRGB), falling back when the string is empty / malformed. Uses the pure
@@ -426,7 +426,7 @@ struct ThemeEditorView: View {
         Binding(
             get: {
                 let hex = editingDocument?[keyPath: keyPath] ?? fallback
-                return Color(cursorHex: hex) ?? displayColor(fallback, fallback: Otty.Text.primary)
+                return Color(cursorHex: hex) ?? displayColor(fallback, fallback: Slate.Text.primary)
             },
             set: { newColor in
                 guard var document = editingDocument else { return }
@@ -445,7 +445,7 @@ struct ThemeEditorView: View {
         Binding(
             get: {
                 let hex = editingDocument?[keyPath: keyPath] ?? fallback
-                return Color(cursorHex: hex) ?? displayColor(fallback, fallback: Otty.Text.primary)
+                return Color(cursorHex: hex) ?? displayColor(fallback, fallback: Slate.Text.primary)
             },
             set: { newColor in
                 guard var document = editingDocument else { return }
@@ -472,7 +472,7 @@ struct ThemeEditorView: View {
         )
     }
 
-    /// Write the edited document back to its `.ottytheme` file, re-scan the catalog, and re-resolve the active
+    /// Write the edited document back to its `.aislopdesktheme` file, re-scan the catalog, and re-resolve the active
     /// theme so the chrome + terminal cells reflect the edit live (the swatch grid already reflects it from the
     /// in-memory buffer). Failure is surfaced, never fatal.
     private func persistEdit(_ document: ThemeDocument) {
@@ -525,8 +525,8 @@ struct ThemeEditorView: View {
         }
     }
 
-    /// Duplicate the active theme into a fresh, slug-unique custom `.ottytheme`, activate it, and drop into
-    /// edit mode (otty's Duplicate flow). A built-in is materialised from its palette; a custom is copied.
+    /// Duplicate the active theme into a fresh, slug-unique custom `.aislopdesktheme`, activate it, and drop into
+    /// edit mode. A built-in is materialised from its palette; a custom is copied.
     private func duplicateActive() {
         flushPendingPersist() // commit any in-flight edit on the current theme before duplicating
         statusMessage = nil
@@ -628,7 +628,7 @@ struct ThemeEditorView: View {
 // MARK: - Static helpers
 
 extension ThemeEditorView {
-    /// The `OttyTheme.id` prefix a scanned custom theme carries (`custom-<slug>`).
+    /// The `SlateTheme.id` prefix a scanned custom theme carries (`custom-<slug>`).
     static let customIDPrefix = "custom-"
 
     /// The post-import ACTIVATION decision + status line (themes spec §Import: import ADDS by default; the
@@ -654,7 +654,7 @@ extension ThemeEditorView {
 
     /// A human-readable display name for a resolved theme (built-in id → its picker label), used as the
     /// Duplicate base name. A custom theme uses its document's own `displayName` (handled by the caller).
-    static func friendlyName(for theme: OttyTheme) -> String {
+    static func friendlyName(for theme: SlateTheme) -> String {
         switch theme.id {
         case "monokai-classic": "Monokai Pro (Classic)"
         case "monokai-classic-light": "Monokai Pro Light"
@@ -679,10 +679,10 @@ extension ThemeEditorView {
 
     /// The open-panel content-type filter for an import format. `nil` (Ghostty) ⇒ allow any file, since a
     /// Ghostty config is frequently extensionless. Text formats add plain-text so an oddly-named file is still
-    /// selectable; iTerm2/otty use their dynamic extension type.
+    /// selectable; iTerm2/native use their dynamic extension type.
     static func allowedContentTypes(for format: ThemeImporters.Format) -> [UTType]? {
         switch format {
-        case .ottytheme: [UTType(filenameExtension: "ottytheme")].compactMap(\.self)
+        case .aislopdeskTheme: [UTType(filenameExtension: "aislopdesktheme")].compactMap(\.self)
         case .iterm2: [UTType(filenameExtension: "itermcolors"), .xml].compactMap(\.self)
         case .kitty: [UTType(filenameExtension: "conf"), .plainText, .text].compactMap(\.self)
         case .alacritty: [UTType(filenameExtension: "toml"), .plainText, .text].compactMap(\.self)

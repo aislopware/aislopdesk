@@ -10,7 +10,7 @@ final class PaneDropZoneLayoutTests: XCTestCase {
     private let size = CGSize(width: 1000, height: 600)
     private var layout: PaneDropZoneLayout { PaneDropZoneLayout(size: size) }
 
-    // MARK: - Zone geometry (topology, not otty pixels)
+    // MARK: - Zone geometry (topology, not exact pixels)
 
     func testCentralColumnIsHorizontallyCentered() {
         for zone in [DropZone.newTab, .insertPath, .openInPlace] {

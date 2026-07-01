@@ -14,7 +14,7 @@ struct RailRow: Identifiable, Equatable {
     let tabID: TabID
     let kind: PaneKind
     let title: String
-    /// The row's muted second line (``OttyTabRow`` subtitle). Kind-generic ``PaneSpec/railSubtitle`` (E21
+    /// The row's muted second line (``SlateTabRow`` subtitle). Kind-generic ``PaneSpec/railSubtitle`` (E21
     /// WI-5): a terminal's cwd, or a video pane's host-app/window label; `nil` ⇒ a single-line row.
     let subtitle: String?
     let status: ClaudeStatus
@@ -28,7 +28,7 @@ struct RailRow: Identifiable, Equatable {
     let processLabel: String?
     /// Whether this pane's input gate is READ-ONLY (E17 ES-E17-1 / WI-3) — read from the store's convergent
     /// ``WorkspaceStore/paneReadOnly`` set so the sidebar lock indicator and the pane's `🔒 READ ONLY ×` pill
-    /// share one source of truth. Drives ``OttyTabRow``'s trailing lock glyph.
+    /// share one source of truth. Drives ``SlateTabRow``'s trailing lock glyph.
     let readOnly: Bool
     /// Selected = the row's tab is active AND this pane is the tab's active pane.
     let isSelected: Bool
@@ -52,7 +52,7 @@ enum RailRowsBuilder {
         for (tabIndex, tab) in session.tabs.enumerated() {
             let tabIsActive = tabIndex == activeTabIndex
             // E20 ES-E20-3: a MANUAL `tab badge --kind` override (if any) is rendered on the tab's
-            // REPRESENTATIVE (active) pane row — otty's badge is per-tab, so it lands on the one row that
+            // REPRESENTATIVE (active) pane row — the badge is per-tab, so it lands on the one row that
             // stands in for the tab (the same representative `tab list` reports). Resolved once per tab.
             let representativePane = tab.activePane ?? tab.allPaneIDs().first
             let manualBadge = store.tabBadgeOverride(for: tab.id)
@@ -180,7 +180,7 @@ enum TabDragPayload {
     }
 }
 
-/// The pure placement model for otty's sidebar tab-reorder INSERTION-LINE indicator (E18 WI-7). The spec
+/// The pure placement model for the sidebar tab-reorder INSERTION-LINE indicator (E18 WI-7). The spec
 /// (`user-interface__drag-and-drop.md`): dragging a rail tab shows "a thin insertion-line indicator [for]
 /// the landing position between tabs". The navigator draws a 2pt accent rule on the TOP edge of the row a
 /// reorder drag is hovering. This model resolves WHERE (which rendered index) that rule is anchored so the
@@ -188,7 +188,7 @@ enum TabDragPayload {
 /// target). It is purely additive to the reorder drag — it never changes the drop payload, the resolved
 /// move, or the manual-reorder gate (``TabDragPayload`` owns those).
 enum TabReorderInsertionLine {
-    /// Width (points) of the otty insertion-line indicator — a thin 2pt accent rule.
+    /// Width (points) of the insertion-line indicator — a thin 2pt accent rule.
     static let thickness: CGFloat = 2
 
     /// The rendered index whose TOP edge gets the insertion line, or `nil` to draw NOTHING. `hovering` is the

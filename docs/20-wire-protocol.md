@@ -191,7 +191,7 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
     a UTF-8 path/id for the parameterized ones
     (`gitDiff`/`listDirectory`/`listAgentSessions`/`readAgentSession`), and a raw UTF-8 **absolute host
     path** for `openPath`/`revealPath`.
-  - **`openPath` (9) / `revealPath` (10) are the ONLY side-effecting verbs** (E10 — the otty ⌘click /
+  - **`openPath` (9) / `revealPath` (10) are the ONLY side-effecting verbs** (E10 — the ⌘click /
     ⌘⇧click link actions; the file lives on the host Mac, not the client). The host opens the path in its
     default app / Finder (`NSWorkspace.open`) or reveals it in Finder
     (`NSWorkspace.activateFileViewerSelecting`) and replies with an **empty payload** + a status: `ok` on

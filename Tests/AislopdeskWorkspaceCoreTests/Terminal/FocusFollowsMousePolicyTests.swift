@@ -1,7 +1,7 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E8 WI-8 (H6, ES-E8-6): pins the pure ``FocusFollowsMousePolicy`` AND-gate behind otty's mouse-over-to-focus.
+/// E8 WI-8 (H6, ES-E8-6): pins the pure ``FocusFollowsMousePolicy`` AND-gate behind mouse-over-to-focus.
 /// The GUI view (`GhosttyTerminalView`) is compile-only (outside the headless build), so the decision is
 /// extracted here exactly as WI-7 extracted `RightClickAction.effect` — the view is a thin actuator.
 ///

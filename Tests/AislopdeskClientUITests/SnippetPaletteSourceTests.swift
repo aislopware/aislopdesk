@@ -3,7 +3,7 @@ import XCTest
 @testable import AislopdeskWorkspaceCore
 
 /// E16 WI-7 — the saved-snippet command-palette source. Snippets are surfaced under the verbs-only ⌘⇧P
-/// palette by name (otty "snippets appear in the command palette"), so a `SnippetPaletteSource` snapshot of
+/// palette by name (snippets appear in the command palette), so a `SnippetPaletteSource` snapshot of
 /// the store's snippets must produce one runnable row per snippet, searchable by name AND by alias. Headless:
 /// the source is a pure value over a snapshot; no NSWindow / view.
 @MainActor

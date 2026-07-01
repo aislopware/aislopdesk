@@ -116,13 +116,13 @@ final class E1KeymapParityTests: XCTestCase {
         XCTAssertEqual(chord(.cyclePanePrev), KeyChord(character: "[", [.command]), "cycle pane prev = ⌘[")
     }
 
-    /// Focus-pane directional chords, the divider-move family, and zoom match otty's documented defaults
+    /// Focus-pane directional chords, the divider-move family, and zoom carry the documented default chords
     /// (spec/reference__keybindings.md:78,82-89; customization__custom-keybindings.md:70,74-81). Focus = the
     /// single most load-bearing pane-navigation chord set: ⌃⌘arrows (NOT ⌥⌘arrows). Move-divider = ⌃⌘⇧arrows
     /// (NOT plain ⌃⌘arrows — those are focus). Zoom = ⌘⇧↩ (NOT ⌥⌘↩). A transposed modifier slips past the
     /// uniqueness guard (it only catches a COLLISION), so pin the exact values. FAILS on the pre-fix chords
     /// (focus on ⌥⌘arrows, divider on ⌃⌘arrows, zoom on ⌥⌘↩).
-    func testFocusDividerAndZoomChordsMatchOttyDefaults() {
+    func testFocusDividerAndZoomChordsMatchSlateDefaults() {
         // Focus pane up/down/left/right = ⌃⌘arrows.
         XCTAssertEqual(chord(.focusLeft), KeyChord(.leftArrow, [.control, .command]), "focus left = ⌃⌘←")
         XCTAssertEqual(chord(.focusRight), KeyChord(.rightArrow, [.control, .command]), "focus right = ⌃⌘→")
@@ -214,15 +214,15 @@ final class E1KeymapParityTests: XCTestCase {
         XCTAssertEqual(store.tree, before, "font-increase is a render-only op — the tree is unchanged")
     }
 
-    // MARK: - otty default-keymap parity: command palette ⌘⇧P + Toggle Details ⌘⇧R + chord-less rename
+    // MARK: - Default-keymap parity: command palette ⌘⇧P + Toggle Details ⌘⇧R + chord-less rename
 
-    /// The Command Palette is bound to otty's documented default ⌘⇧P, NOT the coding-IDE ⌘K
+    /// The Command Palette is bound to the documented default ⌘⇧P, NOT the coding-IDE ⌘K
     /// (spec/reference__keybindings.md:42, spec/user-interface__command-palette.md:5/9/35 "Opened with ⌘⇧P
     /// from anywhere"). FAILS on the pre-fix code (palette was ⌘K). Also asserts ⌘K no longer fires the palette.
     func testCommandPaletteIsCmdShiftP() {
         XCTAssertEqual(
             chord(.commandPalette), KeyChord(character: "p", [.command, .shift]),
-            "command palette = ⌘⇧P (otty default)",
+            "command palette = ⌘⇧P (default chord)",
         )
         XCTAssertNotEqual(
             chord(.commandPalette), KeyChord(character: "k", [.command]),
@@ -239,15 +239,15 @@ final class E1KeymapParityTests: XCTestCase {
         )
     }
 
-    /// otty binds ⌘⇧R to "Toggle Details Panel" (spec/reference__keybindings.md:67; the command-palette.png
+    /// ⌘⇧R is bound to "Toggle Details Panel" (spec/reference__keybindings.md:67; the command-palette.png
     /// screenshot shows "Toggle Details Panel" with chips ⇧⌘R). The new `.toggleDetailsPanel` action OWNS ⌘⇧R,
     /// and Rename — which previously squatted on ⌘⇧R and suppressed the titlebar's Details toggle — now has NO
-    /// default chord (otty ships no rename chord). FAILS on the pre-fix code (no `.toggleDetailsPanel`; rename
-    /// was ⌘⇧R).
+    /// default chord (rename ships with no default chord). FAILS on the pre-fix code (no `.toggleDetailsPanel`;
+    /// rename was ⌘⇧R).
     func testToggleDetailsOwnsCmdShiftRAndRenameIsChordLess() {
         XCTAssertEqual(
             chord(.toggleDetailsPanel), KeyChord(character: "r", [.command, .shift]),
-            "toggle Details panel = ⌘⇧R (otty default)",
+            "toggle Details panel = ⌘⇧R (default chord)",
         )
         XCTAssertEqual(
             WorkspaceBindingRegistry.chordTable[KeyChord(character: "r", [.command, .shift])], .toggleDetailsPanel,
@@ -256,7 +256,7 @@ final class E1KeymapParityTests: XCTestCase {
         // Rename is still a REGISTERED, routable action (title menu / context menu / palette), but chord-LESS.
         let rename = WorkspaceBindingRegistry.binding(for: .renamePane)
         XCTAssertNotNil(rename, "rename is still a registered binding (menu / palette reachable)")
-        XCTAssertNil(rename?.chord, "rename carries NO default chord (otty has no rename chord; ⌘⇧R is Details)")
+        XCTAssertNil(rename?.chord, "rename carries NO default chord (rename has no default chord; ⌘⇧R is Details)")
     }
 
     /// `.toggleDetailsPanel` routes through `route(_:to:)` without trapping — it is a VIEW @State toggle
@@ -276,16 +276,16 @@ final class E1KeymapParityTests: XCTestCase {
 
     /// E1 review fix: ⌘B "Toggle Sidebar" was a DEAD chord on macOS — it routed to
     /// `store.toggleSidebarCollapsed()`, a LEGACY flag the native split shell never reads (the macOS sidebar
-    /// collapse is `WorkspaceChromeState.sidebarCollapsed`). Re-bound to otty's ⌘⇧L "Toggle Tabs Panel" and
+    /// collapse is `WorkspaceChromeState.sidebarCollapsed`). Re-bound to ⌘⇧L "Toggle Tabs Panel" and
     /// routed (like `.toggleDetailsPanel`) through a `toggleSidebar` VIEW closure the live app wires to
     /// `chrome.toggleSidebar`. Pins (1) the chord is ⌘⇧L, NOT ⌘B; (2) the action DRIVES the supplied closure
     /// (the live collapse flag), not just the dead store flag. FAILS on the pre-fix code (chord was ⌘B; the
     /// route had no `toggleSidebar` closure and flipped only the unread store flag).
     func testToggleSidebarIsCmdShiftLAndDrivesTheSuppliedClosure() {
-        // (1) the chord is otty's ⌘⇧L, and the old ⌘B no longer fires the sidebar.
+        // (1) the chord is ⌘⇧L, and the old ⌘B no longer fires the sidebar.
         XCTAssertEqual(
             chord(.toggleSidebar), KeyChord(character: "l", [.command, .shift]),
-            "toggle sidebar = ⌘⇧L (otty Toggle Tabs Panel)",
+            "toggle sidebar = ⌘⇧L (Toggle Tabs Panel)",
         )
         XCTAssertEqual(
             WorkspaceBindingRegistry.chordTable[KeyChord(character: "l", [.command, .shift])], .toggleSidebar,

@@ -69,7 +69,7 @@ public final class PreferencesStore {
         } }
     }
 
-    /// CLIENT-chrome appearance (otty theme + density). A `didSet` persists + applies. CRITICAL: this is
+    /// CLIENT-chrome appearance (theme + density). A `didSet` persists + applies. CRITICAL: this is
     /// pure client chrome — it is NEVER folded into ``EnvConfig/overlay`` nor written to the sidecar (so
     /// the golden corpus is untouched); it repoints the runtime ``ThemeStore`` (via ``AppearanceApplier``)
     /// and writes ``SettingsKey/density`` only. Default (all-`nil`) ⇒ no behaviour change.
@@ -164,7 +164,7 @@ public final class PreferencesStore {
     /// E8 fire-time Controls toggles) and bump the broadcaster so the (Xcode-only) `GhosttyTerminalView`
     /// re-applies it live.
     private func applyTerminal() {
-        // The active otty THEME pins the terminal CELL bg/fg (flat design) — `resolveTerminalColors` reads
+        // The active THEME pins the terminal CELL bg/fg (flat design) — `resolveTerminalColors` reads
         // the resolved `ThemeStore.active` (GUI only; `nil` headless ⇒ the pref's own colours stand).
         let themeColors = AppearanceApplier.resolveTerminalColors?()
         // E8 WI-2: resolve the fire-time Controls bundle (`copy-on-select` / `clipboard-*` / `mouse-*` /
@@ -384,7 +384,7 @@ public final class PreferencesStore {
     /// ``resetAll()`` ONLY (Reset-Advanced-Only leaves every tab-reachable choice intact). They live in
     /// `Defaults.standard` (NOT the injected ``defaults`` — the per-instance store stays test-isolated), so
     /// they are reset via `Defaults.reset(_:)` regardless of the store's injected suite. The list is the
-    /// union of every user setting the otty `Settings` tabs edit; together with ``advancedOnlyDefaultsKeys``
+    /// union of every user setting the `Settings` tabs edit; together with ``advancedOnlyDefaultsKeys``
     /// it covers every key the Advanced → All Settings catalog advertises (pinned by
     /// `AllSettingsCatalogTests`), so no advertised row survives a Reset All at a non-default value.
     nonisolated static let tabReachableDefaultsKeys: [Defaults.Keys] = [

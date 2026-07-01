@@ -8,7 +8,7 @@
 // pane. Replaces the old `PaneChooserPopover` (a centred overlay), per the "create + focus, content = the
 // choices" UX.
 //
-// Otty.* tokens only (raw font/radius literals fail scripts/check-ds-leaks.sh).
+// Slate.* tokens only (raw font/radius literals fail scripts/check-ds-leaks.sh).
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -29,16 +29,16 @@ struct InPaneChooserView: View {
     private var options: [PaneChooserOption] { PaneChooserRegistry.options }
 
     var body: some View {
-        VStack(spacing: Otty.Metric.space2) {
+        VStack(spacing: Slate.Metric.space2) {
             Spacer(minLength: 0)
             Text("New Pane")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
             Text("Choose what to open in this pane")
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
-                .padding(.bottom, Otty.Metric.space2)
-            VStack(spacing: Otty.Metric.space2) {
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
+                .padding(.bottom, Slate.Metric.space2)
+            VStack(spacing: Slate.Metric.space2) {
                 ForEach(options, id: \.kind) { option in
                     InPaneChooserCard(option: option) { store.choosePaneKind(paneID, kind: option.kind) }
                 }
@@ -46,12 +46,12 @@ struct InPaneChooserView: View {
             .frame(maxWidth: 320)
             Spacer(minLength: 0)
         }
-        .padding(Otty.Metric.space4)
+        .padding(Slate.Metric.space4)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         // Claim the keyboard for the NEW pane: `.focusable()` + `@FocusState` makes this view the window's
         // first responder, which RESIGNS the previously-focused terminal surface so its keyDown stops eating
-        // our mnemonics. `.focusEffectDisabled()` keeps otty's flat, ring-free look. The claim is deferred one
+        // our mnemonics. `.focusEffectDisabled()` keeps a flat, ring-free look. The claim is deferred one
         // runloop hop because a `@FocusState` set in the same tick as the view appears (before its backing
         // responder exists on-window) is dropped.
         .focusable()
@@ -82,27 +82,27 @@ private struct InPaneChooserCard: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Otty.Metric.space3) {
+            HStack(spacing: Slate.Metric.space3) {
                 Image(systemName: option.symbol)
-                    .font(.system(size: Otty.Typeface.body))
-                    .foregroundStyle(Otty.State.accent)
+                    .font(.system(size: Slate.Typeface.body))
+                    .foregroundStyle(Slate.State.accent)
                     .frame(width: 22)
                 Text(option.title)
-                    .font(.system(size: Otty.Typeface.body))
-                    .foregroundStyle(Otty.Text.primary)
-                Spacer(minLength: Otty.Metric.space2)
+                    .font(.system(size: Slate.Typeface.body))
+                    .foregroundStyle(Slate.Text.primary)
+                Spacer(minLength: Slate.Metric.space2)
                 Text(String(option.mnemonic).uppercased())
-                    .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                    .foregroundStyle(Slate.Text.secondary)
             }
-            .padding(.horizontal, Otty.Metric.space3)
+            .padding(.horizontal, Slate.Metric.space3)
             .frame(height: 44)
-            .background(hovering ? Otty.State.hover : Otty.Surface.element)
+            .background(hovering ? Slate.State.hover : Slate.Surface.element)
             .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                    .stroke(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                    .stroke(Slate.Line.subtle, lineWidth: Slate.Metric.hairline),
             )
-            .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusControl))
+            .clipShape(RoundedRectangle(cornerRadius: Slate.Metric.radiusControl))
             .contentShape(.rect)
         }
         .buttonStyle(.plain)

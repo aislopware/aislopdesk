@@ -43,7 +43,7 @@ struct BlockOutputView: View {
         if isFetching {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Fetching output…").font(.callout).foregroundStyle(Otty.Text.secondary)
+                Text("Fetching output…").font(.callout).foregroundStyle(Slate.Text.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 8)
@@ -55,14 +55,14 @@ struct BlockOutputView: View {
                     } else {
                         Text(text)
                             .font(.system(.callout, design: .monospaced))
-                            .foregroundStyle(Otty.Text.primary)
+                            .foregroundStyle(Slate.Text.primary)
                             .textSelection(.enabled)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
             }
-            .ottyCard()
+            .slateCard()
         } else if outputLen == 0 {
             note("No output", "The command produced no captured output.")
         } else {
@@ -75,7 +75,7 @@ struct BlockOutputView: View {
         HStack {
             Text("Output")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(Otty.State.header)
+                .foregroundStyle(Slate.State.header)
             Spacer(minLength: 0)
             Button {
                 renderRich.toggle()
@@ -100,8 +100,8 @@ struct BlockOutputView: View {
 
     private func note(_ title: String, _ detail: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.callout).foregroundStyle(Otty.Text.secondary)
-            Text(detail).font(.caption).foregroundStyle(Otty.Text.tertiary)
+            Text(title).font(.callout).foregroundStyle(Slate.Text.secondary)
+            Text(detail).font(.caption).foregroundStyle(Slate.Text.tertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 6)

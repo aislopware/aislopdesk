@@ -2,7 +2,7 @@ import Foundation
 
 // AislopdeskCLICore — the PURE, testable core of the user-facing `aislopdesk` CLI.
 //
-// This is the otty-clone superset front-end (E20): one binary that maps otty's subcommand
+// This is the CLI front-end (E20): one binary exposing a subcommand
 // surface onto the existing aislopdesk control plane. `CLIArgs` is the global-flag parser; it is
 // a pure value transform (no I/O, no `exit`) so the whole arg surface is exhaustively
 // unit-testable without ever opening a socket or launching the GUI (hang-safety rule).
@@ -96,7 +96,7 @@ public enum CLIParseError: Error, Equatable, Sendable {
 // MARK: - Parser
 
 public enum CLIArgs {
-    /// Default IPC wait (matches otty's `--timeout` default of 3000 ms).
+    /// Default IPC wait (`--timeout` default of 3000 ms).
     public static let defaultTimeoutMs = 3000
 
     /// Parses the global flags + subcommand from `args` (including `args[0]`/program name, which is

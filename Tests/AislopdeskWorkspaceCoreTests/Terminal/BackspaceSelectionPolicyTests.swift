@@ -1,8 +1,8 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E8 WI-10 (I7, ES-E8-2): pins the pure ``BackspaceSelectionPolicy`` — the testable heart of otty's
-/// "Backspace deletes selection". The GUI surface (`GhosttyTerminalView`, compile-only behind
+/// E8 WI-10 (I7, ES-E8-2): pins the pure ``BackspaceSelectionPolicy`` — the testable heart of the
+/// "Backspace deletes selection" feature. The GUI surface (`GhosttyTerminalView`, compile-only behind
 /// `#if canImport(CGhostty)`) is a thin actuator that applies the DEL-count / fallback per the documented
 /// geometry ceiling, so the 3-way decision (incl. the prompt-zone + alt-screen gates) is pinned here.
 ///

@@ -10,7 +10,7 @@
 //
 // SEAM discipline: this view NEVER imports `AislopdeskVideoClient` — discovery crosses the
 // `RemoteWindowDiscovery` seam already wired into ``RemoteWindowModel`` (a closure the app injects). Shares the
-// family panel shell via ``OverlayPanel``. `Otty.*` tokens ONLY (raw font/radius literals fail
+// family panel shell via ``OverlayPanel``. `Slate.*` tokens ONLY (raw font/radius literals fail
 // `scripts/check-ds-leaks.sh`). Shared `AislopdeskClientUI` view — compiles for iOS (only the AppKit Esc
 // handler is `#if os(macOS)`-gated).
 
@@ -39,14 +39,14 @@ struct RemoteWindowPickerModal: View {
 
     var body: some View {
         OverlayPanel(width: panelWidth) {
-            VStack(alignment: .leading, spacing: Otty.Metric.space3) {
+            VStack(alignment: .leading, spacing: Slate.Metric.space3) {
                 header
                 if let model = coordinator.remotePickerModel {
                     windowSection(model)
                     manualEntrySection
                 }
             }
-            .padding(Otty.Metric.space4)
+            .padding(Slate.Metric.space4)
         }
         // Discover once on appear (the modal's model is freshly built per open, so it always queries the
         // current host). A nil model (shouldn't happen while presented) is a safe no-op.
@@ -68,23 +68,23 @@ struct RemoteWindowPickerModal: View {
     // MARK: - Header (title + Refresh)
 
     private var header: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Image(systemSymbol: .display)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
             Text("New Remote Window")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
-            Spacer(minLength: Otty.Metric.space2)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
+            Spacer(minLength: Slate.Metric.space2)
             if let model = coordinator.remotePickerModel {
                 Button {
                     Task { await model.refresh() }
                 } label: {
                     Image(systemSymbol: .arrowClockwise)
-                        .font(.system(size: Otty.Typeface.footnote))
+                        .font(.system(size: Slate.Typeface.footnote))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Otty.Text.secondary)
+                .foregroundStyle(Slate.Text.secondary)
                 .disabled(model.isLoading)
             }
         }
@@ -105,31 +105,31 @@ struct RemoteWindowPickerModal: View {
     }
 
     private var loadingRow: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             ProgressView().controlSize(.small)
             Text("Looking for shareable windows…")
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
         }
     }
 
     private func emptyState(_ model: RemoteWindowModel) -> some View {
         Text(model.loadError ?? "No shareable windows on the host yet.")
-            .font(.system(size: Otty.Typeface.footnote))
-            .foregroundStyle(Otty.Text.tertiary)
+            .font(.system(size: Slate.Typeface.footnote))
+            .foregroundStyle(Slate.Text.tertiary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
     private var filterField: some View {
         TextField("Filter windows", text: $filter)
             .textFieldStyle(.plain)
-            .font(.system(size: Otty.Typeface.footnote))
-            .foregroundStyle(Otty.Text.primary)
-            .tint(Otty.State.accent)
-            .padding(Otty.Metric.space2)
+            .font(.system(size: Slate.Typeface.footnote))
+            .foregroundStyle(Slate.Text.primary)
+            .tint(Slate.State.accent)
+            .padding(Slate.Metric.space2)
             .background(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                    .fill(Otty.Surface.element),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                    .fill(Slate.Surface.element),
             )
     }
 
@@ -140,11 +140,11 @@ struct RemoteWindowPickerModal: View {
             Text(RemoteWindowModel.windowFilterEmptyMessage(
                 filter: filter, totalCount: model.availableWindows.count,
             ))
-            .font(.system(size: Otty.Typeface.footnote))
-            .foregroundStyle(Otty.Text.tertiary)
+            .font(.system(size: Slate.Typeface.footnote))
+            .foregroundStyle(Slate.Text.tertiary)
         } else {
             ScrollView {
-                VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                     ForEach(windows) { window in
                         windowRow(window)
                     }
@@ -160,18 +160,18 @@ struct RemoteWindowPickerModal: View {
             // app-global path (NOT the in-pane `pick()→open()`).
             coordinator.openRemoteWindow(window)
         } label: {
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 Image(systemSymbol: .macwindow)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                 Text(window.displayLabel)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.primary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
-            .padding(.vertical, Otty.Metric.space1)
-            .padding(.horizontal, Otty.Metric.space2)
+            .padding(.vertical, Slate.Metric.space1)
+            .padding(.horizontal, Slate.Metric.space2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
@@ -187,13 +187,13 @@ struct RemoteWindowPickerModal: View {
             Button {
                 showManualEntry = true
             } label: {
-                HStack(spacing: Otty.Metric.space1) {
+                HStack(spacing: Slate.Metric.space1) {
                     Image(systemSymbol: .keyboard)
-                        .font(.system(size: Otty.Typeface.small))
+                        .font(.system(size: Slate.Typeface.small))
                     Text("Enter window ID manually")
-                        .font(.system(size: Otty.Typeface.footnote))
+                        .font(.system(size: Slate.Typeface.footnote))
                 }
-                .foregroundStyle(Otty.Text.tertiary)
+                .foregroundStyle(Slate.Text.tertiary)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -201,22 +201,22 @@ struct RemoteWindowPickerModal: View {
     }
 
     private var manualField: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             TextField("Window id", text: $manualID)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.footnote).monospaced())
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent)
-                .padding(Otty.Metric.space2)
+                .font(.system(size: Slate.Typeface.footnote).monospaced())
+                .foregroundStyle(Slate.Text.primary)
+                .tint(Slate.State.accent)
+                .padding(Slate.Metric.space2)
                 .background(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                        .fill(Otty.Surface.element),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                        .fill(Slate.Surface.element),
                 )
                 .onSubmit { openManual() }
             Button("Open") { openManual() }
                 .buttonStyle(.plain)
-                .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
-                .foregroundStyle(parsedManualID != nil ? Otty.State.accent : Otty.Text.tertiary)
+                .font(.system(size: Slate.Typeface.footnote, weight: .semibold))
+                .foregroundStyle(parsedManualID != nil ? Slate.State.accent : Slate.Text.tertiary)
                 .disabled(parsedManualID == nil)
         }
     }

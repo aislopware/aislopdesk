@@ -3,10 +3,10 @@ import Foundation
 // MARK: - E10 WI-6 (ES-E10-2): pure link gesture/menu → action mapping
 
 /// The user gesture on a detected link the policy resolves. A plain (un-modified) click is included so
-/// the otty "click does nothing — prevents accidental opens" rule is encoded HERE (not as an implicit
+/// the "click does nothing — prevents accidental opens" rule is encoded HERE (not as an implicit
 /// absence), keeping the mapping total and unit-testable.
 public enum LinkGesture: Equatable, Sendable, CaseIterable {
-    /// A bare left-click — otty maps this to *nothing* (no accidental opens).
+    /// A bare left-click maps to *nothing* (no accidental opens).
     case plainClick
     /// `⌘`click — open / copy / nothing, per ``LinkActionConfig/cmdClick``.
     case commandClick
@@ -15,14 +15,14 @@ public enum LinkGesture: Equatable, Sendable, CaseIterable {
     case commandShiftClick
 }
 
-/// The two otty link config knobs (`link-cmd-click` / `link-cmd-shift-click`) the policy reads, reusing
+/// The two link config knobs (`link-cmd-click` / `link-cmd-shift-click`) the policy reads, reusing
 /// the persisted ``LinkCmdClick`` / ``LinkCmdShiftClick`` enums so there is ONE source of truth (the
 /// renderer builds this from ``SettingsKey/linkCmdClick`` + ``SettingsKey/linkCmdShiftClick`` at click
 /// time). Pure value type — no `Defaults`/AppKit — so the policy stays headless-testable.
 public struct LinkActionConfig: Equatable, Sendable {
-    /// What a `⌘`click does (otty `link-cmd-click`, default ``LinkCmdClick/open``).
+    /// What a `⌘`click does (`link-cmd-click`, default ``LinkCmdClick/open``).
     public var cmdClick: LinkCmdClick
-    /// What a `⌘⇧`click does (otty `link-cmd-shift-click`, default ``LinkCmdShiftClick/revealFinder``).
+    /// What a `⌘⇧`click does (`link-cmd-shift-click`, default ``LinkCmdShiftClick/revealFinder``).
     public var cmdShiftClick: LinkCmdShiftClick
 
     public init(cmdClick: LinkCmdClick = .open, cmdShiftClick: LinkCmdShiftClick = .revealFinder) {
@@ -30,7 +30,7 @@ public struct LinkActionConfig: Equatable, Sendable {
         self.cmdShiftClick = cmdShiftClick
     }
 
-    /// The otty defaults (open / reveal-finder).
+    /// The default behavior (open / reveal-finder).
     public static let `default` = Self()
 }
 
@@ -56,15 +56,15 @@ public enum LinkAction: Equatable, Sendable {
     case nothing
 }
 
-/// The PURE mapping `(gesture or menu item) × link kind × config → ``LinkAction``` behind otty's
-/// "Click Actions" table (`user-interface__files-and-links` §"Click Actions"):
+/// The PURE mapping `(gesture or menu item) × link kind × config → ``LinkAction``` behind the
+/// "Click Actions" table (see `docs/ui-shell/spec/user-interface__files-and-links.md` §"Click Actions"):
 ///
 /// | Target | Click | ⌘click | ⌘⇧click |
 /// |---|---|---|---|
 /// | Path | nothing | open best handler (host) / copy / nothing | reveal-Finder (host) / open-default (host) |
 /// | URL  | nothing | open URL (client) / copy / nothing | Copy URL (client) |
 ///
-/// Splitting it out as a pure enum keeps the otty table unit-testable headless (``LinkActionPolicyTests``,
+/// Splitting it out as a pure enum keeps the click-actions table unit-testable headless (``LinkActionPolicyTests``,
 /// revert-to-confirm-fail) and lets BOTH the ⌘click/⌘⇧click renderer path (WI-6) and the right-click
 /// context menu (``TerminalContextMenu/LinkItem``) resolve through the SAME logic — no parallel switch
 /// that could drift. The renderer is the thin actuator: it feeds the ``DetectedLink`` under the pointer
@@ -79,7 +79,7 @@ public enum LinkActionPolicy {
     public static func action(for gesture: LinkGesture, link: DetectedLink, config: LinkActionConfig) -> LinkAction {
         switch gesture {
         case .plainClick:
-            // otty: a bare click on a link does NOTHING — it prevents accidental opens.
+            // A bare click on a link does NOTHING — it prevents accidental opens.
             .nothing
         case .commandClick:
             commandClickAction(link: link, behavior: config.cmdClick)
@@ -89,7 +89,7 @@ public enum LinkActionPolicy {
     }
 
     /// Resolve an EXPLICIT open intent on `link` — the keyboard-only affordances that MEAN "open": Hint-to-Open
-    /// (⌘⇧J) and the Jump-To row default (↩). otty: these always OPEN (a path on the host, a URL on the
+    /// (⌘⇧J) and the Jump-To row default (↩). These always OPEN (a path on the host, a URL on the
     /// client) — they are NOT governed by `link-cmd-click`, which only configures the MOUSE ⌘click gesture.
     /// This is exactly the menu-item ``TerminalContextMenu/LinkItem/open`` resolution; naming it gives BOTH
     /// keyboard actuators one config-INDEPENDENT entry so neither can drift back onto the configurable gesture
@@ -129,7 +129,7 @@ public enum LinkActionPolicy {
     }
 
     private static func commandShiftClickAction(link: DetectedLink, behavior: LinkCmdShiftClick) -> LinkAction {
-        // A URL has no Finder target, so otty maps ⌘⇧click on a URL to *Copy URL* regardless of the
+        // A URL has no Finder target, so ⌘⇧click on a URL maps to *Copy URL* regardless of the
         // (path-oriented) `link-cmd-shift-click` setting.
         if isURL(link) { return .copyPathClient(link.raw) }
         switch behavior {
@@ -154,7 +154,7 @@ public enum LinkActionPolicy {
     // MARK: - "Change Directory Here" actuation idiom (E10 review fix — cd a FILE → its parent folder)
 
     /// The verbatim-UTF-8 shell line that points the focused PTY at `path`, falling back to the path's PARENT
-    /// folder when `path` is a FILE — otty: "cd the focused terminal to the path (**or its parent folder**)".
+    /// folder when `path` is a FILE: cd the focused terminal to the path (**or its parent folder**).
     /// A bare `cd '<file>'` errors `cd: not a directory` for the headline `path:line:col` compiler-output case
     /// (the detector already stripped the `:line:col`, leaving a file), so the line tries the path first and,
     /// only if that fails, its dir: `cd '<path>' 2>/dev/null || cd '<parent>'\n`. For a real directory the

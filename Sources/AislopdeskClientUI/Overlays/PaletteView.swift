@@ -1,17 +1,17 @@
 // PaletteView — the floating command palette overlay (E2 / WI-2). Renders the live state of the injected
-// ``OverlayCoordinator`` as the otty-style VERBS-ONLY command palette: a pre-focused search field and a
+// ``OverlayCoordinator`` as a VERBS-ONLY command palette: a pre-focused search field and a
 // sectioned, fzf-highlighted result list with keycap chips, a ✓ toggled-state gutter, and a keyboard-selected
 // fill row. (The per-domain filter chips moved to the E11 Open-Quickly picker — ⌘⇧P shows no chips.)
 //
 // Faithful to `spec/user-interface__command-palette.md` (the centered floating panel, the magnifier +
 // blue/accent caret, ALL-CAPS section headers with the WORKING-DIRECTORY badge, per-symbol keycap chips,
-// the subtle selected-row fill) — mapped onto the DARK Monokai-default Otty token layer (`Otty.Surface.card`
-// panel, `Otty.State.selected` row fill, `Otty.State.accent` caret/highlight, `Otty.State.header` section
-// labels) rather than the otty Paper light shown in the screenshot.
+// the subtle selected-row fill) — mapped onto the DARK Monokai-default Slate token layer (`Slate.Surface.card`
+// panel, `Slate.State.selected` row fill, `Slate.State.accent` caret/highlight, `Slate.State.header` section
+// labels) rather than the light theme shown in the reference screenshot.
 //
 // SEAM discipline: the palette OWNS no state — every read/mutation goes through the coordinator (the single
 // `@Observable` reducer) so the GUI and the headless model can't drift. The scrim, centering, and fade-in
-// are added by the `OverlayHostView` (WI-5) that mounts this; PaletteView IS the panel. `Otty.*` tokens
+// are added by the `OverlayHostView` (WI-5) that mounts this; PaletteView IS the panel. `Slate.*` tokens
 // ONLY (raw font/colour/radius literals fail `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
@@ -42,18 +42,18 @@ struct PaletteView: View {
         VStack(spacing: 0) {
             searchBar
             Rectangle()
-                .fill(Otty.Line.divider)
-                .frame(height: Otty.Metric.hairline)
+                .fill(Slate.Line.divider)
+                .frame(height: Slate.Metric.hairline)
             resultsList
         }
         .frame(width: panelWidth)
-        .background(Otty.Surface.card)
-        .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard))
+        .background(Slate.Surface.card)
+        .clipShape(RoundedRectangle(cornerRadius: Slate.Metric.radiusCard))
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusCard)
-                .stroke(Otty.Line.card, lineWidth: Otty.Metric.hairline),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusCard)
+                .stroke(Slate.Line.card, lineWidth: Slate.Metric.hairline),
         )
-        .shadow(color: Otty.State.shadow, radius: 30, x: 0, y: 12)
+        .shadow(color: Slate.State.shadow, radius: 30, x: 0, y: 12)
         // Keyboard: the app NSEvent monitor passes bare arrows/Return through (it only swallows the prefix +
         // bound chords), so they reach this focused overlay. Plain ↩ is handled by the field's `.onSubmit`
         // (TextField-native, reliable); ⌘↩ is NOT a TextField submit, so it reaches THIS container handler —
@@ -84,19 +84,19 @@ struct PaletteView: View {
     // MARK: - Search bar
 
     private var searchBar: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Image(systemSymbol: .magnifyingglass)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
             TextField("Search for commands…", text: $coordinator.paletteQuery)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent) // the active caret is the accent colour (spec)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.primary)
+                .tint(Slate.State.accent) // the active caret is the accent colour (spec)
                 .focused($searchFocused)
                 .onSubmit { coordinator.acceptSelected() } // plain ↩ runs + closes
         }
-        .padding(.horizontal, Otty.Metric.space4)
+        .padding(.horizontal, Slate.Metric.space4)
         .frame(height: 48)
         .onAppear {
             // A `@FocusState` set in the same tick the view appears (before its backing responder exists) is
@@ -115,12 +115,12 @@ struct PaletteView: View {
                         row(entry.ranked, selectableIndex: entry.selectableIndex)
                     }
                 }
-                .padding(.vertical, Otty.Metric.space1)
+                .padding(.vertical, Slate.Metric.space1)
             }
             .frame(maxHeight: resultsMaxHeight)
             .onChange(of: coordinator.paletteSelection) { _, _ in
                 guard let id = selectedRowID else { return }
-                withAnimation(Otty.Anim.smallFade) { proxy.scrollTo(id, anchor: .center) }
+                withAnimation(Slate.Anim.smallFade) { proxy.scrollTo(id, anchor: .center) }
             }
         }
     }
@@ -137,26 +137,26 @@ struct PaletteView: View {
     // MARK: - Section header (+ WORKING DIRECTORY badge)
 
     private func sectionHeader(_ item: PaletteItem) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             // Batch-5b (B): mirror the action-row's 20pt leading ✓/icon gutter so the uppercase header text
             // shares the row LABELS' left margin (command-palette.png: the headers are FLUSH with the row
             // labels, the ✓/icon gutter sitting to their LEFT). A section header carries no glyph, so this is an
             // empty placeholder — only its width matters.
             Color.clear.frame(width: 20)
             Text(item.title.uppercased())
-                .font(.system(size: Otty.Typeface.small, weight: .semibold))
+                .font(.system(size: Slate.Typeface.small, weight: .semibold))
                 .tracking(0.8)
-                .foregroundStyle(Otty.State.header)
+                .foregroundStyle(Slate.State.header)
                 // The section label always wins the layout: a long cwd pill truncates its path, never the
                 // "WORKING DIRECTORY" header it sits on.
                 .layoutPriority(1)
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             // The contextual cwd badge sits flush-right on the WORKING DIRECTORY header it OWNS — matched by
             // the category label, NOT "whichever separator sorts first" (which mislabelled a Recents/Actions
             // header before this section existed).
             if item.title == PaletteCategory.workingDirectory.label, let cwd = workingDirectory {
-                // Home-abbreviate for display (`/Users/abner/Workplace/otty` → `~/Workplace/otty/`) to match
-                // command-palette.png's `~/Workplace/otty/` pill. `cwd` is the RAW remote-host path from the
+                // Home-abbreviate for display (`/Users/abner/Workplace/myproject` → `~/Workplace/myproject/`) to match
+                // command-palette.png's `~/Workplace/myproject/` pill. `cwd` is the RAW remote-host path from the
                 // `cwd()` RPC, so the abbreviation matches the home SHAPE (`/Users/<name>` · `/home/<name>`),
                 // never the client's local home (see ``CwdDisplay``).
                 cwdBadge(CwdDisplay.abbreviate(cwd))
@@ -168,31 +168,31 @@ struct PaletteView: View {
         // Batch-4 inset highlight + ✓-gutter are left untouched). The trailing `space2` mirrors the action
         // row's OUTER inset (space3 + space2 = 20pt) so the cwd pill's RIGHT edge lines up with the keycap-chip
         // column instead of jutting `space2` past it (command-palette.png: pill + keycaps share one right edge).
-        .padding(.horizontal, Otty.Metric.space3)
-        .padding(.leading, Otty.Metric.space2)
-        .padding(.trailing, Otty.Metric.space2)
-        .padding(.top, Otty.Metric.space3)
-        .padding(.bottom, Otty.Metric.space1)
+        .padding(.horizontal, Slate.Metric.space3)
+        .padding(.leading, Slate.Metric.space2)
+        .padding(.trailing, Slate.Metric.space2)
+        .padding(.top, Slate.Metric.space3)
+        .padding(.bottom, Slate.Metric.space1)
         .id(item.id)
     }
 
     private func cwdBadge(_ cwd: String) -> some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             Image(systemSymbol: .folder)
-                .font(.system(size: Otty.Typeface.small))
+                .font(.system(size: Slate.Typeface.small))
             Text(cwd)
-                .font(.system(size: Otty.Typeface.small))
+                .font(.system(size: Slate.Typeface.small))
                 .lineLimit(1)
                 // Head-truncate so the leaf (the directory you're actually in) stays visible when the pill
                 // shrinks — default `.tail` would drop the most meaningful part of the path.
                 .truncationMode(.head)
         }
-        .foregroundStyle(Otty.Text.secondary)
-        .padding(.horizontal, Otty.Metric.space2)
-        .padding(.vertical, Otty.Metric.space1)
+        .foregroundStyle(Slate.Text.secondary)
+        .padding(.horizontal, Slate.Metric.space2)
+        .padding(.vertical, Slate.Metric.space1)
         .background(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                .fill(Otty.Surface.element),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                .fill(Slate.Surface.element),
         )
     }
 
@@ -201,39 +201,39 @@ struct PaletteView: View {
     private func actionRow(_ ranked: RankedRow, selectableIndex: Int) -> some View {
         let item = ranked.item
         let isSelected = selectableIndex == coordinator.paletteSelection
-        return HStack(spacing: Otty.Metric.space2) {
+        return HStack(spacing: Slate.Metric.space2) {
             // Leading 24pt gutter: the ✓ toggled-state checkmark (Unicode check, dark accent), or empty.
             ZStack {
                 if toggledState(item) {
                     Image(systemSymbol: .checkmark)
-                        .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
-                        .foregroundStyle(Otty.State.accent)
+                        .font(.system(size: Slate.Typeface.footnote, weight: .semibold))
+                        .foregroundStyle(Slate.State.accent)
                 }
             }
             .frame(width: 20, alignment: .center)
 
             highlightedTitle(ranked)
-                .font(.system(size: Otty.Typeface.body))
+                .font(.system(size: Slate.Typeface.body))
                 .lineLimit(1)
 
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
 
             if let shortcut = item.shortcut, !shortcut.isEmpty {
-                HStack(spacing: Otty.Metric.space1) {
+                HStack(spacing: Slate.Metric.space1) {
                     ForEach(Array(keycaps(shortcut).enumerated()), id: \.offset) { _, key in
                         keycapChip(key)
                     }
                 }
             }
         }
-        .padding(.horizontal, Otty.Metric.space3)
+        .padding(.horizontal, Slate.Metric.space3)
         .frame(height: 34)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusItem)
-                .fill(isSelected ? Otty.State.selected : Color.clear),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusItem)
+                .fill(isSelected ? Slate.State.selected : Color.clear),
         )
-        .padding(.horizontal, Otty.Metric.space2)
+        .padding(.horizontal, Slate.Metric.space2)
         .contentShape(Rectangle())
         // Hover moves the keyboard selection onto this row (spec: hover/tap → run).
         .onHover { hovering in
@@ -245,13 +245,13 @@ struct PaletteView: View {
 
     private func keycapChip(_ key: String) -> some View {
         Text(key)
-            .font(.system(size: Otty.Typeface.small, weight: .medium))
-            .foregroundStyle(Otty.Text.secondary)
+            .font(.system(size: Slate.Typeface.small, weight: .medium))
+            .foregroundStyle(Slate.Text.secondary)
             .frame(minWidth: 18, minHeight: 18)
-            .padding(.horizontal, Otty.Metric.space1)
+            .padding(.horizontal, Slate.Metric.space1)
             .background(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
-                    .fill(Otty.Surface.element),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
+                    .fill(Slate.Surface.element),
             )
     }
 
@@ -262,7 +262,7 @@ struct PaletteView: View {
     private func highlightedTitle(_ ranked: RankedRow) -> Text {
         let title = ranked.item.title
         guard !ranked.titleRanges.isEmpty else {
-            return Text(title).foregroundStyle(Otty.Text.primary)
+            return Text(title).foregroundStyle(Slate.Text.primary)
         }
         // Accumulate `Text` segments then fold with `+` — `Text` has no `+=`, so a `result = result + …`
         // reassignment can't be a shorthand op; the array fold keeps it clean.
@@ -270,13 +270,13 @@ struct PaletteView: View {
         var cursor = title.startIndex
         for range in ranked.titleRanges where range.lowerBound >= cursor {
             if cursor < range.lowerBound {
-                segments.append(Text(title[cursor..<range.lowerBound]).foregroundStyle(Otty.Text.primary))
+                segments.append(Text(title[cursor..<range.lowerBound]).foregroundStyle(Slate.Text.primary))
             }
-            segments.append(Text(title[range]).foregroundStyle(Otty.State.accent).fontWeight(.semibold))
+            segments.append(Text(title[range]).foregroundStyle(Slate.State.accent).fontWeight(.semibold))
             cursor = range.upperBound
         }
         if cursor < title.endIndex {
-            segments.append(Text(title[cursor...]).foregroundStyle(Otty.Text.primary))
+            segments.append(Text(title[cursor...]).foregroundStyle(Slate.Text.primary))
         }
         return segments.reduce(Text(verbatim: "")) { $0 + $1 }
     }
@@ -337,7 +337,7 @@ struct PaletteView: View {
 // MARK: - CwdDisplay (pure home-abbreviation for the cwd pill — no SwiftUI, so it is unit-pinned)
 
 /// The pure display bridge that turns a RAW remote-host working directory into the abbreviated form the
-/// command-palette WORKING DIRECTORY pill shows (`command-palette.png`: `~/Workplace/otty/`).
+/// command-palette WORKING DIRECTORY pill shows (`command-palette.png`: `~/Workplace/myproject/`).
 ///
 /// Two transforms: a leading home prefix collapses to `~`, and a trailing `/` marks the directory. The cwd is
 /// a **remote-host** path (from the `cwd()` metadata RPC), so the home is detected by SHAPE — `/Users/<name>`
@@ -349,7 +349,7 @@ enum CwdDisplay {
     /// Home-style roots a remote cwd can carry, matched generically (the user name is the next path segment).
     private static let homeRoots = ["/Users/", "/home/"]
 
-    /// Abbreviate a host cwd for the pill: `/Users/abner/Workplace/otty` → `~/Workplace/otty/`. An empty
+    /// Abbreviate a host cwd for the pill: `/Users/abner/Workplace/myproject` → `~/Workplace/myproject/`. An empty
     /// string stays empty; the filesystem root `/` stays `/`; an already-`~`-rooted path keeps its `~` and
     /// only gains the trailing slash; a non-home path (`/etc`) keeps its path and gains the trailing slash.
     static func abbreviate(_ raw: String) -> String {
@@ -367,7 +367,7 @@ enum CwdDisplay {
             let afterRoot = path.dropFirst(root.count)
             guard let first = afterRoot.first, first != "/" else { return path }
             if let slash = afterRoot.firstIndex(of: "/") {
-                return "~" + afterRoot[slash...] // "~" + "/Workplace/otty"
+                return "~" + afterRoot[slash...] // "~" + "/Workplace/myproject"
             }
             return "~" // the path IS exactly the home dir
         }

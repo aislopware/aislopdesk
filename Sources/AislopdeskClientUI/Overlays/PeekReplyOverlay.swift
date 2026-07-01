@@ -1,4 +1,4 @@
-// PeekReplyOverlay — the floating "Peek & Reply" card (P4 / E13 WI-8, otty ⌘⌥J), the VIEW over the existing
+// PeekReplyOverlay — the floating "Peek & Reply" card (P4 / E13 WI-8, ⌘⌥J), the VIEW over the existing
 // `PeekReply` domain. It targets the OLDEST pane needing attention (`WorkspaceStore.peekReplyTargetPane`),
 // shows that pane's cheap headless `PeekContent` (its title + the agent's blocking question + a few recent
 // command-block lines), and offers a reply field — so the user can ANSWER a blocked agent INLINE without a
@@ -16,7 +16,7 @@
 // SEAM discipline: every stateful decision (target resolution, advance, close) lives on the
 // `OverlayCoordinator` (the single `@Observable` reducer, headlessly tested); this view is a thin renderer +
 // the field's local text. The scrim + centering + fade are added by `OverlayHostView`; PeekReplyOverlay IS
-// the panel. `Otty.*` tokens ONLY (raw font/colour/radius literals fail `scripts/check-ds-leaks.sh`).
+// the panel. `Slate.*` tokens ONLY (raw font/colour/radius literals fail `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
 import AislopdeskAgentDetect
@@ -54,13 +54,13 @@ struct PeekReplyOverlay: View {
             }
         }
         .frame(width: panelWidth)
-        .background(Otty.Surface.card)
-        .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard))
+        .background(Slate.Surface.card)
+        .clipShape(RoundedRectangle(cornerRadius: Slate.Metric.radiusCard))
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusCard)
-                .stroke(Otty.Line.card, lineWidth: Otty.Metric.hairline),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusCard)
+                .stroke(Slate.Line.card, lineWidth: Slate.Metric.hairline),
         )
-        .shadow(color: Otty.State.shadow, radius: 30, x: 0, y: 12)
+        .shadow(color: Slate.State.shadow, radius: 30, x: 0, y: 12)
         #if os(macOS)
             .onExitCommand { coordinator.closePeekReply() }
         #else
@@ -89,29 +89,29 @@ struct PeekReplyOverlay: View {
 
     private func header(target: PaneID, content: PeekContent) -> some View {
         let status = store.agentStatus(for: target)
-        return HStack(spacing: Otty.Metric.space2) {
+        return HStack(spacing: Slate.Metric.space2) {
             if let symbol = StatusPresentation.agentSymbol(status) {
                 Image(systemName: symbol)
-                    .font(.system(size: Otty.Typeface.body))
+                    .font(.system(size: Slate.Typeface.body))
                     .foregroundStyle(StatusPresentation.agentTint(status))
             }
             VStack(alignment: .leading, spacing: 1) {
                 Text(content.title)
-                    .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                    .foregroundStyle(Slate.Text.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(StatusPresentation.agentLabel(status))
-                    .font(.system(size: Otty.Typeface.small))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.small))
+                    .foregroundStyle(Slate.Text.tertiary)
             }
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             Text("Peek & Reply")
-                .font(.system(size: Otty.Typeface.small, weight: .medium))
+                .font(.system(size: Slate.Typeface.small, weight: .medium))
                 .tracking(0.8)
-                .foregroundStyle(Otty.State.header)
+                .foregroundStyle(Slate.State.header)
         }
-        .padding(.horizontal, Otty.Metric.space4)
+        .padding(.horizontal, Slate.Metric.space4)
         .frame(height: 48)
     }
 
@@ -119,28 +119,28 @@ struct PeekReplyOverlay: View {
 
     private func questionBlock(_ content: PeekContent) -> some View {
         Text(content.question ?? "The agent is waiting for your input.")
-            .font(.system(size: Otty.Typeface.body))
-            .foregroundStyle(content.question == nil ? Otty.Text.secondary : Otty.Text.primary)
+            .font(.system(size: Slate.Typeface.body))
+            .foregroundStyle(content.question == nil ? Slate.Text.secondary : Slate.Text.primary)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Otty.Metric.space4)
-            .padding(.vertical, Otty.Metric.space3)
+            .padding(.horizontal, Slate.Metric.space4)
+            .padding(.vertical, Slate.Metric.space3)
     }
 
     // MARK: - Recent output (the cheap block-mirror tail)
 
     private func recentBlock(_ content: PeekContent) -> some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Text("RECENT")
-                .font(.system(size: Otty.Typeface.small, weight: .semibold))
+                .font(.system(size: Slate.Typeface.small, weight: .semibold))
                 .tracking(0.8)
-                .foregroundStyle(Otty.State.header)
+                .foregroundStyle(Slate.State.header)
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(content.recent.enumerated()), id: \.offset) { _, line in
                         Text(line)
-                            .font(.system(size: Otty.Typeface.footnote, design: .monospaced))
-                            .foregroundStyle(Otty.Text.secondary)
+                            .font(.system(size: Slate.Typeface.footnote, design: .monospaced))
+                            .foregroundStyle(Slate.Text.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -149,22 +149,22 @@ struct PeekReplyOverlay: View {
             }
             .frame(maxHeight: recentMaxHeight)
         }
-        .padding(.horizontal, Otty.Metric.space4)
-        .padding(.bottom, Otty.Metric.space3)
+        .padding(.horizontal, Slate.Metric.space4)
+        .padding(.bottom, Slate.Metric.space3)
     }
 
     // MARK: - Reply bar
 
     private func replyBar(target: PaneID) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Image(systemSymbol: .arrowshapeTurnUpLeft)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
             TextField("Reply…", text: $field)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.primary)
+                .tint(Slate.State.accent)
                 .focused($replyFocused)
                 .onSubmit { submit(target: target) }
                 // The empty-field digit quick-answer is intercepted BEFORE the field inserts the character
@@ -174,16 +174,16 @@ struct PeekReplyOverlay: View {
                 .onKeyPress(phases: .down) { press in handleKey(press, target: target) }
             Button { submit(target: target) } label: {
                 Image(systemSymbol: .paperplaneFill)
-                    .font(.system(size: Otty.Typeface.footnote))
+                    .font(.system(size: Slate.Typeface.footnote))
                     .foregroundStyle(field.trimmingCharacters(in: .whitespaces).isEmpty
-                        ? Otty.Text.tertiary : Otty.State.accent)
+                        ? Slate.Text.tertiary : Slate.State.accent)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(field.trimmingCharacters(in: .whitespaces).isEmpty)
             .accessibilityLabel("Send reply")
         }
-        .padding(.horizontal, Otty.Metric.space4)
+        .padding(.horizontal, Slate.Metric.space4)
         .frame(height: 48)
         .onAppear {
             // A `@FocusState` set the same tick the view appears (before its backing responder exists) is
@@ -195,28 +195,28 @@ struct PeekReplyOverlay: View {
     // MARK: - Footer hints
 
     private var footerBar: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             footerHint("Send", glyph: "↩")
             footerHint("Quick answer", glyph: "1–9")
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             footerHint("Close", glyph: "Esc")
         }
-        .padding(.horizontal, Otty.Metric.space4)
+        .padding(.horizontal, Slate.Metric.space4)
         .frame(height: 34)
     }
 
     private func footerHint(_ label: String, glyph: String) -> some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             Text(label)
-                .font(.system(size: Otty.Typeface.small))
-                .foregroundStyle(Otty.Text.tertiary)
+                .font(.system(size: Slate.Typeface.small))
+                .foregroundStyle(Slate.Text.tertiary)
             Text(glyph)
-                .font(.system(size: Otty.Typeface.small, weight: .medium))
-                .foregroundStyle(Otty.Text.secondary)
-                .padding(.horizontal, Otty.Metric.space1)
+                .font(.system(size: Slate.Typeface.small, weight: .medium))
+                .foregroundStyle(Slate.Text.secondary)
+                .padding(.horizontal, Slate.Metric.space1)
                 .background(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
-                        .fill(Otty.Surface.element),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
+                        .fill(Slate.Surface.element),
                 )
         }
     }
@@ -224,26 +224,26 @@ struct PeekReplyOverlay: View {
     // MARK: - All-caught-up fallback (race only)
 
     private var allCaughtUp: some View {
-        VStack(spacing: Otty.Metric.space2) {
+        VStack(spacing: Slate.Metric.space2) {
             Image(systemSymbol: .checkmarkCircle)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Status.ok)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Status.ok)
             Text("Nothing needs your reply.")
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
             Button("Done") { coordinator.closePeekReply() }
                 .buttonStyle(.plain)
-                .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                .foregroundStyle(Otty.State.accent)
+                .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                .foregroundStyle(Slate.State.accent)
         }
         .frame(maxWidth: .infinity)
-        .padding(Otty.Metric.space4)
+        .padding(Slate.Metric.space4)
     }
 
     private var divider: some View {
         Rectangle()
-            .fill(Otty.Line.divider)
-            .frame(height: Otty.Metric.hairline)
+            .fill(Slate.Line.divider)
+            .frame(height: Slate.Metric.hairline)
     }
 
     // MARK: - Actions

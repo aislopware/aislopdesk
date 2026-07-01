@@ -1,6 +1,6 @@
 // E20 WI-9 (ES-E20-4) — the guided first-launch sheet.
 //
-// A non-blocking, one-time setup flow composing already-built settings per otty's first-launch checklist
+// A non-blocking, one-time setup flow composing already-built settings into a first-launch checklist
 // (`spec/getting-started__first-launch.md`, governed by the 6 screenshots): On-Launch (E7), Set-as-Default-
 // Terminal (LOCAL handler; the remote "Common Apps" case honestly-DISABLED with a note), Install-CLI (the
 // macOS `CLIInstaller` symlink + Omit-Prefix + Allow-Overwrite), Theme (E15 picker), and Install-Claude-hooks
@@ -33,13 +33,13 @@ public struct FirstLaunchView: View {
     public var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(Otty.Line.divider)
-            ScrollView { stepBody.padding(Otty.Metric.space4) }
-            Divider().overlay(Otty.Line.divider)
+            Divider().overlay(Slate.Line.divider)
+            ScrollView { stepBody.padding(Slate.Metric.space4) }
+            Divider().overlay(Slate.Line.divider)
             footer
         }
         .frame(width: 540, height: 580)
-        .background(Otty.Surface.window)
+        .background(Slate.Surface.window)
         // Safety net: any dismissal (Done / Skip Setup / Esc / window-close) marks first-launch complete so it
         // never re-presents. Idempotent (sets a single `Defaults` flag).
         .onDisappear { model.finish() }
@@ -48,26 +48,26 @@ public struct FirstLaunchView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(alignment: .top, spacing: Otty.Metric.space3) {
+        HStack(alignment: .top, spacing: Slate.Metric.space3) {
             Image(systemName: model.currentStep.systemImage)
-                .font(.system(size: Otty.Typeface.display))
-                .foregroundStyle(Otty.State.accent)
+                .font(.system(size: Slate.Typeface.display))
+                .foregroundStyle(Slate.State.accent)
                 .frame(width: 56)
-            VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+            VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                 Text("Step \(model.stepNumber) of \(model.stepCount)")
-                    .font(.system(size: Otty.Typeface.small))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.small))
+                    .foregroundStyle(Slate.Text.tertiary)
                 Text(model.currentStep.title)
-                    .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                    .foregroundStyle(Slate.Text.primary)
                 Text(model.currentStep.subtitle)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
-        .padding(Otty.Metric.space4)
+        .padding(Slate.Metric.space4)
     }
 
     // MARK: - Step body (exhaustive switch; macOS-only cases never reached on iOS)
@@ -99,7 +99,7 @@ public struct FirstLaunchView: View {
     // MARK: - Footer
 
     private var footer: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             if !model.isFirstStep {
                 Button("Back") { model.back() }
                     .buttonStyle(.bordered)
@@ -109,7 +109,7 @@ public struct FirstLaunchView: View {
             Spacer()
             Button("Skip Setup") { finishAndDismiss() }
                 .buttonStyle(.borderless)
-                .foregroundStyle(Otty.Text.secondary)
+                .foregroundStyle(Slate.Text.secondary)
             if model.isLastStep {
                 Button("Done") { finishAndDismiss() }
                     .buttonStyle(.borderedProminent)
@@ -118,14 +118,14 @@ public struct FirstLaunchView: View {
                     .buttonStyle(.borderedProminent)
             }
         }
-        .padding(Otty.Metric.space4)
+        .padding(Slate.Metric.space4)
     }
 
     private var progressDots: some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             ForEach(Array(model.steps.enumerated()), id: \.element) { index, _ in
                 Circle()
-                    .fill(index == model.index ? Otty.State.accent : Otty.Line.subtle)
+                    .fill(index == model.index ? Slate.State.accent : Slate.Line.subtle)
                     .frame(width: 6, height: 6)
             }
         }
@@ -139,7 +139,7 @@ public struct FirstLaunchView: View {
 
 // MARK: - Step 1 · On Launch (E7 — cross-platform)
 
-/// otty step 1 — the On-Launch picker (`@Default(.onLaunch)` — the SAME live key Settings → General binds).
+/// Step 1 — the On-Launch picker (`@Default(.onLaunch)` — the SAME live key Settings → General binds).
 /// "Restore Last Session" reconnects the still-running detached host sessions; "New Window" starts fresh.
 private struct FirstLaunchOnLaunchStep: View {
     @Default(.onLaunch) private var onLaunch
@@ -154,7 +154,7 @@ private struct FirstLaunchOnLaunchStep: View {
         }
     }
 
-    /// The On-Launch picker — a radio group on macOS (otty's look), an inline list on iOS (`.radioGroup` is
+    /// The On-Launch picker — a radio group on macOS, an inline list on iOS (`.radioGroup` is
     /// macOS-only).
     @ViewBuilder
     private var onLaunchPicker: some View {
@@ -172,14 +172,14 @@ private struct FirstLaunchOnLaunchStep: View {
 
 // MARK: - Step 4 · Theme (E15 — cross-platform)
 
-/// otty step 4 — a compact theme grid (the E15 built-ins). Picking a swatch writes the light/primary slot
+/// Step 4 — a compact theme grid (the E15 built-ins). Picking a swatch writes the light/primary slot
 /// (`store.appearance.theme`) exactly like Settings → Appearance, so the whole app retints LIVE. A "more in
 /// Settings" note points at the full grid + the ⌘⇧P palette flow.
 private struct FirstLaunchThemeStep: View {
     @Bindable var store: PreferencesStore
     let model: FirstLaunchModel
 
-    /// The built-ins offered in the first-launch grid (otty light-then-dark ordering, curated).
+    /// The built-ins offered in the first-launch grid (light-then-dark ordering, curated).
     private let choices: [(ThemeChoice, String)] = [
         (.paper, "Paper"),
         (.monokaiProClassicLight, "Monokai Light"),
@@ -191,7 +191,7 @@ private struct FirstLaunchThemeStep: View {
         (.monokaiProSpectrum, "Spectrum"),
     ]
 
-    private let columns = [GridItem(.adaptive(minimum: 150), spacing: Otty.Metric.space2)]
+    private let columns = [GridItem(.adaptive(minimum: 150), spacing: Slate.Metric.space2)]
 
     private var selected: ThemeChoice {
         if let slug = store.appearance.customLightSlug, !slug.isEmpty { return .system }
@@ -200,7 +200,7 @@ private struct FirstLaunchThemeStep: View {
 
     var body: some View {
         FirstLaunchCard {
-            LazyVGrid(columns: columns, spacing: Otty.Metric.space2) {
+            LazyVGrid(columns: columns, spacing: Slate.Metric.space2) {
                 ForEach(choices, id: \.0) { choice, label in
                     themeSwatch(choice, label)
                 }
@@ -214,23 +214,23 @@ private struct FirstLaunchThemeStep: View {
         return Button {
             select(choice)
         } label: {
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isSelected ? Otty.State.accent : Otty.Text.tertiary)
+                    .foregroundStyle(isSelected ? Slate.State.accent : Slate.Text.tertiary)
                 Text(label)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.primary)
                 Spacer(minLength: 0)
             }
-            .padding(Otty.Metric.space2)
+            .padding(Slate.Metric.space2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                    .fill(isSelected ? Otty.State.selected : Otty.Surface.card),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                    .fill(isSelected ? Slate.State.selected : Slate.Surface.card),
             )
             .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                    .stroke(isSelected ? Otty.State.accent : Otty.Line.card, lineWidth: Otty.Metric.hairline),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                    .stroke(isSelected ? Slate.State.accent : Slate.Line.card, lineWidth: Slate.Metric.hairline),
             )
         }
         .buttonStyle(.plain)
@@ -247,7 +247,7 @@ private struct FirstLaunchThemeStep: View {
 
 // MARK: - Step 5 · Install Claude Code hooks (E13 — cross-platform, Claude only)
 
-/// otty step 5 — reuses the E13 `AgentHooksController` install card (Claude only). The controller is injected
+/// Step 5 — reuses the E13 `AgentHooksController` install card (Claude only). The controller is injected
 /// by the app scene (`\.agentHooksController`); when no pane backs it the card shows the honest "Connect a
 /// session" disabled state rather than a dead button.
 private struct FirstLaunchClaudeHooksStep: View {
@@ -259,13 +259,13 @@ private struct FirstLaunchClaudeHooksStep: View {
     var body: some View {
         FirstLaunchCard {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                     Text("Claude Code")
-                        .font(.system(size: Otty.Typeface.base, weight: .semibold))
-                        .foregroundStyle(Otty.Text.primary)
+                        .font(.system(size: Slate.Typeface.base, weight: .semibold))
+                        .foregroundStyle(Slate.Text.primary)
                     Text("Add hooks to ~/.claude/settings.json for real-time agent state.")
-                        .font(.system(size: Otty.Typeface.footnote))
-                        .foregroundStyle(Otty.Text.secondary)
+                        .font(.system(size: Slate.Typeface.footnote))
+                        .foregroundStyle(Slate.Text.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
@@ -283,7 +283,7 @@ private struct FirstLaunchClaudeHooksStep: View {
     private var installControl: some View {
         switch state {
         case .installed:
-            Label("Installed", systemImage: "checkmark").foregroundStyle(Otty.Status.ok)
+            Label("Installed", systemImage: "checkmark").foregroundStyle(Slate.Status.ok)
         case .notInstalled:
             Button("Install") {
                 Task {
@@ -301,36 +301,36 @@ private struct FirstLaunchClaudeHooksStep: View {
     }
 }
 
-// MARK: - Shared step chrome (a flat otty card + a gray note)
+// MARK: - Shared step chrome (a flat card + a gray note)
 
-/// A flat otty card wrapping a step's controls (card == window background, hairline border — the E-series flat
+/// A flat card wrapping a step's controls (card == window background, hairline border — the E-series flat
 /// pane aesthetic).
 struct FirstLaunchCard<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space3) { content }
-            .padding(Otty.Metric.space4)
+        VStack(alignment: .leading, spacing: Slate.Metric.space3) { content }
+            .padding(Slate.Metric.space4)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusCard).fill(Otty.Surface.card),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusCard).fill(Slate.Surface.card),
             )
             .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusCard)
-                    .stroke(Otty.Line.card, lineWidth: Otty.Metric.hairline),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusCard)
+                    .stroke(Slate.Line.card, lineWidth: Slate.Metric.hairline),
             )
     }
 }
 
-/// A subordinate gray note beneath a step's controls (otty's row-subtext styling).
+/// A subordinate gray note beneath a step's controls (row-subtext styling).
 struct FirstLaunchNote: View {
     let text: String
     init(_ text: String) { self.text = text }
 
     var body: some View {
         Text(text)
-            .font(.system(size: Otty.Typeface.footnote))
-            .foregroundStyle(Otty.Text.tertiary)
+            .font(.system(size: Slate.Typeface.footnote))
+            .foregroundStyle(Slate.Text.tertiary)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -339,7 +339,7 @@ struct FirstLaunchNote: View {
 
 // MARK: - Step 2 · Set as Default Terminal (macOS-only — LOCAL handler)
 
-/// otty step 2 — register the app as the LOCAL OS handler for terminal URL schemes / shell scripts, plus the
+/// Step 2 — register the app as the LOCAL OS handler for terminal URL schemes / shell scripts, plus the
 /// Finder-Integration and Full-Disk-Access deep-links. The "Set as Default Terminal for Common Apps" remote
 /// case is honestly-DISABLED with a note (E20 exclusion §4 — no dead button: a remote-host editor's config
 /// can't be rewritten from the client).
@@ -354,7 +354,7 @@ private struct FirstLaunchDefaultTerminalStep: View {
                 "Handle `ssh://` links and shell scripts opened from Finder or `open`.",
             ) {
                 if isDefault {
-                    Label("Default", systemImage: "checkmark").foregroundStyle(Otty.Status.ok)
+                    Label("Default", systemImage: "checkmark").foregroundStyle(Slate.Status.ok)
                 } else {
                     Button("Set as Default Terminal") {
                         Task {
@@ -373,7 +373,7 @@ private struct FirstLaunchDefaultTerminalStep: View {
                     + "editor — an editor on the remote host needs a host-side agent, so this is unavailable "
                     + "in the remote model.",
             ) {
-                Text("Unavailable").foregroundStyle(Otty.Text.tertiary)
+                Text("Unavailable").foregroundStyle(Slate.Text.tertiary)
             }
             actionRow(
                 "Finder Integration",
@@ -399,17 +399,17 @@ private struct FirstLaunchDefaultTerminalStep: View {
         _ subtitle: String,
         @ViewBuilder trailing: () -> some View,
     ) -> some View {
-        HStack(alignment: .top, spacing: Otty.Metric.space3) {
-            VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        HStack(alignment: .top, spacing: Slate.Metric.space3) {
+            VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                 Text(title)
-                    .font(.system(size: Otty.Typeface.base, weight: .semibold))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.base, weight: .semibold))
+                    .foregroundStyle(Slate.Text.primary)
                 Text(subtitle)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             trailing()
         }
     }
@@ -417,7 +417,7 @@ private struct FirstLaunchDefaultTerminalStep: View {
 
 // MARK: - Step 3 · Install the Aislopdesk CLI (macOS-only)
 
-/// otty step 3 — install the `/usr/local/bin/aislopdesk` symlink (admin-once via `CLIInstaller`), the
+/// Step 3 — install the `/usr/local/bin/aislopdesk` symlink (admin-once via `CLIInstaller`), the
 /// Omit-Prefix shell-function toggle, and the Allow-Overwrite toggle. The toggles drive `CLIInstaller`'s
 /// shim-file write (the SAME card lives in Settings → Shell).
 private struct FirstLaunchInstallCLIStep: View {
@@ -434,7 +434,7 @@ private struct FirstLaunchInstallCLIStep: View {
 
 // MARK: - Shared CLI-install card body (first-launch step 3 + Settings → Shell)
 
-/// The otty "Aislopdesk CLI" card body — Install/Uninstall (admin-once via ``CLIInstaller``), the Omit-Prefix
+/// The "Aislopdesk CLI" card body — Install/Uninstall (admin-once via ``CLIInstaller``), the Omit-Prefix
 /// toggle, and the Allow-Overwrite toggle — shared by the first-launch step and the Settings → Shell card so
 /// the two are byte-identical (one source). The toggles drive ``CLIInstaller/applyOmitPrefix(enabled:allowOverwrite:)``
 /// (writes the shim file). macOS-only.
@@ -453,9 +453,9 @@ struct CLIInstallCardBody: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space3) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space3) {
             installRow
-            Divider().overlay(Otty.Line.divider)
+            Divider().overlay(Slate.Line.divider)
             Toggle("Omit `aislopdesk` Prefix", isOn: $omitPrefix)
                 .onChange(of: omitPrefix) { _, on in
                     installer.applyOmitPrefix(enabled: on, allowOverwrite: allowOverwrite)
@@ -475,17 +475,17 @@ struct CLIInstallCardBody: View {
     }
 
     private var installRow: some View {
-        HStack(alignment: .top, spacing: Otty.Metric.space3) {
-            VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        HStack(alignment: .top, spacing: Slate.Metric.space3) {
+            VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                 Text("Install CLI")
-                    .font(.system(size: Otty.Typeface.base, weight: .semibold))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.base, weight: .semibold))
+                    .foregroundStyle(Slate.Text.primary)
                 Text("Adds `/usr/local/bin/aislopdesk` (requests admin once).")
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             installControl
         }
     }
@@ -495,8 +495,8 @@ struct CLIInstallCardBody: View {
         if installer.phase == .working {
             ProgressView().controlSize(.small)
         } else if cliInstalled {
-            HStack(spacing: Otty.Metric.space2) {
-                Label("Installed", systemImage: "checkmark").foregroundStyle(Otty.Status.ok)
+            HStack(spacing: Slate.Metric.space2) {
+                Label("Installed", systemImage: "checkmark").foregroundStyle(Slate.Status.ok)
                 Button("Uninstall") { Task { await installer.uninstall() } }
                     .buttonStyle(.bordered)
             }

@@ -1,4 +1,4 @@
-// OpenQuicklyView — the floating Open-Quickly picker (E11 / WI-6), the otty Xcode-style `⌘⇧O` multi-source
+// OpenQuicklyView — the floating Open-Quickly picker (E11 / WI-6), an Xcode-style `⌘⇧O` multi-source
 // quick switcher (`open-quickly.png`). It FOLDS in the E10 Jump-To panel: ONE centered, SCRIMMED card with a
 // pre-focused search field, a row of filter pills (All / Opened / Recent / Folders / Agents / Current /
 // Recipes — SSH is absent by product decision), a sectioned + fuzzy-ranked result list, a per-row `⌘K` Actions
@@ -17,7 +17,7 @@
 // Picker-LOCAL keys (handled here, NEVER globally registered): `Tab`/`⇧Tab` cycle pills, `⌘1–9` quick-pick a
 // visible row, `⌘K` toggles the Actions popover, `⌘0/⌘W/⌘R/⌘Z/⌘G/⌘J/⌘E` jump straight to a pill, `↑`/`↓`
 // move, `↩` runs the selected row, `Esc` closes. The scrim + centering + fade are added by `OverlayHostView`;
-// OpenQuicklyView IS the panel. `Otty.*` tokens ONLY (raw font/colour/radius literals fail check-ds-leaks).
+// OpenQuicklyView IS the panel. `Slate.*` tokens ONLY (raw font/colour/radius literals fail check-ds-leaks).
 
 #if canImport(SwiftUI)
 import AislopdeskProtocol
@@ -43,7 +43,7 @@ struct OpenQuicklyView: View {
     @State private var selection = 0
     /// Whether the ⌘K Actions popover is shown for the selected row.
     @State private var actionsVisible = false
-    /// The ⌘K Actions popover's fuzzy filter query (otty parity: the action set is itself searchable).
+    /// The ⌘K Actions popover's fuzzy filter query (the action set is itself searchable).
     @State private var actionsQuery = ""
     /// The keyboard-highlighted action index within the popover's FILTERED action list.
     @State private var actionsSelection = 0
@@ -55,11 +55,11 @@ struct OpenQuicklyView: View {
     @State private var agentItems: [OpenQuicklyItem] = []
     /// Whether an Agents fetch is in flight (drives the honest "Loading agents…" state).
     @State private var agentsLoading = false
-    /// The **Recipes** rows — the saved `.ottyrecipe` library, snapshotted on appear (the library is
+    /// The **Recipes** rows — the saved `.aislopdeskrecipe` library, snapshotted on appear (the library is
     /// on-disk; a rescan on every keystroke would be wasteful). Rebuilt when the picker closes+reopens.
     @State private var recipeItems: [OpenQuicklyItem] = []
 
-    /// Pre-focuses the search field on appear so typing reaches it immediately (otty parity).
+    /// Pre-focuses the search field on appear so typing reaches it immediately.
     @FocusState private var searchFocused: Bool
     /// Pre-focuses the ⌘K Actions popover's filter field when it opens (so typing filters actions at once).
     @FocusState private var actionsFocused: Bool
@@ -85,13 +85,13 @@ struct OpenQuicklyView: View {
             footerBar
         }
         .frame(width: panelWidth)
-        .background(Otty.Surface.card)
-        .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard))
+        .background(Slate.Surface.card)
+        .clipShape(RoundedRectangle(cornerRadius: Slate.Metric.radiusCard))
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusCard)
-                .stroke(Otty.Line.card, lineWidth: Otty.Metric.hairline),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusCard)
+                .stroke(Slate.Line.card, lineWidth: Slate.Metric.hairline),
         )
-        .shadow(color: Otty.State.shadow, radius: 30, x: 0, y: 12)
+        .shadow(color: Slate.State.shadow, radius: 30, x: 0, y: 12)
         .onAppear {
             snapshotCurrent()
             recipeItems = OpenQuicklyModel.recipeItems(from: store.savedRecipeFiles())
@@ -134,26 +134,26 @@ struct OpenQuicklyView: View {
 
     private var divider: some View {
         Rectangle()
-            .fill(Otty.Line.divider)
-            .frame(height: Otty.Metric.hairline)
+            .fill(Slate.Line.divider)
+            .frame(height: Slate.Metric.hairline)
     }
 
     // MARK: - Search bar
 
     private var searchBar: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Image(systemSymbol: .magnifyingglass)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
             TextField("Search tabs, windows…", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent) // the active caret is the accent colour (otty parity)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.primary)
+                .tint(Slate.State.accent) // the active caret is the accent colour
                 .focused($searchFocused)
                 .onSubmit { actSelected() } // plain ↩ acts + closes
         }
-        .padding(.horizontal, Otty.Metric.space4)
+        .padding(.horizontal, Slate.Metric.space4)
         .frame(height: 48)
         .onAppear {
             // A `@FocusState` set in the same tick the view appears (before its backing responder exists) is
@@ -164,18 +164,18 @@ struct OpenQuicklyView: View {
 
     // MARK: - Filter pill bar
 
-    /// The otty pill ring (open-quickly.png): the active pill is FILLED (`Otty.State.selected`) with primary
-    /// text; inactive pills are OUTLINED (`Otty.Line.card`) with secondary text. SSH is absent by
+    /// The filter pill ring (open-quickly.png): the active pill is FILLED (`Slate.State.selected`) with primary
+    /// text; inactive pills are OUTLINED (`Slate.Line.card`) with secondary text. SSH is absent by
     /// product decision (see ``OpenQuicklyFilter``). Recipes is now wired (E16 complete).
     private var pillBar: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             ForEach(OpenQuicklyFilter.pickerPills, id: \.self) { filter in
                 pill(filter)
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, Otty.Metric.space3)
-        .padding(.vertical, Otty.Metric.space2)
+        .padding(.horizontal, Slate.Metric.space3)
+        .padding(.vertical, Slate.Metric.space2)
     }
 
     private func pill(_ filter: OpenQuicklyFilter) -> some View {
@@ -184,15 +184,15 @@ struct OpenQuicklyView: View {
             coordinator.setOpenQuicklyFilter(filter)
         } label: {
             Text(filter.label)
-                .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                .foregroundStyle(active ? Otty.Text.primary : Otty.Text.secondary)
-                .padding(.horizontal, Otty.Metric.space3)
-                .padding(.vertical, Otty.Metric.space1)
+                .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                .foregroundStyle(active ? Slate.Text.primary : Slate.Text.secondary)
+                .padding(.horizontal, Slate.Metric.space3)
+                .padding(.vertical, Slate.Metric.space1)
                 .background(
-                    Capsule().fill(active ? Otty.State.selected : Color.clear),
+                    Capsule().fill(active ? Slate.State.selected : Color.clear),
                 )
                 .overlay(
-                    Capsule().stroke(active ? Color.clear : Otty.Line.card, lineWidth: Otty.Metric.hairline),
+                    Capsule().stroke(active ? Color.clear : Slate.Line.card, lineWidth: Slate.Metric.hairline),
                 )
         }
         .buttonStyle(.plain)
@@ -212,12 +212,12 @@ struct OpenQuicklyView: View {
                         }
                     }
                 }
-                .padding(.vertical, Otty.Metric.space1)
+                .padding(.vertical, Slate.Metric.space1)
             }
             .frame(maxHeight: resultsMaxHeight)
             .onChange(of: selection) { _, _ in
                 guard let id = selectedRowID else { return }
-                withAnimation(Otty.Anim.smallFade) { proxy.scrollTo(id, anchor: .center) }
+                withAnimation(Slate.Anim.smallFade) { proxy.scrollTo(id, anchor: .center) }
             }
         }
     }
@@ -234,49 +234,49 @@ struct OpenQuicklyView: View {
 
     private func sectionHeader(_ filter: OpenQuicklyFilter) -> some View {
         Text(filter.sectionHeader)
-            .font(.system(size: Otty.Typeface.small, weight: .semibold))
+            .font(.system(size: Slate.Typeface.small, weight: .semibold))
             .tracking(0.8)
-            .foregroundStyle(Otty.State.header)
+            .foregroundStyle(Slate.State.header)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Otty.Metric.space3)
-            .padding(.top, Otty.Metric.space3)
-            .padding(.bottom, Otty.Metric.space1)
+            .padding(.horizontal, Slate.Metric.space3)
+            .padding(.top, Slate.Metric.space3)
+            .padding(.bottom, Slate.Metric.space1)
             .id("header:\(filter.rawValue)")
     }
 
     private var emptyState: some View {
         Text(emptyMessage)
-            .font(.system(size: Otty.Typeface.body))
-            .foregroundStyle(Otty.Text.tertiary)
+            .font(.system(size: Slate.Typeface.body))
+            .foregroundStyle(Slate.Text.tertiary)
             .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.vertical, Otty.Metric.space4)
+            .padding(.vertical, Slate.Metric.space4)
     }
 
     private func row(_ item: OpenQuicklyItem, selectableIndex: Int) -> some View {
         let isSelected = selectableIndex == selection
-        return HStack(spacing: Otty.Metric.space2) {
+        return HStack(spacing: Slate.Metric.space2) {
             Image(systemName: item.symbol)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
                 .frame(width: 18, alignment: .center)
             highlightedTitle(item)
-                .font(.system(size: Otty.Typeface.body))
+                .font(.system(size: Slate.Typeface.body))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .layoutPriority(1)
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             if let subtitle = item.subtitle {
                 Text(subtitle)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: 240, alignment: .trailing)
             }
             if let stamp = item.timestamp {
                 Text(OutlinePresentation.relativeTime(from: stamp, now: Date()))
-                    .font(.system(size: Otty.Typeface.small))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.small))
+                    .foregroundStyle(Slate.Text.tertiary)
                     .monospacedDigit()
             }
             badge(item.badge)
@@ -290,22 +290,22 @@ struct OpenQuicklyView: View {
                 actionsVisible = true
             } label: {
                 Image(systemSymbol: .ellipsisCircle)
-                    .font(.system(size: Otty.Typeface.body))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.body))
+                    .foregroundStyle(Slate.Text.secondary)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Actions")
             #endif
         }
-        .padding(.horizontal, Otty.Metric.space3)
+        .padding(.horizontal, Slate.Metric.space3)
         .frame(height: 38)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusItem)
-                .fill(isSelected ? Otty.State.selected : Color.clear),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusItem)
+                .fill(isSelected ? Slate.State.selected : Color.clear),
         )
-        .padding(.horizontal, Otty.Metric.space2)
+        .padding(.horizontal, Slate.Metric.space2)
         .contentShape(Rectangle())
         .onHover { hovering in if hovering { selection = selectableIndex } }
         .onTapGesture { act(item) }
@@ -321,13 +321,13 @@ struct OpenQuicklyView: View {
 
     private func badge(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: Otty.Typeface.small, weight: .medium))
-            .foregroundStyle(Otty.Text.secondary)
-            .padding(.horizontal, Otty.Metric.space1)
+            .font(.system(size: Slate.Typeface.small, weight: .medium))
+            .foregroundStyle(Slate.Text.secondary)
+            .padding(.horizontal, Slate.Metric.space1)
             .padding(.vertical, 1)
             .background(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
-                    .fill(Otty.Surface.element),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
+                    .fill(Slate.Surface.element),
             )
     }
 
@@ -340,19 +340,19 @@ struct OpenQuicklyView: View {
         let title = item.title
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, let ranges = FuzzyMatcher.score(trimmed, title)?.ranges, !ranges.isEmpty else {
-            return Text(title).foregroundStyle(Otty.Text.primary)
+            return Text(title).foregroundStyle(Slate.Text.primary)
         }
         var segments: [Text] = []
         var cursor = title.startIndex
         for range in ranges where range.lowerBound >= cursor {
             if cursor < range.lowerBound {
-                segments.append(Text(title[cursor..<range.lowerBound]).foregroundStyle(Otty.Text.primary))
+                segments.append(Text(title[cursor..<range.lowerBound]).foregroundStyle(Slate.Text.primary))
             }
-            segments.append(Text(title[range]).foregroundStyle(Otty.State.accent).fontWeight(.semibold))
+            segments.append(Text(title[range]).foregroundStyle(Slate.State.accent).fontWeight(.semibold))
             cursor = range.upperBound
         }
         if cursor < title.endIndex {
-            segments.append(Text(title[cursor...]).foregroundStyle(Otty.Text.primary))
+            segments.append(Text(title[cursor...]).foregroundStyle(Slate.Text.primary))
         }
         return segments.reduce(Text(verbatim: "")) { $0 + $1 }
     }
@@ -360,33 +360,33 @@ struct OpenQuicklyView: View {
     // MARK: - Footer bar (Quick Select ⌘ · <default action> ↩ · Actions ⌘K)
 
     private var footerBar: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             footerHint("Quick Select", glyph: "⌘")
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             footerHint(defaultActionLabel, glyph: "↩")
             footerHint("Actions", glyph: "⌘K")
         }
-        .padding(.horizontal, Otty.Metric.space4)
+        .padding(.horizontal, Slate.Metric.space4)
         .frame(height: 34)
     }
 
     private func footerHint(_ label: String, glyph: String) -> some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             Text(label)
-                .font(.system(size: Otty.Typeface.small))
-                .foregroundStyle(Otty.Text.tertiary)
+                .font(.system(size: Slate.Typeface.small))
+                .foregroundStyle(Slate.Text.tertiary)
             Text(glyph)
-                .font(.system(size: Otty.Typeface.small, weight: .medium))
-                .foregroundStyle(Otty.Text.secondary)
-                .padding(.horizontal, Otty.Metric.space1)
+                .font(.system(size: Slate.Typeface.small, weight: .medium))
+                .foregroundStyle(Slate.Text.secondary)
+                .padding(.horizontal, Slate.Metric.space1)
                 .background(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
-                        .fill(Otty.Surface.element),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
+                        .fill(Slate.Surface.element),
                 )
         }
     }
 
-    /// The context-sensitive default-action verb for the footer's `↩` hint (otty shows "Switch to ↩" for a
+    /// The context-sensitive default-action verb for the footer's `↩` hint ("Switch to ↩" for a
     /// tab/pane, but the verb differs per source). Falls back to "Open" when nothing is selected.
     private var defaultActionLabel: String {
         switch selectedItem?.kind {
@@ -409,45 +409,45 @@ struct OpenQuicklyView: View {
     private func actionsPopover(for item: OpenQuicklyItem) -> some View {
         let actions = filteredActions(for: item)
         return VStack(alignment: .leading, spacing: 0) {
-            // A pre-focused fuzzy filter field (otty parity: spec line 39 — the ⌘K Actions popover is itself
+            // A pre-focused fuzzy filter field (spec line 39 — the ⌘K Actions popover is itself
             // fuzzy-searchable). Typing narrows `actions` through the SAME `FuzzyMatcher.score` the main list
             // uses; ↑/↓ move the highlight; ↩ runs the highlighted action.
             actionsSearchField
             divider
             if actions.isEmpty {
                 Text("No actions")
-                    .font(.system(size: Otty.Typeface.body))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.body))
+                    .foregroundStyle(Slate.Text.tertiary)
                     .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, Otty.Metric.space2)
+                    .padding(.vertical, Slate.Metric.space2)
             } else {
                 ForEach(Array(actions.enumerated()), id: \.offset) { index, action in
                     actionRow(action, index: index, isHighlighted: index == actionsSelection)
                 }
             }
         }
-        .padding(.vertical, Otty.Metric.space1)
+        .padding(.vertical, Slate.Metric.space1)
         .frame(minWidth: 240)
-        .background(Otty.Surface.card)
+        .background(Slate.Surface.card)
         // The popover owns the keyboard while open (its field is focused): ↑/↓ move the highlight over the
         // FILTERED list; ↩ is the field's `.onSubmit`; Esc closes just the popover (not the whole picker).
         .onKeyPress(phases: .down) { press in handleActionsKey(press, count: actions.count) }
     }
 
     private var actionsSearchField: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Image(systemSymbol: .magnifyingglass)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
             TextField("Filter actions…", text: $actionsQuery)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.primary)
+                .tint(Slate.State.accent)
                 .focused($actionsFocused)
                 .onSubmit { runHighlightedAction() }
         }
-        .padding(.horizontal, Otty.Metric.space3)
+        .padding(.horizontal, Slate.Metric.space3)
         .frame(height: 34)
         .onAppear {
             // Same one-runloop-hop focus idiom as the main search field (a `@FocusState` set in the appear
@@ -461,19 +461,19 @@ struct OpenQuicklyView: View {
             action.run()
             close()
         } label: {
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 Image(systemName: action.symbol)
                     .frame(width: 16)
                 Text(action.title)
-                    .font(.system(size: Otty.Typeface.body))
-                Spacer(minLength: Otty.Metric.space3)
+                    .font(.system(size: Slate.Typeface.body))
+                Spacer(minLength: Slate.Metric.space3)
             }
-            .foregroundStyle(Otty.Text.primary)
-            .padding(.horizontal, Otty.Metric.space3)
+            .foregroundStyle(Slate.Text.primary)
+            .padding(.horizontal, Slate.Metric.space3)
             .frame(height: 30)
             .background(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusItem)
-                    .fill(isHighlighted ? Otty.State.selected : Color.clear),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusItem)
+                    .fill(isHighlighted ? Slate.State.selected : Color.clear),
             )
             .contentShape(Rectangle())
         }
@@ -522,12 +522,12 @@ struct OpenQuicklyView: View {
     /// The per-kind ⌘K action table. A **Current** row (a Jump-To detection) reuses the shared
     /// `LinkActionActuator.rowActions(for:JumpToItem,…)` table verbatim (reconstructing the carried
     /// `JumpToItem` — `rowActions` keys only on its act + title); the other kinds (Pane / Folder / Agent /
-    /// Recent) get their otty action subset, with the SSH row dropped (no SSH source exists).
+    /// Recent) get their own per-kind action subset, with the SSH row dropped (no SSH source exists).
     private func rowActions(for item: OpenQuicklyItem) -> [LinkActionActuator.RowAction] {
         typealias RowAction = LinkActionActuator.RowAction
         switch item.act {
         case let .jumpTo(jumpAct):
-            // A Current COMMAND row (otty: "Re-Run in Current Pane · Re-Run in New Tab · Copy Command", per
+            // A Current COMMAND row ("Re-Run in Current Pane · Re-Run in New Tab · Copy Command", per
             // the spec Actions table + ES-E11-3) gets the verbatim-re-run action set, NOT the generic
             // Jump-to+Copy the shared Jump-To table returns. "Re-Run in New Tab" is a deliberate deferral
             // (no defer-bytes-into-a-fresh-PTY store hook exists; pinned in docs/DECISIONS.md) — omitted, not
@@ -551,7 +551,7 @@ struct OpenQuicklyView: View {
             )
             return LinkActionActuator.rowActions(for: jumpItem, store: store, model: activeModel)
         case let .focusPane(id):
-            // otty Tab actions = "Close Tab · Move Tab to New Window · Reveal CWD in Finder · Copy CWD Path".
+            // The Tab action set = "Close Tab · Move Tab to New Window · Reveal CWD in Finder · Copy CWD Path".
             // "Move Tab to New Window" is N/A in this single-window vertical-rail model (pinned N/A in
             // docs/DECISIONS.md — not a dead row); "Switch to Pane" is DROPPED (↩ already switches, so it was
             // a redundant duplicate of the default action). Close routes through the busy-shell/close-confirm
@@ -608,7 +608,7 @@ struct OpenQuicklyView: View {
         }
     }
 
-    /// The Folder ⌘K action table (otty `open-quickly.png` Actions: "Open in New Window · Split Right / Down ·
+    /// The Folder ⌘K action table (`open-quickly.png` Actions: "Open in New Window · Split Right / Down ·
     /// Change Directory Here · Reveal · Copy Path · Forget This Folder"). **Open in New Window** is N/A in the
     /// single-window vertical-rail model (pinned N/A in `docs/DECISIONS.md`, like "Move Tab to New Window") and
     /// is omitted rather than shipped as a dead row. **Split Right / Down** open a FRESH terminal split rooted
@@ -912,7 +912,7 @@ struct OpenQuicklyView: View {
         case let .focusPane(id):
             store.focusPaneTree(id)
         case let .openFolder(path):
-            // The folder default action is otty's "change directory here" — verbatim `cd` into the focused
+            // The folder default action is "change directory here" — verbatim `cd` into the focused
             // pane (parent-if-file is handled by the policy, though a frecent entry is always a directory).
             LinkActionActuator.actuate(.changeDirectoryPTY(path), model: activeModel)
         case let .resumeAgent(sessionID, cwd):

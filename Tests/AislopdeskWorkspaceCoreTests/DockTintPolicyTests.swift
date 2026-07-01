@@ -149,8 +149,8 @@ final class DockTintPolicyTests: XCTestCase {
     // MARK: - revealNextErrorPane: cycle through failing tabs, acknowledging + clearing the tint
 
     /// Clicking the tinted Dock (``revealNextErrorPane()``) jumps to a failing pane and ACKNOWLEDGES it, so a
-    /// second call clears the LAST failing pane and the tint goes inert — the otty "jumps to the next failing
-    /// tab and clears the tint" cycle. Revert-to-confirm-fail: removing the `acknowledgeError` step leaves the
+    /// second call clears the LAST failing pane and the tint goes inert — the "jump to the next failing
+    /// tab and clear the tint" cycle. Revert-to-confirm-fail: removing the `acknowledgeError` step leaves the
     /// tint stuck `.error` after both calls (the second assertion FAILS).
     func testRevealNextErrorPaneCyclesAndClearsTint() throws {
         let store = makeStore()

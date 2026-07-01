@@ -1,4 +1,4 @@
-// AgentInputFooterView — the otty "Claude bottom bar" chip strip (E13 / WI-4). Sits at the bottom of a
+// AgentInputFooterView — the "Claude bottom bar" chip strip (E13 / WI-4). Sits at the bottom of a
 // terminal leaf WHENEVER the pane hosts a detected agent (`claudeStatus != .none`); mounted by
 // ``TerminalLeafView``. The view is DUMB: every pill emits one ``AgentInputFooterAction`` through the
 // injected ``AgentInputFooterCoordinator/handle(_:)`` — the single dispatch site that routes each intent to
@@ -10,7 +10,7 @@
 //   [ file-explorer panel — revealed while the "File explorer" pill is toggled on (W2)                 ]
 //   [ chip strip — "+" add-context · "/remote-control" · "File explorer" · "Rich Input" · Settings     ]
 //
-// `Otty.*` tokens ONLY (raw font / radius / colour literals fail `scripts/check-ds-leaks.sh`). Pure SwiftUI
+// `Slate.*` tokens ONLY (raw font / radius / colour literals fail `scripts/check-ds-leaks.sh`). Pure SwiftUI
 // + SFSafeSymbols — no libghostty / Metal / AppKit, so the file compiles on iOS too (the gate runs
 // `bash scripts/check-ios.sh`). The coordinator is `@Observable`, so reading its derived view-state in
 // `body` (`showsNotificationChip` / `richInputActive` / `fileExplorerActive` / the file listing) tracks
@@ -48,20 +48,20 @@ struct AgentInputFooterView: View {
             }
             chipStrip
         }
-        .background(Otty.Surface.element)
+        .background(Slate.Surface.element)
         // A top hairline detaches the footer from the terminal surface (the PromptQueueStrip idiom).
         .overlay(alignment: .top) {
-            Rectangle().fill(Otty.Line.divider).frame(height: Otty.Metric.hairline)
+            Rectangle().fill(Slate.Line.divider).frame(height: Slate.Metric.hairline)
         }
-        .animation(Otty.Anim.reveal, value: coordinator.showsNotificationChip)
-        .animation(Otty.Anim.reveal, value: coordinator.fileExplorerActive)
+        .animation(Slate.Anim.reveal, value: coordinator.showsNotificationChip)
+        .animation(Slate.Anim.reveal, value: coordinator.fileExplorerActive)
     }
 
     /// The action-pill row — horizontally scrollable so a narrow pane never clips a pill (queue-strip idiom).
     /// Order mirrors docs/30: "+" add-context · "/remote-control" · "File explorer" · "Rich Input" · Settings.
     private var chipStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 // "+" add-context — toggles the file explorer to attach a file (docs/30: "toggles the file
                 // explorer"). Wired by the leaf via `onAddContext`; never a dead stub.
                 FooterPill(symbol: .plus, help: "Add context") {
@@ -94,8 +94,8 @@ struct AgentInputFooterView: View {
                     coordinator.handle(.openAgentSettings)
                 }
             }
-            .padding(.horizontal, Otty.Metric.space3)
-            .padding(.vertical, Otty.Metric.space2)
+            .padding(.horizontal, Slate.Metric.space3)
+            .padding(.vertical, Slate.Metric.space2)
         }
     }
 }
@@ -122,39 +122,39 @@ private struct FooterPill: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Otty.Metric.space1) {
+            HStack(spacing: Slate.Metric.space1) {
                 Image(systemSymbol: symbol)
-                    .font(.system(size: Otty.Typeface.small, weight: .medium))
+                    .font(.system(size: Slate.Typeface.small, weight: .medium))
                 if let label {
                     Text(label)
-                        .font(.system(size: Otty.Typeface.footnote, weight: .medium))
+                        .font(.system(size: Slate.Typeface.footnote, weight: .medium))
                         .lineLimit(1)
                         .fixedSize()
                 }
             }
-            .foregroundStyle(isActive ? Otty.State.accent : Otty.Text.secondary)
-            .padding(.horizontal, Otty.Metric.space2)
+            .foregroundStyle(isActive ? Slate.State.accent : Slate.Text.secondary)
+            .padding(.horizontal, Slate.Metric.space2)
             .frame(height: pillHeight)
-            .background(pillFill, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusControl))
+            .background(pillFill, in: RoundedRectangle(cornerRadius: Slate.Metric.radiusControl))
             .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                    .strokeBorder(pillBorder, lineWidth: Otty.Metric.hairline),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                    .strokeBorder(pillBorder, lineWidth: Slate.Metric.hairline),
             )
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .ottyHelp(help)
+        .slateHelp(help)
         .onHover { hovering = $0 }
-        .animation(Otty.Anim.smallFade, value: hovering)
+        .animation(Slate.Anim.smallFade, value: hovering)
     }
 
     private var pillFill: Color {
-        if isActive { return Otty.State.accentMuted }
-        return hovering ? Otty.State.hover : Otty.Surface.card
+        if isActive { return Slate.State.accentMuted }
+        return hovering ? Slate.State.hover : Slate.Surface.card
     }
 
     private var pillBorder: Color {
-        isActive ? Otty.State.accent.opacity(0.5) : Otty.Line.subtle
+        isActive ? Slate.State.accent.opacity(0.5) : Slate.Line.subtle
     }
 }
 
@@ -169,40 +169,40 @@ private struct FooterNotificationBanner: View {
     @State private var dismissHover = false
 
     var body: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Image(systemSymbol: .bell)
-                .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
-                .foregroundStyle(Otty.Status.ok)
+                .font(.system(size: Slate.Typeface.footnote, weight: .semibold))
+                .foregroundStyle(Slate.Status.ok)
             Button(action: onEnable) {
                 Text("Enable \(agentName) notifications")
-                    .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                    .foregroundStyle(Slate.Text.primary)
                     .lineLimit(1)
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .ottyHelp("Notify when \(agentName) finishes or needs input")
-            Spacer(minLength: Otty.Metric.space2)
+            .slateHelp("Notify when \(agentName) finishes or needs input")
+            Spacer(minLength: Slate.Metric.space2)
             Button(action: onDismiss) {
                 Image(systemSymbol: .xmark)
-                    .font(.system(size: Otty.Typeface.small, weight: .medium))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.small, weight: .medium))
+                    .foregroundStyle(Slate.Text.secondary)
                     .frame(width: 16, height: 16)
                     .background(
-                        dismissHover ? Otty.State.selected : .clear,
-                        in: .rect(cornerRadius: Otty.Metric.radiusSmall),
+                        dismissHover ? Slate.State.selected : .clear,
+                        in: .rect(cornerRadius: Slate.Metric.radiusSmall),
                     )
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .onHover { dismissHover = $0 }
-            .ottyHelp("Dismiss")
+            .slateHelp("Dismiss")
         }
-        .padding(.horizontal, Otty.Metric.space3)
-        .padding(.vertical, Otty.Metric.space2)
-        .background(Otty.Status.ok.opacity(0.12))
+        .padding(.horizontal, Slate.Metric.space3)
+        .padding(.vertical, Slate.Metric.space2)
+        .background(Slate.Status.ok.opacity(0.12))
         .overlay(alignment: .bottom) {
-            Rectangle().fill(Otty.Line.divider).frame(height: Otty.Metric.hairline)
+            Rectangle().fill(Slate.Line.divider).frame(height: Slate.Metric.hairline)
         }
     }
 }
@@ -218,29 +218,29 @@ private struct FooterFileExplorerPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Rectangle().fill(Otty.Line.divider).frame(height: Otty.Metric.hairline)
+            Rectangle().fill(Slate.Line.divider).frame(height: Slate.Metric.hairline)
             content
         }
         .frame(maxHeight: 180)
-        .background(Otty.Surface.content)
+        .background(Slate.Surface.content)
         .overlay(alignment: .bottom) {
-            Rectangle().fill(Otty.Line.divider).frame(height: Otty.Metric.hairline)
+            Rectangle().fill(Slate.Line.divider).frame(height: Slate.Metric.hairline)
         }
     }
 
     private var header: some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             Image(systemSymbol: .folder)
-                .font(.system(size: Otty.Typeface.small, weight: .medium))
-                .foregroundStyle(Otty.Text.icon)
+                .font(.system(size: Slate.Typeface.small, weight: .medium))
+                .foregroundStyle(Slate.Text.icon)
             Text(model.cwd ?? "Working directory")
-                .font(.system(size: Otty.Typeface.small, weight: .medium))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.small, weight: .medium))
+                .foregroundStyle(Slate.Text.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        .padding(.horizontal, Otty.Metric.space3)
-        .padding(.vertical, Otty.Metric.space2)
+        .padding(.horizontal, Slate.Metric.space3)
+        .padding(.vertical, Slate.Metric.space2)
     }
 
     @ViewBuilder private var content: some View {
@@ -270,19 +270,19 @@ private struct FooterFileExplorerPanel: View {
     /// its own path too (the same insert seam), so a future drill-down can replace this without a wire change.
     private func row(_ entry: FileEntry) -> some View {
         Button { onSelect(absolutePath(entry.name)) } label: {
-            HStack(spacing: Otty.Metric.space1) {
+            HStack(spacing: Slate.Metric.space1) {
                 Image(systemSymbol: entry.isDirectory ? .folder : .doc)
-                    .font(.system(size: Otty.Typeface.small, weight: .regular))
-                    .foregroundStyle(Otty.Text.icon)
+                    .font(.system(size: Slate.Typeface.small, weight: .regular))
+                    .foregroundStyle(Slate.Text.icon)
                 Text(entry.name)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, Otty.Metric.space3)
-            .padding(.vertical, Otty.Metric.space1)
+            .padding(.horizontal, Slate.Metric.space3)
+            .padding(.vertical, Slate.Metric.space1)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -290,10 +290,10 @@ private struct FooterFileExplorerPanel: View {
 
     private func note(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: Otty.Typeface.footnote))
-            .foregroundStyle(Otty.Text.tertiary)
-            .padding(.horizontal, Otty.Metric.space3)
-            .padding(.vertical, Otty.Metric.space2)
+            .font(.system(size: Slate.Typeface.footnote))
+            .foregroundStyle(Slate.Text.tertiary)
+            .padding(.horizontal, Slate.Metric.space3)
+            .padding(.vertical, Slate.Metric.space2)
     }
 
     /// Join the panel's cwd (tilde-expanded via the shared ``FilePath``) with the entry name → an absolute

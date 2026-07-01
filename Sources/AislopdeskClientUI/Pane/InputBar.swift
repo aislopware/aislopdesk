@@ -44,7 +44,7 @@ struct InputBar: View {
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             Image(systemName: promptGlyph)
-                .font(.system(size: Otty.Typeface.base, weight: .semibold))
+                .font(.system(size: Slate.Typeface.base, weight: .semibold))
                 .foregroundStyle(model.affordance == .tuiCompose ? Color.accentColor : .secondary)
             field
             Spacer(minLength: 0)
@@ -66,7 +66,7 @@ struct InputBar: View {
         if staticMirror {
             // Static mirror for ImageRenderer: a plain Text of the compose buffer (or placeholder).
             Text(model.compose.isEmpty ? placeholder : model.compose)
-                .font(.system(size: Otty.Typeface.body).monospaced())
+                .font(.system(size: Slate.Typeface.body).monospaced())
                 .foregroundStyle(model.compose.isEmpty ? .tertiary : .primary)
                 .lineLimit(lineLimitRange)
         } else {
@@ -76,7 +76,7 @@ struct InputBar: View {
                 axis: model.richMode ? .vertical : .horizontal,
             )
             .textFieldStyle(.plain)
-            .font(.system(size: Otty.Typeface.body).monospaced())
+            .font(.system(size: Slate.Typeface.body).monospaced())
             .foregroundStyle(.primary)
             .focused($fieldFocused)
             .lineLimit(lineLimitRange)

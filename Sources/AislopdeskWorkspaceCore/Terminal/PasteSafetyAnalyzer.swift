@@ -1,9 +1,9 @@
 import Foundation
 
-// MARK: - Paste-protection danger analyzer (otty parity — E8 / ES-E8-3)
+// MARK: - Paste-protection danger analyzer (E8 / ES-E8-3)
 
-/// PURE analyzer for otty's **Paste Protection** safety net (Settings ▸ Controls). It classifies a
-/// clipboard payload against the four dangers otty's confirmation dialog flags and decides whether the
+/// PURE analyzer for the **Paste Protection** safety net (Settings ▸ Controls). It classifies a
+/// clipboard payload against the four dangers the confirmation dialog flags and decides whether the
 /// dialog should appear at all (the skip rules). No view, no pasteboard, no surface — the testable heart
 /// of the paste-protection sheet (`PasteProtectionSheet`), wired into the libghostty embedder's
 /// `confirm_read_clipboard_cb` decision point (`GhosttyTerminalView`).
@@ -13,7 +13,7 @@ import Foundation
 /// this paste run something dangerous at a shell prompt?", the other answers "would this paste leak a
 /// credential / splat a file into a hidden field?". Do not overload one with the other.
 ///
-/// ## otty's four dangers (per `spec/terminal-features__copy-and-paste.md`)
+/// ## The four dangers (per `docs/ui-shell/spec/terminal-features__copy-and-paste.md`)
 /// - **Multi-line text** — earlier lines would execute the moment they are pasted (newline = Enter).
 /// - **Trailing newline** — the command runs on paste, before the user can review it.
 /// - **`sudo` / `su`** — the paste may run with elevated privileges.
@@ -42,7 +42,7 @@ public enum PasteSafetyAnalyzer {
         public static let controlChars = Self(rawValue: 1 << 3)
     }
 
-    /// Classifies `text` against otty's four paste dangers. Returns an empty set for empty / plainly-safe
+    /// Classifies `text` against the four paste dangers. Returns an empty set for empty / plainly-safe
     /// input (validate-then-skip on empty). Pure + allocation-light; the caller decides what to do with
     /// the result (show the sheet, or list the flags inside it).
     public static func analyze(_ text: String) -> PasteDangers {
@@ -87,7 +87,7 @@ public enum PasteSafetyAnalyzer {
         return dangers
     }
 
-    /// Whether the paste-protection sheet should be shown for `text`, applying otty's skip rules.
+    /// Whether the paste-protection sheet should be shown for `text`, applying the skip rules above.
     /// The booleans are supplied by the embedder from the live config + terminal state so this stays
     /// AppKit-free and unit-testable.
     public static func shouldWarn(

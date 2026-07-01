@@ -245,7 +245,7 @@ final class TerminalViewModelViMotionTests: XCTestCase {
 
     // MARK: Yank exits (spec: y / Enter copy AND exit vi mode)
 
-    /// `y` still copies the mouse-made selection AND now EXITS vi mode (otty spec). Revert-to-fail: the
+    /// `y` still copies the mouse-made selection AND now EXITS vi mode by design. Revert-to-fail: the
     /// un-fixed code copies but leaves `isCopyMode == true`.
     func testYankExitsViMode() {
         let recorder = RecordingSurfaceActions()

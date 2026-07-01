@@ -53,7 +53,7 @@ struct ClientAppMain {
         }
         #endif
 
-        // LOCAL web pane (E18, otty Web Browser Pane): register the production `WKWebView` surface. The
+        // LOCAL web pane (E18, Web Browser Pane): register the production `WKWebView` surface. The
         // cross-platform `AislopdeskClientUI` library cannot reference `WKWebView` directly (it would pull
         // `WebKit` into the headless `swift build`/tests, and a `WKWebView` — like an `SCStream` — must never
         // be built in a test, the CLAUDE.md hang-safety rule), so the GUI app target — which links `WebKit` —

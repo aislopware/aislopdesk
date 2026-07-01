@@ -2,11 +2,11 @@ import Foundation
 
 // MARK: - E10 WI-9 (ES-E10-6): pure Hint Mode target detection + Vimium-style 2-letter label assignment
 
-/// Which hint action the user armed — the otty "Hint to …" family (`terminal-features__hint-mode`).
+/// Which hint action the user armed — the "Hint to …" family (`docs/ui-shell/spec/terminal-features__hint-mode.md`).
 ///
 /// - ``open``: ⌘⇧J — opens the matched target (a file path on the HOST, a URL on the CLIENT, …).
 /// - ``copy``: ⌘⇧Y — copies the matched text to the CLIENT clipboard.
-/// - ``reveal``: (chord-less — ⌘⇧R is otty's Toggle Details on aislopdesk) — reveals the matched PATH in
+/// - ``reveal``: (chord-less — ⌘⇧R is aislopdesk's Toggle Details) — reveals the matched PATH in
 ///   Finder on the HOST.
 public enum HintIntent: Equatable, Sendable {
     case open
@@ -14,7 +14,7 @@ public enum HintIntent: Equatable, Sendable {
     case reveal
 }
 
-/// A user-defined hint pattern (otty `hint-pattern` + `hint-pattern-action`): a regex string plus an
+/// A user-defined hint pattern (`hint-pattern` + `hint-pattern-action`): a regex string plus an
 /// optional shell-command action template whose `{0}` placeholder is replaced with the matched text.
 public struct HintPattern: Equatable, Sendable {
     /// The regex (ICU `NSRegularExpression` syntax) that defines a custom hintable span.
@@ -63,7 +63,7 @@ public struct HintTarget: Equatable, Sendable {
     }
 }
 
-/// The PURE heart of otty Hint Mode (E10 ES-E10-6): scan the visible viewport rows for every hintable
+/// The PURE heart of Hint Mode (E10 ES-E10-6): scan the visible viewport rows for every hintable
 /// target (paths/URLs via the shared ``TerminalLinkDetector``, plus git-hash / IPv4 / user `hint-pattern`
 /// forms), then assign **collision-free 2-letter** Vimium labels and filter them as the user types.
 ///
@@ -125,7 +125,7 @@ public enum HintLabelAssigner {
 
     /// Filter `labels` against `typed` (the keys entered so far). Empty `typed` ⇒ all matched, none dimmed.
     /// One letter ⇒ matched are the labels with that first letter (the rest dim). Two letters ⇒ `confirmed`
-    /// is the exact label (if any) — the second key confirms with no Enter (otty parity).
+    /// is the exact label (if any) — the second key confirms with no Enter required.
     public static func filter(typed: String, labels: [String]) -> FilterResult {
         let key = typed.lowercased()
         guard !key.isEmpty else {

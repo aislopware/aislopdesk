@@ -27,8 +27,9 @@ public extension WorkspaceStore {
     ///   `.vertical` for Split-Down.
     ///
     /// Then schedules a deferred `cd '<path>' 2>/dev/null || cd '<parent>'\n` into the freshly-minted pane.
-    /// The dropped path is HOST-resolved (otty is local, we are remote — the receiver layers an advisory
-    /// toast on top); the parent fallback matches a dropped FILE landing in its containing folder. A no-op
+    /// The dropped path is HOST-resolved (the destination terminal runs on the remote host, not this device —
+    /// the receiver layers an advisory toast on top); the parent fallback matches a dropped FILE landing in
+    /// its containing folder. A no-op
     /// when no new pane materializes (e.g. a split with no active pane). `launchGrace` is parameterized so a
     /// test injects `0` ms to observe the send without the 1.5 s wall-clock wait; production defers PAST the
     /// 1400 ms inheritance `cd` (`> deferInheritedCwd`'s grace) so the drop wins the final cwd.

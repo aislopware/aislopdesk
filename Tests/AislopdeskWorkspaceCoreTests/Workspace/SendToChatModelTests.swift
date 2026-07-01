@@ -36,7 +36,7 @@ final class SendToChatModelTests: XCTestCase {
         XCTAssertNil(SendToChatModel.capture(title: "pane", selection: "", lastOutput: "   "))
     }
 
-    // MARK: - compose: quoted block + comment (VERBATIM, otty frame-05 shape)
+    // MARK: - compose: quoted block + comment (VERBATIM, blockquote-then-comment shape)
 
     func testComposeQuotesEachLineAndAppendsComment() {
         let ctx = SendToChatContext(title: "pane", quoted: "line1\nline2")

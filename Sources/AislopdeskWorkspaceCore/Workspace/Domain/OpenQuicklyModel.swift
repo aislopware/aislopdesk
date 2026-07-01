@@ -3,13 +3,13 @@ import Foundation
 
 // MARK: - E11 WI-3 (ES-E11-1..4): the pure Open-Quickly (`⌘⇧O`) switcher model
 
-/// The otty Open-Quickly filter pills — the `⌘⇧O` taxonomy (distinct from the `⌘⇧P` command-palette
+/// The Open-Quickly filter pills — the `⌘⇧O` taxonomy (distinct from the `⌘⇧P` command-palette
 /// `QueryFilter`). One floating picker fuzzy-searches across these sources; `.all` merges the rest into a
 /// single ranked list with ALL-CAPS section headers.
 ///
 /// ### Pill set
-/// otty ships eight pills (`All / Opened / Recent / Folders / SSH / Agents / Current / Recipes`). Aislopdesk
-/// drops one by binding decision:
+/// The full pill set considered was `All / Opened / Recent / Folders / SSH / Agents / Current / Recipes`.
+/// One is dropped by binding decision:
 /// - **SSH** is a product cut (no `~/.ssh/config` parse, no `⌘S` chord, no SSH Actions row).
 ///
 /// So the pill ring is **All / Opened / Recent / Folders / Agents / Current / Recipes** — SSH is a structural
@@ -28,7 +28,7 @@ public enum OpenQuicklyFilter: String, CaseIterable, Equatable, Hashable, Sendab
     case agents
     /// The focused pane's detected links + command/prompt index (`⌘J` / Jump-To).
     case current
-    /// Saved `.ottyrecipe` files from the recipe library (`⌘E`). Backed by ``RecipeLibrary``.
+    /// Saved `.aislopdeskrecipe` files from the recipe library (`⌘E`). Backed by ``RecipeLibrary``.
     case recipes
 
     // SSH pill: dropped by product decision (no ~/.ssh/config parse).
@@ -55,8 +55,8 @@ public enum OpenQuicklyFilter: String, CaseIterable, Equatable, Hashable, Sendab
         }
     }
 
-    /// The ALL-CAPS group header this source renders under in the merged `.all` list (otty's "WINDOWS"/"TABS"
-    /// styling, mapped to our pill names).
+    /// The ALL-CAPS group header this source renders under in the merged `.all` list (an uppercased pill
+    /// name, e.g. "WINDOWS"/"TABS"-style styling).
     public var sectionHeader: String { label.uppercased() }
 
     /// The pill's leading SF Symbol name (`Image(systemName:)`).
@@ -113,7 +113,7 @@ public enum OpenQuicklyKind: String, CaseIterable, Equatable, Hashable, Sendable
     case path
     case url
     case fileURL
-    /// A saved `.ottyrecipe` file from the recipe library (E16 Recipes pill).
+    /// A saved `.aislopdeskrecipe` file from the recipe library (E16 Recipes pill).
     case recipe
 
     /// The trailing type-badge label the row renders flush-right.
@@ -281,7 +281,7 @@ public enum OpenQuicklyModel {
     /// Build the picker sections for `filter`, ranking each source against `query` with the injected `score`.
     ///
     /// - `.all`: one section per source in ``OpenQuicklyFilter/sectionOrder``, EMPTY sources omitted (no
-    ///   stray header) — otty's merged-with-headers list.
+    ///   stray header) — the merged-with-headers list.
     /// - a specific pill: exactly ONE section for that source (kept even when empty, so the view renders the
     ///   honest empty-state rather than a blank panel).
     public static func sectioned(
@@ -494,7 +494,7 @@ public enum OpenQuicklyModel {
         return nil
     }
 
-    /// Build the **Recipes** rows from the saved `.ottyrecipe` library. Each parseable file becomes one row
+    /// Build the **Recipes** rows from the saved `.aislopdeskrecipe` library. Each parseable file becomes one row
     /// (malformed / `nil`-recipe files are skipped — validate-then-drop: CLAUDE.md §3). `↩` opens the recipe
     /// through the store's trust/replay pipeline (``WorkspaceStore/openRecipe(at:source:)``). The display
     /// title is the recipe's `name` field (falling back to the filename stem); the subtitle is the file path.

@@ -1,13 +1,13 @@
-// InspectorColumn — the right Details panel (otty port). otty's Details panel (binary §5) is a SEGMENTED
-// header (active tab = icon+label pill, inactive = icon only) over a warm panel; hidden until ⌘⇧R. This ports
-// that silhouette and keeps aislopdesk's live content under the Info tab:
+// InspectorColumn — the right Details panel. The Details panel is a SEGMENTED
+// header (active tab = icon+label pill, inactive = icon only) over a warm panel; hidden until ⌘⇧R.
+// It keeps aislopdesk's live content under the Info tab:
 //   • Info  — the live SESSION (connection dot+label, host:port, ping, agent) + working directory + the
 //             first-class command navigator (`BlockHistoryView` over the active pane's `TerminalBlockModel`).
-//   • Git / Files — otty-styled empty states for now (no live git/file datum flows to this panel yet).
+//   • Git / Files — themed empty states for now (no live git/file datum flows to this panel yet).
 //
 // Resolution mirrors `PaneContainer`: `store.handle(for: paneID) as? LivePaneSession` keyed by the active
 // tab's active pane. Reading `connection.status` + `LivePaneSession.claudeStatus` + `connection?.latencyMS`
-// (all @Observable) keeps Info live. otty tokens / fonts only.
+// (all @Observable) keeps Info live. Shared design-system tokens / fonts only.
 
 #if canImport(SwiftUI)
 import AislopdeskAgentDetect
@@ -115,11 +115,11 @@ struct InspectorColumn: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Rectangle().fill(Otty.Line.divider).frame(height: 1)
+            Rectangle().fill(Slate.Line.divider).frame(height: 1)
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(Otty.Surface.sidebar)
+        .background(Slate.Surface.sidebar)
         .task(id: refreshKey) { await bindAndRefresh() }
         .sheet(isPresented: $showSessionHistory) {
             AgentSessionHistoryView(
@@ -183,7 +183,7 @@ struct InspectorColumn: View {
         }
     }
 
-    // MARK: Segmented header (otty Details bar — active = icon+label pill, inactive = icon only)
+    // MARK: Segmented header (Details bar — active = icon+label pill, inactive = icon only)
 
     private var header: some View {
         HStack(spacing: 2) {
@@ -200,16 +200,16 @@ struct InspectorColumn: View {
     private func tabButton(_ tab: DetailsPanelTab) -> some View {
         let active = tab == details.selected
         return Button {
-            withAnimation(Otty.Anim.standard) { details.selected = tab }
+            withAnimation(Slate.Anim.standard) { details.selected = tab }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: tab.icon).font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                if active { Text(tab.title).font(.system(size: Otty.Typeface.footnote, weight: .medium)) }
+                Image(systemName: tab.icon).font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                if active { Text(tab.title).font(.system(size: Slate.Typeface.footnote, weight: .medium)) }
             }
-            .foregroundStyle(active ? Otty.Text.primary : Otty.Text.icon)
+            .foregroundStyle(active ? Slate.Text.primary : Slate.Text.icon)
             .padding(.horizontal, active ? 8 : 6)
             .frame(height: 24)
-            .background(active ? Otty.State.hover : .clear, in: .rect(cornerRadius: Otty.Metric.radiusControl))
+            .background(active ? Slate.State.hover : .clear, in: .rect(cornerRadius: Slate.Metric.radiusControl))
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -250,7 +250,7 @@ struct InspectorColumn: View {
             workingDirectorySection
             sectionDivider
             ProcessPortsView(model: activeModel)
-                .padding(.bottom, Otty.Metric.space2)
+                .padding(.bottom, Slate.Metric.space2)
             if isAgentPane {
                 sectionDivider
                 agentSessionsSection
@@ -267,25 +267,25 @@ struct InspectorColumn: View {
     /// Copy Path is the only working-directory action E9 ships. The canonical home for the cwd (the old
     /// truncated Session "Dir" row was removed).
     private var workingDirectorySection: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
-            OttySectionHeader("Working Directory")
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
+            SlateSectionHeader("Working Directory")
             Text(InfoTabFormatting.displayPath(resolvedCwd))
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.primary)
                 .textSelection(.enabled)
                 .lineLimit(1)
                 .truncationMode(.head)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, Otty.Metric.space3)
+                .padding(.horizontal, Slate.Metric.space3)
             Button(action: copyWorkingDirectory) {
-                HStack(spacing: Otty.Metric.space2) {
+                HStack(spacing: Slate.Metric.space2) {
                     Image(systemName: "doc.on.doc")
                     Text("Copy Path")
                     Spacer(minLength: 0)
                 }
-                .font(.system(size: Otty.Typeface.base))
-                .foregroundStyle(Otty.State.accent)
-                .padding(.horizontal, Otty.Metric.space3)
+                .font(.system(size: Slate.Typeface.base))
+                .foregroundStyle(Slate.State.accent)
+                .padding(.horizontal, Slate.Metric.space3)
                 .padding(.vertical, 3)
                 .contentShape(.rect)
             }
@@ -294,8 +294,8 @@ struct InspectorColumn: View {
             .help("Copy the working-directory path")
             .accessibilityLabel("Copy the working-directory path")
         }
-        .padding(.top, Otty.Metric.space1)
-        .padding(.bottom, Otty.Metric.space2)
+        .padding(.top, Slate.Metric.space1)
+        .padding(.bottom, Slate.Metric.space2)
     }
 
     /// Writes the resolved working-directory path to the system pasteboard — the `RemoteFileTreeView.copyPath`
@@ -314,13 +314,13 @@ struct InspectorColumn: View {
     /// The Info-tab AGENT-PANE section (E4/WI-6, `info-panel.png` › the agent-named section — labelled with the
     /// agent's name, "Claude Code" here per the Claude-only scope). Shown when the focused pane is a live agent
     /// (``isAgentPane``), NOT gated on whether on-disk sessions exist — so the section appears for a freshly
-    /// started agent, matching otty. Carries the agent-specific actions: **Copy Session ID** (the live session
+    /// started agent. Carries the agent-specific actions: **Copy Session ID** (the live session
     /// id; disabled until known) and **View Session History** (presents `AgentSessionHistoryView`; the trailing
-    /// count hints how many sessions are available when ≥ 1). otty's "Fork in…" is a separate agent-fork
-    /// surface, not shipped here.
+    /// count hints how many sessions are available when ≥ 1). A separate agent-fork surface ("Fork in…") is
+    /// not shipped here.
     private var agentSessionsSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            OttySectionHeader("Claude Code")
+            SlateSectionHeader("Claude Code")
             agentActionRow(
                 systemImage: "doc.on.doc",
                 title: "Copy Session ID",
@@ -334,16 +334,16 @@ struct InspectorColumn: View {
             ) {
                 if !activeModel.agentSessions.isEmpty {
                     Text(String(activeModel.agentSessions.count))
-                        .font(.system(size: Otty.Typeface.footnote))
-                        .foregroundStyle(Otty.Text.tertiary)
+                        .font(.system(size: Slate.Typeface.footnote))
+                        .foregroundStyle(Slate.Text.tertiary)
                         .monospacedDigit()
                 }
             }
         }
-        .padding(.bottom, Otty.Metric.space2)
+        .padding(.bottom, Slate.Metric.space2)
     }
 
-    /// One otty-styled agent action row: a leading SF Symbol + an accent label, with an optional trailing
+    /// One themed agent action row: a leading SF Symbol + an accent label, with an optional trailing
     /// accessory (e.g. the session count). A `disabled` row renders muted and is non-tappable.
     private func agentActionRow(
         systemImage: String,
@@ -353,15 +353,15 @@ struct InspectorColumn: View {
         @ViewBuilder trailing: () -> some View = { EmptyView() },
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 Image(systemName: systemImage)
                 Text(title)
-                Spacer(minLength: Otty.Metric.space2)
+                Spacer(minLength: Slate.Metric.space2)
                 trailing()
             }
-            .font(.system(size: Otty.Typeface.base))
-            .foregroundStyle(disabled ? Otty.Text.tertiary : Otty.State.accent)
-            .padding(.horizontal, Otty.Metric.space3)
+            .font(.system(size: Slate.Typeface.base))
+            .foregroundStyle(disabled ? Slate.Text.tertiary : Slate.State.accent)
+            .padding(.horizontal, Slate.Metric.space3)
             .padding(.vertical, 3)
             .contentShape(.rect)
         }
@@ -383,26 +383,26 @@ struct InspectorColumn: View {
     }
 
     private var sectionDivider: some View {
-        Rectangle().fill(Otty.Line.divider).frame(height: 1).padding(.horizontal, Otty.Metric.space3)
+        Rectangle().fill(Slate.Line.divider).frame(height: 1).padding(.horizontal, Slate.Metric.space3)
     }
 
     private var sessionSection: some View {
         let status = connection.status
         return VStack(alignment: .leading, spacing: 8) {
-            OttySectionHeader("Session")
+            SlateSectionHeader("Session")
             // The Status row is a button: tapping it opens the Connect-to-Host editor (ES-E2-6) — the
             // GUI-verifiable macOS connect affordance, pre-seeded with the current (possibly failing) host.
             Button(action: onConnect) {
-                OttyKeyValueRow(label: "Status") {
+                SlateKeyValueRow(label: "Status") {
                     HStack(spacing: 6) {
-                        OttyStatusDot(
+                        SlateStatusDot(
                             color: StatusPresentation.connectionColor(status),
                             glowKey: StatusPresentation.connectionLabel(status),
                         )
                         Text(StatusPresentation.connectionLabel(status))
                         Image(systemName: "chevron.right")
-                            .font(.system(size: Otty.Typeface.small))
-                            .foregroundStyle(Otty.Text.tertiary)
+                            .font(.system(size: Slate.Typeface.small))
+                            .foregroundStyle(Slate.Text.tertiary)
                     }
                 }
                 .contentShape(.rect)
@@ -410,17 +410,17 @@ struct InspectorColumn: View {
             .buttonStyle(.plain)
             .help("Connect to a host…")
             .accessibilityLabel("Connection status — tap to connect to a host")
-            OttyKeyValueRow(label: "Host") {
+            SlateKeyValueRow(label: "Host") {
                 Text("\(connection.target.host):\(String(connection.target.port))")
                     .lineLimit(1).truncationMode(.middle)
             }
             if case .connected = status, let activePingMS {
-                OttyKeyValueRow(label: "Ping") {
+                SlateKeyValueRow(label: "Ping") {
                     Text("\(Int(activePingMS.rounded())) ms").monospacedDigit()
                 }
             }
             if let symbol = StatusPresentation.agentSymbol(activeAgentStatus) {
-                OttyKeyValueRow(label: "Agent") {
+                SlateKeyValueRow(label: "Agent") {
                     HStack(spacing: 6) {
                         Image(systemName: symbol).foregroundStyle(StatusPresentation.agentTint(activeAgentStatus))
                         Text(StatusPresentation.agentLabel(activeAgentStatus))
@@ -428,9 +428,9 @@ struct InspectorColumn: View {
                 }
             }
         }
-        .font(.system(size: Otty.Typeface.base))
-        .padding(.horizontal, Otty.Metric.space3)
-        .padding(.vertical, Otty.Metric.space2 + 2)
+        .font(.system(size: Slate.Typeface.base))
+        .padding(.horizontal, Slate.Metric.space3)
+        .padding(.vertical, Slate.Metric.space2 + 2)
     }
 
     @ViewBuilder private var commandsSection: some View {
@@ -455,7 +455,7 @@ struct InspectorColumn: View {
 /// The segmented Details header's per-tab DISPLAY (E9/WI-7): the short label + SF Symbol for each
 /// ``DetailsPanelTab``. Kept as a view-local extension (NOT on the core `DetailsPanelTab`, which stays a pure
 /// value enum) so the SF-symbol / title strings live in the UI layer; `internal` so the placement pin in
-/// `InspectorRenderingTests` reaches it via `@testable import`. otty tab order is Info | Outline | Git | Files.
+/// `InspectorRenderingTests` reaches it via `@testable import`. Tab order is Info | Outline | Git | Files.
 extension DetailsPanelTab {
     /// The short header label (NOT the `Details: …` palette title) shown when the tab is active.
     var title: String {
@@ -479,7 +479,7 @@ extension DetailsPanelTab {
 }
 
 /// Pure formatting for the Info tab's Working Directory section (E9/WI-6) — extracted so the cwd → display
-/// normalisation is headlessly testable (no view, no `Otty` theme read). Mirrors the `MetadataFormatting`
+/// normalisation is headlessly testable (no view, no `Slate` theme read). Mirrors the `MetadataFormatting`
 /// pure-helper precedent so the WD section isn't purely GUI.
 enum InfoTabFormatting {
     /// The display string for a working-directory path: a `nil` or empty path renders the em-dash

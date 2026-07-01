@@ -1,7 +1,7 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E3 WI-1 (ES-E3-3): pins the otty `new-tab-position` policy — the pure
+/// E3 WI-1 (ES-E3-3): pins the `new-tab-position` policy — the pure
 /// ``NewTabPosition/insertionIndex(activeTabIndex:tabCount:)`` math, the `at:`-aware
 /// ``WorkspaceTreeOps/newTab(in:spec:at:)`` / ``WorkspaceTreeOps/insertTab(_:specs:at:in:)`` placement, and
 /// the `SettingsKey.newTabPosition` Defaults bridge.
@@ -163,9 +163,9 @@ final class NewTabPositionTests: XCTestCase {
         XCTAssertEqual(SettingsKey.newTabPosition, .auto, "invalid raw value falls back to auto")
     }
 
-    /// The raw values are the otty `new-tab-position` config strings — pinned so a rename can't split-brain
-    /// the persisted setting from the otty value a future Shell-settings row writes.
-    func testRawValuesMatchOttyConfig() {
+    /// The raw values are the `new-tab-position` config strings — pinned so a rename can't split-brain
+    /// the persisted setting from the value a future Shell-settings row writes.
+    func testRawValuesMatchSlateConfig() {
         XCTAssertEqual(NewTabPosition.auto.rawValue, "auto")
         XCTAssertEqual(NewTabPosition.end.rawValue, "end")
         XCTAssertEqual(NewTabPosition.afterCurrent.rawValue, "after-current")

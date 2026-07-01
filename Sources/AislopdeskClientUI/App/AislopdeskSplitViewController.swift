@@ -90,7 +90,7 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         // 1) Sidebar — the navigator (sessions / panes). A PLAIN split item, NOT
         //    `NSSplitViewItem(sidebarWithViewController:)`: the native sidebar style paints system vibrancy +
         //    inset-grouped/rounded selection, which is the "native SwiftUI rounded corners" look we are
-        //    replacing. A plain item lets `NavigatorColumn` paint otty's flat warm panel + white-card rows.
+        //    replacing. A plain item lets `NavigatorColumn` paint its own flat warm panel + white-card rows.
         //    Holding priority above the content's default so window-resize grows the content, not the sidebar.
         let navigator = NSHostingController(rootView: NavigatorColumn(
             store: store, preferences: preferences, connection: connection, onConnect: onConnect,
@@ -101,7 +101,7 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         sidebarItem.canCollapse = true
         sidebarItem.holdingPriority = NSLayoutConstraint.Priority(260)
 
-        // 2) Content — the pane grid (terminal / claude / remote) + otty's hover-reveal titlebar overlay.
+        // 2) Content — the pane grid (terminal / claude / remote) + the hover-reveal titlebar overlay.
         //    The non-collapsible centre. `chrome` drives the titlebar's sidebar/Details toggles.
         let content = NSHostingController(
             rootView: ContentColumn(store: store, connection: connection, chrome: chrome),
@@ -110,9 +110,8 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         contentItem.minimumThickness = 420
 
         // 3) Inspector — the Session + Commands navigator (host/ping/agent status + the active pane's
-        //    command blocks). HIDDEN by default so the resting window is otty's two-column (sidebar | content)
-        //    silhouette; revealed from the toolbar (L4a). Matches otty, whose Details panel is hidden until
-        //    ⌘⇧R.
+        //    command blocks). HIDDEN by default so the resting window is a two-column (sidebar | content)
+        //    silhouette; revealed from the toolbar (L4a) or ⌘⇧R.
         let inspector = NSHostingController(
             rootView: InspectorColumn(
                 store: store, connection: connection, details: details,
@@ -201,10 +200,10 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + resizeSettleDelay, execute: work)
     }
 
-    /// Pin the WINDOW's appearance to the active otty theme. The three columns are hosted in
+    /// Pin the WINDOW's appearance to the active theme. The three columns are hosted in
     /// `NSHostingController`s inside this AppKit split controller, so they do NOT inherit the SwiftUI
     /// `.preferredColorScheme` set on `WorkspaceRootView` — any system-dynamic colour / material in a column
-    /// would otherwise resolve to the OS appearance and clash with the pinned otty palette (e.g. white text
+    /// would otherwise resolve to the OS appearance and clash with the pinned theme palette (e.g. white text
     /// on the light Paper chrome when the user's Mac is in Dark mode). Setting it on the NSWindow propagates
     /// to every hosted NSView. Done in `viewDidAppear` because the window only exists once attached.
     override func viewDidAppear() {
@@ -212,28 +211,28 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         pinWindowAppearance()
     }
 
-    /// Pin the WINDOW's `NSAppearance` to the active otty theme. Factored out so both `viewDidAppear` (first
+    /// Pin the WINDOW's `NSAppearance` to the active theme. Factored out so both `viewDidAppear` (first
     /// attach) and `themeDidChange` (runtime switch) drive the SAME re-pin.
     private func pinWindowAppearance() {
-        // Concrete sRGB backdrop (NOT `NSColor(Otty.theme.window)`): the SwiftUI-Color→NSColor bridge resolves
+        // Concrete sRGB backdrop (NOT `NSColor(Slate.theme.window)`): the SwiftUI-Color→NSColor bridge resolves
         // through the effective appearance and left the divider reading black on the LIGHT themes; a plain
         // sRGB triple is appearance-stable. The theme's `terminalBackgroundHex` IS the flat window tone in hex.
-        let backdrop = NSColor(ottyHex6: Otty.theme.terminalBackgroundHex)
-        view.window?.appearance = NSAppearance(named: Otty.theme.isLight ? .aqua : .darkAqua)
+        let backdrop = NSColor(slateHex6: Slate.theme.terminalBackgroundHex)
+        view.window?.appearance = NSAppearance(named: Slate.theme.isLight ? .aqua : .darkAqua)
         view.window?.backgroundColor = backdrop
         // The sidebar/content divider is the 1px GAP between the hosting columns. Once the split view is
         // layer-backed (it hosts layer-backed `NSHostingController` columns) `drawDivider(in:)` is bypassed and
         // the gap shows the split view's OWN backdrop — the default dark seam, invisible on the dark themes but
         // a black line on the LIGHT ones. Pin that backdrop to the faint DIVIDER tone (the theme hairline
         // composited over the window tone) so the seam reads as the SAME mờ-mờ line as the pane dividers
-        // (which draw `Otty.Line.divider` over the flat pane) — theme-aware, in both appearances.
+        // (which draw `Slate.Line.divider` over the flat pane) — theme-aware, in both appearances.
         splitView.wantsLayer = true
         splitView.layer?.backgroundColor = flatDividerTone().cgColor
         splitView.needsDisplay = true
     }
 
     /// React to a runtime theme switch (the `AppearanceApplier` hook already repointed `ThemeStore.shared`).
-    /// Re-pin the window appearance AND force each hosted column to re-read the otty tokens — a SwiftUI
+    /// Re-pin the window appearance AND force each hosted column to re-read the theme tokens — a SwiftUI
     /// `@Observable` change inside `ThemeStore` re-renders views that READ it, but the AppKit window
     /// appearance + any system-dynamic resolution must be re-pinned explicitly here (the boundary SwiftUI
     /// observation does not cross). `needsDisplay` on each column view nudges a redraw so no pane is left
@@ -274,7 +273,7 @@ final class AislopdeskSplitViewController: NSSplitViewController {
 /// A drop-in `NSSplitView` whose ONLY change is a flat, theme-coloured divider — installed via
 /// `object_setClass` onto the controller's already-built split view (so it never goes through the
 /// `NSSplitViewController` construction path that traps `_setupSplitView` when a custom split view is
-/// supplied up front). `drawDivider(in:)` fills the 1px `.thin` divider rect with the active otty backdrop,
+/// supplied up front). `drawDivider(in:)` fills the 1px `.thin` divider rect with the active theme backdrop,
 /// so the sidebar/content/inspector seam blends into the flat chrome instead of AppKit's default pure-black
 /// hairline. Adds NO stored properties — the isa-swizzle keeps the original instance's ivar layout intact.
 private final class FlatDividerSplitView: NSSplitView {
@@ -284,23 +283,23 @@ private final class FlatDividerSplitView: NSSplitView {
     }
 }
 
-/// The flat divider tone: the theme hairline ``Otty/Line/divider`` composited OVER the flat window backdrop
+/// The flat divider tone: the theme hairline ``Slate/Line/divider`` composited OVER the flat window backdrop
 /// into an OPAQUE sRGB colour, so the 1px split gap reads as the SAME faint line as the pane dividers (which
 /// draw that hairline over the flat pane) — in BOTH appearances. Built from concrete sRGB components (the
 /// window tone from the theme hex, the overlay resolved through `.sRGB`) so it never resolves to black on the
 /// light themes the way a raw `NSColor(_: SwiftUI.Color)` fill did.
 @MainActor
 private func flatDividerTone() -> NSColor {
-    let backdrop = NSColor(ottyHex6: Otty.theme.terminalBackgroundHex)
+    let backdrop = NSColor(slateHex6: Slate.theme.terminalBackgroundHex)
     guard let base = backdrop.usingColorSpace(.sRGB) else { return backdrop }
     // Resolve the hairline to concrete sRGB components via `Color.resolve(in:)`, NOT `NSColor(_: SwiftUI.Color)`:
-    // the bridge drops the `.opacity()` modifier on these `Color(ottyHex:).opacity(0.07)` hairlines, so the gap
+    // the bridge drops the `.opacity()` modifier on these `Color(slateHex:).opacity(0.07)` hairlines, so the gap
     // rendered with alpha=1 — the FULL near-white foreground on the dark Monokai default — a bright seam unlike
     // the faint pane divider (which SwiftUI composites at the real 7% over the pane). `.resolve(in:)` carries the
     // opacity faithfully and is appearance-stable for these concrete sRGB colours. Compositing base over the SAME
     // pane backdrop (`terminalBackgroundHex` == `card` on every flat theme) makes the gap the SAME tone as the
     // pane hairline.
-    let overlay = Otty.theme.divider.resolve(in: EnvironmentValues())
+    let overlay = Slate.theme.divider.resolve(in: EnvironmentValues())
     let a = CGFloat(overlay.opacity)
     return NSColor(
         srgbRed: base.redComponent * (1 - a) + CGFloat(overlay.red) * a,
@@ -314,7 +313,7 @@ private extension NSColor {
     /// Concrete sRGB `NSColor` from a 6-hex backdrop string (the theme's flat window tone). Avoids the
     /// appearance-sensitivity of `NSColor(_: SwiftUI.Color)` — a plain sRGB triple resolves identically in
     /// `.aqua` and `.darkAqua`, so the flat divider no longer reads black on the light themes.
-    convenience init(ottyHex6 hex: String) {
+    convenience init(slateHex6 hex: String) {
         let v = UInt64(hex, radix: 16) ?? 0
         self.init(
             srgbRed: CGFloat((v >> 16) & 0xFF) / 255,

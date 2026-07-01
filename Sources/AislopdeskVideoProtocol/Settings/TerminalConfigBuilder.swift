@@ -43,7 +43,7 @@ public enum TerminalConfigBuilder {
     /// fully pins the surface's appearance. An EMPTY family / theme is SKIPPED (an empty `font-family =`
     /// would clear Ghostty's default to nothing) — the one place "unset" is honoured.
     /// `backgroundOverride` / `foregroundOverride` (6-hex, no `#`) — when a non-empty value is supplied it
-    /// REPLACES the pref's own `background`/`foreground`. This is the seam the active otty THEME drives
+    /// REPLACES the pref's own `background`/`foreground`. This is the seam the active THEME drives
     /// (``PreferencesStore`` passes the theme's `terminalBackgroundHex`/`terminalForegroundHex`) so the
     /// terminal cells track the chrome flat-design palette. Omit them (the default `nil`) to keep the pref's
     /// own colours — existing callers are unchanged.
@@ -66,7 +66,7 @@ public enum TerminalConfigBuilder {
     /// to un-ligate fonts that ship `calt`-on GSUB tables — see ``appendFontParity``). So a default-constructed
     /// `prefs` gains exactly ONE new line versus pre-E15 — `font-feature = -calt,-liga,-dlig` — i.e. the default
     /// config is NOT byte-identical to the pre-E15 output (the rest of the font-parity block stays gated). This
-    /// string is CLIENT-only (never on the wire), so the golden corpus is unaffected. otty's underline-off /
+    /// string is CLIENT-only (never on the wire), so the golden corpus is unaffected. Underline-off /
     /// SGR blink / and the `srgb-over`/`linear`/`perceptual` blending modes are PERSISTED but NOT emitted (no
     /// verified libghostty key — deferred-apply; decision #5).
     public static func string(
@@ -124,7 +124,7 @@ public enum TerminalConfigBuilder {
         )
 
         lines.append("cursor-style = \(prefs.cursorStyle.rawValue)")
-        // `cursor-style-blink` is a libghostty OPTIONAL bool (null = defer to DEC mode 12). otty's tri-state
+        // `cursor-style-blink` is a libghostty OPTIONAL bool (null = defer to DEC mode 12). The tri-state pref
         // maps `.default` → SKIP the line (defer to DEC mode 12), `.on`/`.off` → explicit `true`/`false`.
         switch prefs.cursorBlink {
         case .default: break
@@ -151,14 +151,14 @@ public enum TerminalConfigBuilder {
     /// NOT here — it rides repeated `font-family` lines in ``string(for:)`` (ghostty has no
     /// `font-family-fallback` key). `font-feature` is ALWAYS emitted (off = the disabling set); the rest are
     /// GATED on the setting being NON-default. Only keys verified to exist are
-    /// emitted; otty's underline-off / SGR blink / `srgb-over`·`linear`·`perceptual` blending are persisted
+    /// emitted; underline-off / SGR blink / `srgb-over`·`linear`·`perceptual` blending are persisted
     /// but intentionally NOT emitted (deferred-apply — decision #5).
     private static func appendFontParity(_ lines: inout [String], prefs: TerminalPreferences) {
         // NOTE: the fallback CHAIN (CJK / Nerd-Font icon coverage) is NOT emitted here — ghostty has no
         // `font-family-fallback` key; the chain is repeated `font-family =` lines emitted next to the primary
         // family in ``string(for:)`` (Config.zig: `font-family` is a `RepeatableString`).
-        // Explicit per-face families surface ONLY when "Auto-match weight & style" is OFF (otty shows the
-        // three manual pickers only then); each empty face is skipped.
+        // Explicit per-face families surface ONLY when "Auto-match weight & style" is OFF (the three manual
+        // pickers show only then); each empty face is skipped.
         if !prefs.autoMatchWeightStyle {
             let bold = prefs.fontFamilyBold.trimmingCharacters(in: .whitespaces)
             if !bold.isEmpty { lines.append("font-family-bold = \(bold)") }
@@ -169,8 +169,8 @@ public enum TerminalConfigBuilder {
         }
         // Ligatures → `font-feature` (always emitted). `off` emits the DISABLING set `-calt,-liga,-dlig` so a
         // font that ships ligatures (Fira Code / JetBrains Mono — `calt` is default-ON in their GSUB) is
-        // actually un-ligated; `calt`/`dlig` opt in, and the alphabet flag extends ligation to alphabetic runs
-        // (otty `font-ligatures-alphabet`) — but only when ligatures are ON (off stays off).
+        // actually un-ligated; `calt`/`dlig` opt in, and the alphabet flag (`font-ligatures-alphabet`) extends
+        // ligation to alphabetic runs — but only when ligatures are ON (off stays off).
         var features = prefs.fontLigatures.baseFeatures
         if prefs.fontLigatures != .off, prefs.fontLigaturesAlphabet { features.append("liga") }
         lines.append("font-feature = \(features.joined(separator: ","))")
@@ -233,7 +233,7 @@ public enum TerminalConfigBuilder {
         controls c: TerminalControlsConfig,
         prefs: TerminalPreferences,
     ) {
-        // Selection → pasteboard. `copy-on-select` is a libghostty tri-state; otty's boolean maps ON →
+        // Selection → pasteboard. `copy-on-select` is a libghostty tri-state; the boolean control maps ON →
         // `clipboard` (copy straight to the system pasteboard) and OFF → `false`.
         lines.append("copy-on-select = \(c.copyOnSelect ? "clipboard" : "false")")
         lines.append("clipboard-trim-trailing-spaces = \(boolToken(c.trimTrailing))")
@@ -252,24 +252,24 @@ public enum TerminalConfigBuilder {
         lines.append("mouse-reporting = \(boolToken(c.allowMouseCapture))")
         // Right-Click Action (H7/H8) — libghostty OWNS the bare-right-click dispatch (Context Menu / Copy /
         // Paste / Copy or Paste / Ignore). The token is the libghostty `right-click-action` enum value 1:1
-        // (otty is ghostty-based, and `RightClickAction.rawValue` matches the Zig enum names exactly), so the
+        // (`RightClickAction.rawValue` matches the Zig enum names exactly), so the
         // surface itself performs the action — the GUI view no longer re-reads `hasSelection()` after the
-        // surface has already word-selected under the cursor (the WI-7 race). The view keeps ONLY the otty
+        // surface has already word-selected under the cursor (the WI-7 race). The view keeps ONLY the
         // ⌃-right-always-menu override.
         lines.append("right-click-action = \(c.rightClickActionToken)")
-        // otty's single scroll multiplier drives BOTH of libghostty's precision + discrete factors, but
+        // A single scroll multiplier drives BOTH of libghostty's precision + discrete factors, but
         // PRESERVING libghostty's native per-axis ratio (precision:1, discrete:3). Emitting the SAME factor on
-        // both axes (the pre-fix bug) made discrete mouse-wheel scroll 3× slower than stock ghostty/otty at the
+        // both axes (the pre-fix bug) made discrete mouse-wheel scroll 3× slower than stock libghostty at the
         // default `m == 1.0`. So precision rides `m` and discrete rides `3 × m` (PLAIN multiply — NEVER fused /
         // `addingProduct`, per the codec/controller convention). Formatted via the integral-aware `formatSize`
         // mirror, so the default emits `precision:1,discrete:3` (ghostty's native defaults).
         let precision = formatSize(c.scrollMultiplier)
         let discrete = formatSize(c.scrollMultiplier * 3)
         lines.append("mouse-scroll-multiplier = precision:\(precision),discrete:\(discrete)")
-        // otty "Option as Alt" (Settings → Controls → Keyboard) — the macOS Option-key→Alt/Meta behaviour. The
+        // "Option as Alt" (Settings → Controls → Keyboard) — the macOS Option-key→Alt/Meta behaviour. The
         // token is libghostty's `macos-option-as-alt` enum value 1:1 (`false`/`true`/`left`/`right`); the
         // client's libghostty surface owns the key→byte encoding, so emitting it here actuates the setting. The
-        // factory bundle keeps `false` (otty's default — Option stays free for accented characters).
+        // factory bundle keeps `false` (the default — Option stays free for accented characters).
         lines.append("macos-option-as-alt = \(c.macosOptionAsAltToken)")
         // Cursor colour / text-under / opacity (render prefs). An empty colour ⇒ skip (the "unset honoured"
         // rule, same as background / foreground); opacity always emits (a numeric pref, formatted not fused).
@@ -288,7 +288,7 @@ public enum TerminalConfigBuilder {
         }
     }
 
-    /// Split the otty comma-separated fallback-family string into ordered, trimmed, non-empty family names.
+    /// Split the comma-separated fallback-family string into ordered, trimmed, non-empty family names.
     /// Each becomes a repeated `font-family =` line after the primary (ghostty's fallback chain). A blank /
     /// all-whitespace entry is dropped (validate-then-skip), so `"PingFang SC, , Symbols Nerd Font"` yields
     /// two families.
@@ -339,41 +339,41 @@ public enum TerminalConfigBuilder {
 /// The init defaults MIRROR `TerminalControls`' defaults, so a default-constructed value is a faithful
 /// "factory" control bundle and a test can vary one field at a time.
 public struct TerminalControlsConfig: Sendable, Equatable {
-    /// otty Copy-on-Select (I4) — ON → libghostty `copy-on-select = clipboard`, OFF → `false`.
+    /// Copy-on-Select (I4) — ON → libghostty `copy-on-select = clipboard`, OFF → `false`.
     public var copyOnSelect: Bool
-    /// otty Trim-Trailing-Spaces (I5) — `clipboard-trim-trailing-spaces`.
+    /// Trim-Trailing-Spaces (I5) — `clipboard-trim-trailing-spaces`.
     public var trimTrailing: Bool
-    /// otty Clear-Selection-on-Typing (I6) — `selection-clear-on-typing`.
+    /// Clear-Selection-on-Typing (I6) — `selection-clear-on-typing`.
     public var clearOnTyping: Bool
-    /// otty Clear-Selection-on-Copy (I6) — `selection-clear-on-copy`.
+    /// Clear-Selection-on-Copy (I6) — `selection-clear-on-copy`.
     public var clearOnCopy: Bool
-    /// otty Paste-Protection (I9) — `clipboard-paste-protection`.
+    /// Paste-Protection (I9) — `clipboard-paste-protection`.
     public var pasteProtection: Bool
-    /// otty Paste-Bracketed-Safe (I9) — `clipboard-paste-bracketed-safe`.
+    /// Paste-Bracketed-Safe (I9) — `clipboard-paste-bracketed-safe`.
     public var bracketedSafe: Bool
     /// OSC-52 READ access token (I11) — emitted verbatim as `clipboard-read` (libghostty `allow`/`deny`/`ask`).
     public var clipboardReadToken: String
     /// OSC-52 WRITE access token (I11) — emitted verbatim as `clipboard-write`.
     public var clipboardWriteToken: String
-    /// otty Hide-Mouse-When-Typing (H9) — `mouse-hide-while-typing`.
+    /// Hide-Mouse-When-Typing (H9) — `mouse-hide-while-typing`.
     public var hideMouseWhileTyping: Bool
-    /// otty Allow-Shift-with-Mouse-Click (H-shift) token — emitted verbatim as `mouse-shift-capture`
+    /// Allow-Shift-with-Mouse-Click (H-shift) token — emitted verbatim as `mouse-shift-capture`
     /// (libghostty `false`/`true`/`always`/`never`).
     public var mouseShiftCaptureToken: String
-    /// otty Cursor-Click-to-Move — `cursor-click-to-move`.
+    /// Cursor-Click-to-Move — `cursor-click-to-move`.
     public var clickToMove: Bool
-    /// otty Allow-Mouse-Capture — `mouse-reporting`.
+    /// Allow-Mouse-Capture — `mouse-reporting`.
     public var allowMouseCapture: Bool
-    /// otty Right-Click Action (H7/H8) token — emitted verbatim as `right-click-action` so libghostty owns the
+    /// Right-Click Action (H7/H8) token — emitted verbatim as `right-click-action` so libghostty owns the
     /// bare-right-click dispatch (libghostty `ignore`/`paste`/`copy`/`copy-or-paste`/`context-menu`, default
-    /// `context-menu`). The GUI view keeps only the otty ⌃-right-always-menu override.
+    /// `context-menu`). The GUI view keeps only the ⌃-right-always-menu override.
     public var rightClickActionToken: String
-    /// otty Shift+Arrow-Select (I2) — ON emits four `shift+<dir>=adjust_selection:<dir>` keybinds; OFF emits
+    /// Shift+Arrow-Select (I2) — ON emits four `shift+<dir>=adjust_selection:<dir>` keybinds; OFF emits
     /// four `shift+<dir>=unbind` (the fork binds them by default, so OFF must unbind to forward to the program).
     public var shiftArrowSelect: Bool
-    /// otty Scroll-Multiplier — drives BOTH `mouse-scroll-multiplier` precision + discrete factors.
+    /// Scroll-Multiplier — drives BOTH `mouse-scroll-multiplier` precision + discrete factors.
     public var scrollMultiplier: Double
-    /// otty "Option as Alt" token — emitted verbatim as libghostty's `macos-option-as-alt`
+    /// "Option as Alt" token — emitted verbatim as libghostty's `macos-option-as-alt`
     /// (`false`/`true`/`left`/`right`, default `false`). Resolved from `OptionAsAlt.configValue` at the
     /// `PreferencesStore.applyTerminal()` call-site (the leaf stays `Defaults`-free).
     public var macosOptionAsAltToken: String

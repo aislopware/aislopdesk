@@ -43,7 +43,7 @@ public enum ClientControlProtocol {
         public static let view = "view"
         /// Open an editable `edit` shim (`$EDITOR <path>`) in a new split/tab/window.
         public static let edit = "edit"
-        /// Open a recipe (by parsed `.ottyrecipe` reference or saved-library name).
+        /// Open a recipe (by parsed `.aislopdeskrecipe` reference or saved-library name).
         public static let openRecipe = "open-recipe"
         /// Read one config key.
         public static let configGet = "config-get"
@@ -57,7 +57,7 @@ public enum ClientControlProtocol {
         public static let configShow = "config-show"
         /// Enumerate themes (filtered by color appearance).
         public static let themeList = "theme-list"
-        /// Import a theme file (Otty `.ottytheme` / iTerm2 / kitty / alacritty / ghostty) into the catalog.
+        /// Import a theme file (native `.aislopdesktheme` / iTerm2 / kitty / alacritty / ghostty) into the catalog.
         public static let themeImport = "theme-import"
         /// Enumerate fonts.
         public static let fontList = "font-list"
@@ -80,7 +80,7 @@ public enum ClientControlProtocol {
 
     // MARK: - Tab-badge tokens
 
-    /// The badge tokens a `tab badge --kind <token>` accepts (otty `reference__cli.md`):
+    /// The badge tokens a `tab badge --kind <token>` accepts (`docs/ui-shell/spec/reference__cli.md`):
     /// `running`, `completed`, `finished`, `unread`, `error`, `awaiting-input`. `unread` has no
     /// distinct ``TabBadgeKind`` — it maps to the documented closest case ``TabBadgeKind/finished``
     /// (literally the "unread output" marker in `TabBadge.swift`). The privilege badges
@@ -118,7 +118,7 @@ public enum ClientControlProtocol {
 
     // MARK: - Placement tokens (view/edit)
 
-    /// Where a `view`/`edit` shim opens (otty `--new-tab` default / `--new-window` / split sides).
+    /// Where a `view`/`edit` shim opens (`--new-tab` default / `--new-window` / split sides).
     public enum Placement: String, Sendable, Equatable, CaseIterable {
         case newTab = "new-tab"
         case newWindow = "new-window"
@@ -213,7 +213,7 @@ public enum ClientControlProtocol {
         ["target": target, "placement": placement.rawValue]
     }
 
-    /// `open-recipe` — a `.ottyrecipe` path or a saved-library recipe name.
+    /// `open-recipe` — a `.aislopdeskrecipe` path or a saved-library recipe name.
     public static func openRecipeParams(reference: String) -> [String: Any] {
         ["reference": reference]
     }

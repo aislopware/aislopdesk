@@ -15,7 +15,7 @@ public struct PromptQueueItem: Identifiable, Sendable, Equatable {
     }
 }
 
-/// PURE, headless prompt queue (otty "Prompt Queue", `⌘⇧M` / Composer `⌥⌘↩`).
+/// PURE, headless prompt queue ("Prompt Queue", `⌘⇧M` / Composer `⌥⌘↩`).
 ///
 /// Lines up prompts while an agent is mid-turn and hands the next one out when the pane
 /// goes idle. This type is the **contract everything else binds to** (E12 WI-1): it holds

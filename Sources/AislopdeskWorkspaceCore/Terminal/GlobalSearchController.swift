@@ -69,7 +69,7 @@ public struct GlobalSearchHit: Equatable, Sendable {
     }
 }
 
-/// All hits from a single source, headed by its `groupTitle` (the otty "grouped by tab" header) and carrying
+/// All hits from a single source, headed by its `groupTitle` (a "grouped by tab" header) and carrying
 /// the source identity so the group header itself can jump. Only sources with ≥1 hit become a group.
 public struct GlobalSearchGroup: Equatable, Sendable {
     public let groupTitle: String
@@ -89,7 +89,7 @@ public struct GlobalSearchGroup: Equatable, Sendable {
 
 /// The assembled global-search result set: the per-source `groups` (source order preserved, zero-hit sources
 /// dropped), the flat `totalMatches` count, and the `tabCount` (number of groups). ``summary`` renders the
-/// otty `N results — M tabs` line verbatim (em-dash separator — matches `global-search.png`).
+/// `N results — M tabs` line verbatim (em-dash separator — matches `docs/ui-shell/screenshots/global-search.png`).
 public struct GlobalSearchResults: Equatable, Sendable {
     public let groups: [GlobalSearchGroup]
     public let totalMatches: Int
@@ -104,7 +104,7 @@ public struct GlobalSearchResults: Equatable, Sendable {
     /// An empty result set (empty query / nothing matched) — the `nil`-equivalent the overlay renders blank.
     public static let empty = Self(groups: [], totalMatches: 0, tabCount: 0)
 
-    /// The summary line shown beneath the query field: `"4 results — 3 tabs"` (em-dash, verbatim otty wording).
+    /// The summary line shown beneath the query field: `"4 results — 3 tabs"` (em-dash, verbatim wording).
     public var summary: String { "\(totalMatches) results — \(tabCount) tabs" }
 }
 
@@ -117,8 +117,9 @@ public struct GlobalSearchResults: Equatable, Sendable {
 /// re-run that re-orders or drops groups carries the collapse intent forward where the pane survives and
 /// simply lets a vanished pane's stale id fall away — never collapsing the WRONG group.
 ///
-/// Default (`collapsed` empty) == every group EXPANDED: a fresh search shows all hits (otty parity — the
-/// disclosure control to the left of each group header collapses on demand, `user-interface__find.md`).
+/// Default (`collapsed` empty) == every group EXPANDED: a fresh search shows all hits — the
+/// disclosure control to the left of each group header collapses on demand
+/// (`docs/ui-shell/spec/user-interface__find.md`).
 public struct GlobalSearchCollapseState: Equatable, Sendable {
     /// The pane groups the user has collapsed (their hit rows hidden). Empty ⇒ all groups expanded.
     public private(set) var collapsed: Set<PaneID>

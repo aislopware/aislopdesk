@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - E8 WI-8 (H6): mouse-over-to-focus decision
 
-/// The PURE, headless decision behind otty's "Mouse-over-to-focus" / `focus-follows-mouse` (H6): given the
+/// The PURE, headless decision behind "Mouse-over-to-focus" / `focus-follows-mouse` (H6): given the
 /// live setting and whether THIS pane is already the focused one, should hovering it claim the workspace
 /// focus?
 ///
@@ -21,7 +21,7 @@ public enum FocusFollowsMousePolicy {
     /// Whether a hover over this pane should request the workspace focus.
     ///
     /// - Parameters:
-    ///   - focusFollowsMouse: the live otty `focus-follows-mouse` setting (read by the view from
+    ///   - focusFollowsMouse: the live `focus-follows-mouse` setting (read by the view from
     ///     ``SettingsKey/focusFollowsMouseEnabled`` so a Settings toggle takes effect on the next hover).
     ///   - isAlreadyFocused: whether THIS pane is already the workspace's focused pane.
     /// - Returns: `true` only when the setting is ON **and** the pane is NOT already focused — the

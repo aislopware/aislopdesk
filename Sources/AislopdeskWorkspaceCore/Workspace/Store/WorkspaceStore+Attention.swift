@@ -44,7 +44,7 @@ public extension WorkspaceStore {
         if status == .none { paneAgentStatus.removeValue(forKey: id) } else { paneAgentStatus[id] = status }
         applyAttentionEdge(for: id, lastNotified: lastNotified, status: status)
         stampTabActivity(forPane: id, at: date)
-        // Drive the otty checkmark→accent-dot decay for an agent turn: a genuine entry into `.done` stamps
+        // Drive the checkmark→accent-dot decay for an agent turn: a genuine entry into `.done` stamps
         // the ephemeral `completedAt` (brief `.completed` flash, settling to `.finished`). Only the
         // positive edge stamps — a stale stamp is harmless (the resolver reads it ONLY in the
         // completed/finished branch, it is refreshed on the next `.done`/`.success`, and pruned on
@@ -86,7 +86,7 @@ public extension WorkspaceStore {
         paneAgentBadgeOverrides[id] ?? SettingsKey.agentBadgeGates
     }
 
-    /// The GLOBAL ``CommandBadgeGates`` (the otty Settings → Shell "TAB BADGE" toggles). Command badges have no
+    /// The GLOBAL ``CommandBadgeGates`` (the Settings → Shell "TAB BADGE" toggles). Command badges have no
     /// per-pane override (unlike the agent gates' tab-context-menu override), so this reads the global default
     /// directly — the second gate set ``RailRowsBuilder`` / the control backend feed to ``TabBadgeGating``.
     var commandBadgeGates: CommandBadgeGates { SettingsKey.commandBadgeGates }
@@ -115,7 +115,7 @@ public extension WorkspaceStore {
         tabBadgeOverrides[id]
     }
 
-    /// Sets (or clears, on `nil`) tab `id`'s MANUAL status-badge override (otty `tab badge --kind`).
+    /// Sets (or clears, on `nil`) tab `id`'s MANUAL status-badge override (the `tab badge --kind` CLI).
     /// Idempotent (a no-op when unchanged so it never churns the rail). Passing `nil` drops the override so
     /// the tab follows its derived per-pane badge again. This is the seam the E20 client-control backend
     /// writes — the override the rail/`tab list` actually render, so `tab badge --kind` is no longer a no-op.
@@ -124,7 +124,7 @@ public extension WorkspaceStore {
         if let kind { tabBadgeOverrides[id] = kind } else { tabBadgeOverrides.removeValue(forKey: id) }
     }
 
-    /// otty "Clear Badge" (the tab right-click action): ACKNOWLEDGE pane `id`'s completion / attention so its
+    /// The "Clear Badge" tab right-click action: ACKNOWLEDGE pane `id`'s completion / attention so its
     /// badge drops. Clears any pending ✓/✗ completion badge AND, when the agent is at ``ClaudeStatus/done``
     /// (the finished-turn dot), settles it to ``ClaudeStatus/idle`` (acknowledged — contributes no badge). A
     /// LIVE state (running / awaiting-input / a held progress error) is deliberately left alone — Clear-Badge

@@ -258,7 +258,7 @@ final class TabSortStoreTests: XCTestCase {
         let (store, ids) = makeStore()
         store.setTabSort(.created)
         store.moveTab(from: 0, to: 2)
-        XCTAssertEqual(store.tabSort, .manual, "a manual drag sets Sort = Manual (otty parity)")
+        XCTAssertEqual(store.tabSort, .manual, "a manual drag sets Sort = Manual")
         XCTAssertEqual(
             store.tree.activeSession?.tabs.map(\.id),
             [ids[1], ids[2], ids[0]],

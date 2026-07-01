@@ -70,7 +70,7 @@ public extension WorkspaceStore {
 
     /// Write-back of a web pane's CURRENT page title (E18 M1) — fired by the live `WKWebView`'s `didFinish`
     /// title callback through ``WebPaneContext/onTitle`` so the rail tab + titlebar label the pane after the
-    /// loaded page (otty `web-broswer.png` titles a web pane after its host, e.g. "localhost"; the rail and
+    /// loaded page (a web pane is titled after its host, e.g. "localhost"; the rail and
     /// titlebar resolve `lastKnownTitle ?? title`, so the live page title flows in without disturbing the
     /// user-visible default `title`). Mirrors ``setPaneWebURL`` exactly: live-model-aware and DIRTY-GUARDED
     /// (an unchanged title spends no reconcile, so a repeated `didFinish` to the same `<title>` never churns

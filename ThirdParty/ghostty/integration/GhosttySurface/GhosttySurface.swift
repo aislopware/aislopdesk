@@ -317,7 +317,7 @@ public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressurin
     public var onMouseShape: ((Int32) -> Void)?
 
     /// E8 (H9 / ES-E8-6): mouse-hide-while-typing visibility observer. `mouse-hide-while-typing = true`
-    /// (otty default ON) only makes libghostty DECIDE to hide the pointer; it then delegates the actual
+    /// (default ON) only makes libghostty DECIDE to hide the pointer; it then delegates the actual
     /// hide/show to the embedder via a `GHOSTTY_ACTION_MOUSE_VISIBILITY` action (`Surface.zig`
     /// `hideMouse`/`showMouse`). The app-level `action_cb` (in `GhosttyApp`) recovers THIS surface from the
     /// action target, resolves the raw `ghostty_action_mouse_visibility_e` via the headless
@@ -845,7 +845,7 @@ public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressurin
 
     // MARK: Paste-protection approval (E8 / ES-E8-3)
 
-    /// One-shot "the embedder already ran otty's paste-protection sheet for THIS paste and the user
+    /// One-shot "the embedder already ran the paste-protection sheet for THIS paste and the user
     /// approved it" flag. The embedder sets it immediately before `performBindingAction("paste_from_clipboard")`
     /// (inside the SYNCHRONOUS approved-paste window) and clears it right after; while set, the next clipboard
     /// READ completion passes `confirmed: true` (allow_unsafe) so libghostty pastes WITHOUT re-evaluating its

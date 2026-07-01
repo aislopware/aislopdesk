@@ -119,8 +119,8 @@ final class HintLabelAssignerTests: XCTestCase {
         XCTAssertFalse(bad.contains { $0.kind == .ipAddress }, "999 is not a valid octet")
     }
 
-    /// A user `hint-pattern` match is a `.custom` target carrying its `{0}` action template (otty's
-    /// `hint-pattern` / `hint-pattern-action`).
+    /// A user `hint-pattern` match is a `.custom` target carrying its `{0}` action template (the
+    /// `hint-pattern` / `hint-pattern-action` config pair).
     func testDetectsCustomHintPattern() throws {
         let pattern = HintPattern(regex: "TICKET-\\d+", action: "open https://linear.app/issue/{0}")
         let targets = HintLabelAssigner.targets(

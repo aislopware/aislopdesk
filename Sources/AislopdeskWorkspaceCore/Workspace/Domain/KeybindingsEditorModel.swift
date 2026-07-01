@@ -10,12 +10,12 @@ import Foundation
 // testable WITHOUT instantiating any SwiftUI view or window-server resource. The view only does the AppKit
 // NSEvent → parameters extraction and renders the result.
 
-/// The outcome of capturing one keystroke while a row is recording a replacement chord (otty's "Rebind /
-/// Unbind / cancel" interaction; `customization__custom-keybindings.md:11-13`).
+/// The outcome of capturing one keystroke while a row is recording a replacement chord — a "Rebind /
+/// Unbind / cancel" interaction (see `docs/ui-shell/spec/customization__custom-keybindings.md:11-13`).
 public enum KeybindingCaptureOutcome: Equatable, Sendable {
-    /// Escape — stop recording, make NO change (otty "Press Esc to cancel").
+    /// Escape — stop recording, make NO change ("Press Esc to cancel").
     case cancel
-    /// Backspace / Forward-Delete — CLEAR the binding (otty "press Backspace to clear the binding"). The
+    /// Backspace / Forward-Delete — CLEAR the binding ("press Backspace to clear the binding"). The
     /// editor removes the override (restoring the registry default) and stops recording. This is the bug the
     /// audit caught: Delete previously fell through to `charactersIgnoringModifiers == "\u{7F}"` and was
     /// recorded as a garbage DEL chord instead of unbinding.
@@ -42,7 +42,7 @@ public enum KeybindingCapture {
     ) -> KeybindingCaptureOutcome {
         // Escape (53) cancels with no change.
         if keyCode == 53 { return .cancel }
-        // Backspace/Delete (51) and Forward-Delete (117) UNBIND (otty "press Backspace to clear"). This MUST
+        // Backspace/Delete (51) and Forward-Delete (117) UNBIND ("press Backspace to clear"). This MUST
         // branch before `baseKey`: otherwise Backspace's `charactersIgnoringModifiers` is the DEL scalar
         // "\u{7F}", which is ASCII + non-whitespace and would be recorded as a junk override.
         if keyCode == 51 || keyCode == 117 { return .clear }
@@ -95,8 +95,9 @@ public enum KeybindingCapture {
 public enum KeybindingsEditorModel {
     /// Whether `binding` matches a search `query`, filtering by action name (``WorkspaceBinding/title``), the
     /// fuzzy ``WorkspaceBinding/keywords``, OR the binding's EFFECTIVE chord — both its glyph form (`⌘T`) and
-    /// its canonical string form (`cmd+t`), so otty's "type `cmd+t` to find what's on that combo"
-    /// (`customization__custom-keybindings.md:14`) works alongside name search. A blank query matches all.
+    /// its canonical string form (`cmd+t`), so typing `cmd+t` into the search box finds what's bound to that
+    /// combo (see `docs/ui-shell/spec/customization__custom-keybindings.md:14`) alongside name search. A blank
+    /// query matches all.
     public static func matches(
         _ binding: WorkspaceBinding,
         effectiveChord: KeyChord?,
@@ -108,15 +109,16 @@ public enum KeybindingsEditorModel {
         if let keywords = binding.keywords, keywords.lowercased().contains(q) { return true }
         if let chord = effectiveChord {
             if WorkspaceBindingRegistry.glyph(chord).lowercased().contains(q) { return true }
-            // The canonical persisted form is `cmd+shift+t` etc. — what otty's "search by chord" expects.
+            // The canonical persisted form is `cmd+shift+t` etc. — what "search by chord" matching expects.
             if chord.asPreferencesChord.canonical.contains(q) { return true }
         }
         return false
     }
 
     /// Whether the editor should surface the top-right "Reset to Default" button — `true` once ANY
-    /// customization exists (otty: the button "appears … once any binding has been customized", and there is
-    /// NO per-row revert; `customization__custom-keybindings.md:15`). Clearing resets to `KeybindingPreferences()`.
+    /// customization exists (the button appears once any binding has been customized, and there is
+    /// NO per-row revert; see `docs/ui-shell/spec/customization__custom-keybindings.md:15`). Clearing resets to
+    /// `KeybindingPreferences()`.
     public static func hasCustomizations(_ prefs: KeybindingPreferences) -> Bool {
         !prefs.overrides.isEmpty || !prefs.sequenceOverrides.isEmpty
             || !prefs.textBindings.isEmpty || !prefs.unbinds.isEmpty

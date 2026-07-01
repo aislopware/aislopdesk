@@ -328,7 +328,7 @@ public final class WorkspaceStore {
         self.persistence = persistence
         self.saveDebounce = saveDebounce
         self.videoTeardownSettle = videoTeardownSettle
-        // E6 WI-3: hydrate the persisted tab grouping/sort preference (otty sidebar hamburger) — see the
+        // E6 WI-3: hydrate the persisted tab grouping/sort preference (the sidebar hamburger menu) — see the
         // helper in WorkspaceStore+TabOrdering. Absent keys read the declared defaults (.none / .created) ⇒
         // array order, byte-identical to the pre-E6 rail.
         hydrateTabPreferences()
@@ -600,7 +600,7 @@ public final class WorkspaceStore {
     /// ``confirmPendingClose()`` / ``cancelPendingClose()``. In-memory only.
     public internal(set) var pendingTabCloseID: TabID?
 
-    /// The ACTIVE session awaiting a WINDOW-close confirmation (E3 WI-4). otty's window maps to an
+    /// The ACTIVE session awaiting a WINDOW-close confirmation (E3 WI-4). A macOS window maps to an
     /// aislopdesk ``Session`` (the macOS window hosts the whole ``TreeWorkspace``; closing it confirms
     /// against the active session's tab count — see `docs/DECISIONS.md`). Parked by ``requestCloseWindow()``
     /// when ``SettingsKey/closeConfirmWindow`` says confirm; resolved by ``confirmPendingWindowClose()``
@@ -649,7 +649,7 @@ public final class WorkspaceStore {
         case .pane:
             let busy = pane.map { registry[$0]?.isShellBusy == true } ?? false
             // E7 carry-over #8: a mid-tab pane close that leaves its tab alive must NOT inherit the Tab/Window
-            // close-confirmation policy (otty only confirms a pane close that drops a tab/window). Gate by the
+            // close-confirmation policy (a pane close is only confirmed when it drops a tab/window). Gate by the
             // EFFECTIVE pane policy — the Tab/Window policy ONLY when the close cascades a tab/window away, else
             // the `.process` busy-shell guard alone (so a non-cascading idle pane closes immediately even under
             // `.always`/`.multiple_tabs`).
@@ -680,7 +680,7 @@ public final class WorkspaceStore {
     /// The close-confirmation policy a PANE close is GOVERNED by (E7 carry-over #8) — the single source the
     /// `.pane` guard AND the in-app panel's subtitle (``pendingCloseReasonPolicy``) read:
     /// - the close does NOT cascade a tab away (a mid-tab leaf with tiled siblings) → ``CloseConfirmationPolicy/process``
-    ///   (the busy-shell guard alone — otty never confirms a non-cascading pane close on the Tab policy);
+    ///   (the busy-shell guard alone — a non-cascading pane close is never confirmed under the Tab policy);
     /// - the close cascades its tab away (``tabRemovedByClosing(_:)`` ≠ nil) → ``SettingsKey/closeConfirmTab``,
     ///   ESCALATED to ``SettingsKey/closeConfirmWindow`` when that tab is its session's LAST (the whole window /
     ///   ``Session`` goes with it).
@@ -698,7 +698,7 @@ public final class WorkspaceStore {
         return owningTabCount <= 1 ? SettingsKey.closeConfirmWindow : SettingsKey.closeConfirmTab
     }
 
-    /// The WINDOW-close GATE (E3 WI-4, the macOS `windowShouldClose` route). otty's window maps to an
+    /// The WINDOW-close GATE (E3 WI-4, the macOS `windowShouldClose` route). A macOS window maps to an
     /// aislopdesk ``Session`` (the macOS NSWindow hosts the whole ``TreeWorkspace``; see `docs/DECISIONS.md`),
     /// so the confirmation is evaluated against the ACTIVE session — ``SettingsKey/closeConfirmWindow`` over
     /// the active session's tab count + any busy pane. A pure gate: when confirmation is needed it parks
@@ -716,7 +716,7 @@ public final class WorkspaceStore {
     }
 
     /// Confirms the parked window close (the confirmation dialog's "Close" button): closes the parked session
-    /// (otty window → ``Session``) and clears ``pendingWindowClose``. No-op when nothing is pending.
+    /// (window → ``Session``) and clears ``pendingWindowClose``. No-op when nothing is pending.
     public func confirmPendingWindowClose() {
         guard let id = pendingWindowClose else { return }
         pendingWindowClose = nil
@@ -2032,7 +2032,7 @@ public final class WorkspaceStore {
     /// The root view consumed the request (presented / dismissed the prompt).
     public func clearSaveLayoutRequest() { pendingSaveLayout = false }
 
-    // MARK: - Recipes (E16 — `.ottyrecipe` save / open + trust prompt + replay queue)
+    // MARK: - Recipes (E16 — `.aislopdeskrecipe` save / open + trust prompt + replay queue)
 
     /// The recipe glue's runtime state, BUNDLED into one ``RecipeRuntimeState`` value (the
     /// ``BlockBookmarkSeam`` idiom — keeping this monster class body under the lint type-body ceiling). The
@@ -2656,7 +2656,7 @@ public final class WorkspaceStore {
     }
 
     /// Adds a new tab (single leaf of `kind`) to the active session and selects it; materializes its leaf.
-    /// The tab lands at the configured ``SettingsKey/newTabPosition`` (otty `new-tab-position`): `.auto`/
+    /// The tab lands at the configured ``SettingsKey/newTabPosition`` (the `new-tab-position` setting): `.auto`/
     /// `.end` append, `.afterCurrent` inserts after the active tab. The ⌘T-via-chooser path
     /// (``openChooserPane(_:)`` `.newTab`) funnels through here, so it inherits the same placement.
     public func newTab(kind: PaneKind) {
@@ -2734,8 +2734,8 @@ public final class WorkspaceStore {
     }
 
     /// Adds a new session (one tab, one leaf of `kind`) and selects it; materializes its leaf. The new
-    /// session's leaf inherits the configured ``SettingsKey/workingDirectoryNewWindow`` policy (otty "New
-    /// Window" working-directory; E7 carry-over #7) resolved against the active pane's last-known cwd.
+    /// session's leaf inherits the configured ``SettingsKey/workingDirectoryNewWindow`` policy (the "New
+    /// Window" working-directory setting; E7 carry-over #7) resolved against the active pane's last-known cwd.
     public func newSession(name: String, kind: PaneKind) {
         newSession(name: name, kind: kind, launchGrace: .milliseconds(1400))
     }
@@ -2744,7 +2744,7 @@ public final class WorkspaceStore {
     /// observe the A26 cwd-inheritance `cd` send without a 1.4 s wall-clock wait. Production callers use the
     /// public overload (the SAME 1400 ms grace `newTab` / `splitActivePane` use).
     func newSession(name: String, kind: PaneKind, launchGrace: Duration) {
-        // E7 carry-over #7 (otty "New Window" working-directory — previously a DEAD accessor read nowhere):
+        // E7 carry-over #7 (the "New Window" working-directory setting — previously a DEAD accessor read nowhere):
         // resolve the new window's initial cwd from the NEW-WINDOW policy against the active pane's last-known
         // cwd (none when there is no active pane), stamp it on the new spec, and — terminal only — schedule a
         // deferred `cd` once its PTY is live. Mirrors `newTab` / `splitActivePane`; `WorkspaceTreeOps.newSession`
@@ -3190,7 +3190,7 @@ public final class WorkspaceStore {
     /// `@Observable` synthesises on it.
     public internal(set) var paneProgress: [PaneID: PaneProgress] = [:]
 
-    /// E13 WI-3 (ES-E13-2): the per-pane ``AgentBadgeGates`` OVERRIDE map — the otty tab-context-menu badge
+    /// E13 WI-3 (ES-E13-2): the per-pane ``AgentBadgeGates`` OVERRIDE map — the tab-context-menu badge
     /// toggles. An absent key ⇒ the pane follows the GLOBAL default (``SettingsKey/agentBadgeGates``);
     /// ``agentBadgeGates(for:)`` resolves override-else-global, and ``RailRowsBuilder`` feeds it to
     /// ``TabBadgeGating/resolve(...)``. Pure VIEW state, NOT persisted (a
@@ -3206,19 +3206,19 @@ public final class WorkspaceStore {
     /// `setPaneReadOnly`) converges to one value. Written by the per-pane seams in
     /// `WorkspaceStore+ReadOnly.swift` AND mirrored from each live ``TerminalViewModel/onReadOnlyChanged``
     /// (wired in ``wireMaterializedLeaf``). Pure VIEW state, NOT persisted (read-only is a runtime toggle —
-    /// otty ships no launch config key for it). PRUNED to the live leaf set on every reconcile alongside
+    /// there is no launch config key for it). PRUNED to the live leaf set on every reconcile alongside
     /// ``paneAgentStatus`` so a closed pane's entry drops out (no unbounded growth, no stale lock surfacing).
     public internal(set) var paneReadOnly: Set<PaneID> = []
 
     // MARK: - Tab grouping / sort + recency (E6 WI-3 — the sidebar hamburger's store-backed order)
 
-    /// How the sidebar buckets tabs into sections (otty hamburger "Group By"). The SINGLE source of truth
+    /// How the sidebar buckets tabs into sections (the sidebar hamburger's "Group By"). The SINGLE source of truth
     /// for the rendered section order (the rail is a pure derivation via ``orderedTabGroups(now:)``).
     /// Hydrated from ``SettingsKey/tabGrouping`` on init and persisted by ``setTabGrouping(_:)``. Default
     /// ``TabGrouping/none`` ⇒ one flat list, byte-identical to the pre-E6 rail.
     public internal(set) var tabGrouping: TabGrouping = .none
 
-    /// How tabs are ordered WITHIN a section (otty hamburger "Sort By"). Hydrated from ``SettingsKey/tabSort``
+    /// How tabs are ordered WITHIN a section (the sidebar hamburger's "Sort By"). Hydrated from ``SettingsKey/tabSort``
     /// on init, persisted by ``setTabSort(_:)``, and flipped to ``TabSort/manual`` by a drag (``moveTab(from:to:)``).
     /// Default ``TabSort/created`` ⇒ `session.tabs` array order (Design #2: array order == creation order).
     public internal(set) var tabSort: TabSort = .created
@@ -3235,8 +3235,8 @@ public final class WorkspaceStore {
     /// E20 ES-E20-3: the per-TAB MANUAL status-badge override set by `aislopdesk tab badge --kind <kind>`
     /// (the client-control CLI). An EXPLICIT override that wins over the per-pane DERIVED badge
     /// (``TabBadgeResolver`` — agent / completion / busy / progress) for the tab's REPRESENTATIVE (active)
-    /// pane row in the sidebar rail and the `tab list` badge column. Keyed by ``TabID`` (otty's badge is
-    /// per-tab); because it is an explicit affordance, it bypasses the per-pane agent-badge gates. Pure VIEW
+    /// pane row in the sidebar rail and the `tab list` badge column. Keyed by ``TabID`` (the badge is
+    /// per-tab, not per-pane); because it is an explicit affordance, it bypasses the per-pane agent-badge gates. Pure VIEW
     /// state, NOT persisted (a runtime affordance like ``tabLastActiveAt`` / ``paneAgentBadgeOverrides``).
     /// Written by ``setTabBadgeOverride(_:for:)``; PRUNED to the live tab set on every ``reconcileTree()``
     /// (TabID-keyed → in ``pruneTreeSidebarMirrors``, not the pane-keyed `reconcileRegistry` prune) so a
@@ -3295,7 +3295,7 @@ public final class WorkspaceStore {
     public internal(set) var panePendingCompletion: [PaneID: PaneCompletionBadge] = [:]
 
     /// RUNTIME-ONLY per-pane "when did this clean completion land" mirror — the EPHEMERAL `completedAt`
-    /// that lets the otty badge flash decay from ``TabBadgeKind/completed`` (the brief checkmark) to
+    /// that lets the badge flash decay from ``TabBadgeKind/completed`` (the brief checkmark) to
     /// ``TabBadgeKind/finished`` (the persistent accent dot). Stamped on a `.success` completion-badge
     /// edge (``setCompletionBadge(_:for:)``) and on an agent's entry into ``ClaudeStatus/done``
     /// (``setAgentStatus(_:for:)``); read by ``completionFreshness(forPane:now:)`` which compares it to
@@ -3305,7 +3305,7 @@ public final class WorkspaceStore {
     public internal(set) var paneCompletedAt: [PaneID: Date] = [:]
 
     /// How long a clean completion shows its brief ``TabBadgeKind/completed`` checkmark flash before it
-    /// settles to the persistent ``TabBadgeKind/finished`` accent dot. Short — otty's flash is a beat,
+    /// settles to the persistent ``TabBadgeKind/finished`` accent dot. Short — the flash is meant to be a beat,
     /// not a dwell — but long enough to register. Compared against ``paneCompletedAt`` in
     /// ``completionFreshness(forPane:now:)``.
     public static let completedFlashWindow: TimeInterval = 3
@@ -3732,7 +3732,7 @@ public final class WorkspaceStore {
             let handle = makeSession(spec)
             (handle as? PaneSessionIDAdopting)?.adopt(id: id)
             registry[id] = handle
-            // E12 WI-6 — otty's SINGLE window-level pin: wire this pane's composer so a pin-ON edge clears
+            // E12 WI-6 — a SINGLE window-level pin: wire this pane's composer so a pin-ON edge clears
             // every OTHER pane's pin (no second, unreachable pinned composer). Wired for EVERY composer-bearing
             // session (production `LivePaneSession` AND the recording test double), keyed by this leaf id. If
             // `adopt` just RESTORED a persisted pin, enforce immediately too, so a legacy multi-pin relaunch

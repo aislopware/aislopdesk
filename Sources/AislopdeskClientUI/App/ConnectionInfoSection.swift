@@ -50,25 +50,25 @@ struct ConnectionInfoSection: View {
     var body: some View {
         VStack(spacing: 0) {
             // One hairline seats the line as window chrome (no card border / fill).
-            Rectangle().fill(Otty.Line.divider).frame(height: Otty.Metric.hairline)
+            Rectangle().fill(Slate.Line.divider).frame(height: Slate.Metric.hairline)
 
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 // The dot + host + right-flushed summary is the tap target → the Connect-to-Host editor.
                 Button(action: onConnect) {
-                    HStack(spacing: Otty.Metric.space2) {
-                        OttyStatusDot(
+                    HStack(spacing: Slate.Metric.space2) {
+                        SlateStatusDot(
                             color: StatusPresentation.connectionColor(status),
                             glowKey: StatusPresentation.connectionLabel(status),
                         )
                         Text(host)
-                            .font(.system(size: Otty.Typeface.base))
-                            .foregroundStyle(Otty.Text.secondary)
+                            .font(.system(size: Slate.Typeface.base))
+                            .foregroundStyle(Slate.Text.secondary)
                             .lineLimit(1).truncationMode(.middle)
-                        Spacer(minLength: Otty.Metric.space2)
+                        Spacer(minLength: Slate.Metric.space2)
                         if let trailing {
                             Text(trailing.text)
-                                .font(.system(size: Otty.Typeface.footnote).monospacedDigit())
-                                .foregroundStyle(trailing.isMetric ? Otty.Text.tertiary : Otty.Text.secondary)
+                                .font(.system(size: Slate.Typeface.footnote).monospacedDigit())
+                                .foregroundStyle(trailing.isMetric ? Slate.Text.tertiary : Slate.Text.secondary)
                                 .lineLimit(1)
                         }
                     }
@@ -84,16 +84,16 @@ struct ConnectionInfoSection: View {
                 if StatusPresentation.showsRetry(status) {
                     Button { Task { await connection.retry() } } label: {
                         Image(systemSymbol: .arrowClockwise)
-                            .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
-                            .foregroundStyle(Otty.Text.secondary)
+                            .font(.system(size: Slate.Typeface.footnote, weight: .semibold))
+                            .foregroundStyle(Slate.Text.secondary)
                     }
                     .buttonStyle(.plain)
                     .help("Retry connecting to \(host)")
                     .accessibilityLabel("Retry connecting to \(host)")
                 }
             }
-            .padding(.horizontal, Otty.Metric.space3)
-            .padding(.vertical, Otty.Metric.space2)
+            .padding(.horizontal, Slate.Metric.space3)
+            .padding(.vertical, Slate.Metric.space2)
         }
     }
 }

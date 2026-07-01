@@ -1,9 +1,9 @@
 import Foundation
 
-/// The HOST-side, PURE auto-progress command matcher (E14/K2 — otty "Auto Progress-Bar Commands").
+/// The HOST-side, PURE auto-progress command matcher (E14/K2 — "Auto Progress-Bar Commands").
 ///
-/// otty, when shell integration is active, auto-wraps a built-in list of slow commands to emit an
-/// INDETERMINATE OSC-9;4 spinner while they run (no program changes needed). Aislopdesk mirrors this
+/// When shell integration is active, Aislopdesk auto-wraps a built-in list of slow commands to emit an
+/// INDETERMINATE OSC-9;4 spinner while they run (no program changes needed). It works
 /// host-side: the ``CommandBlockSegmenter`` already captures the typed command line between the
 /// OSC-133 `B` and `C` marks; at the `C` mark it asks THIS matcher whether the line should auto-drive
 /// a synthetic spinner badge.
@@ -12,9 +12,9 @@ import Foundation
 /// WHITESPACE-DELIMITED, CASE-SENSITIVE PREFIX over the command's leading tokens — `git push` matches
 /// `git push origin main` but NOT `git status`, and `curl` matches `curl https://…` but NOT `curlie`
 /// (token-wise, so a substring can never false-positive). An EMPTY prefix list DISABLES auto-progress
-/// entirely (otty: clearing the field), and an unmatched command emits NOTHING (no phantom progress).
+/// entirely (clearing the field turns it off), and an unmatched command emits NOTHING (no phantom progress).
 public enum AutoProgressMatcher {
-    /// The otty built-in slow-command prefix list — the default when the operator has not overridden
+    /// The built-in slow-command prefix list — the default when the operator has not overridden
     /// `AISLOPDESK_AUTO_PROGRESS_COMMANDS`. Mirrors `terminal-features__progress-state.md`'s built-in
     /// set (and the client-side display default `SettingsKey.autoProgressCommandsBuiltIn`, which lives
     /// in `AislopdeskWorkspaceCore` and CANNOT import this host module — the two literals are kept in
@@ -54,7 +54,7 @@ public enum AutoProgressMatcher {
     /// `prefixes` is a leading WHITESPACE-DELIMITED, CASE-SENSITIVE token prefix of the command. An
     /// EMPTY `prefixes` (or an empty command) returns FALSE — auto-progress disabled.
     public static func matches(commandLine: some StringProtocol, prefixes: [String]) -> Bool {
-        // Empty prefix list disables auto-progress entirely (otty: clearing the field).
+        // Empty prefix list disables auto-progress entirely (clearing the field turns it off).
         guard !prefixes.isEmpty else { return false }
         let cmdTokens = tokenize(Substring(commandLine))
         guard !cmdTokens.isEmpty else { return false }
@@ -74,8 +74,8 @@ public enum AutoProgressMatcher {
     }
 
     /// Resolves the env-bridge value (`AISLOPDESK_AUTO_PROGRESS_COMMANDS`) into a prefix list:
-    /// - UNSET (`nil`) ⇒ ``builtInPrefixes`` (the otty default list).
-    /// - SET-but-EMPTY (`""`) ⇒ `[]` (auto-progress DISABLED — the otty "clear the field" behaviour).
+    /// - UNSET (`nil`) ⇒ ``builtInPrefixes`` (the built-in default list).
+    /// - SET-but-EMPTY (`""`) ⇒ `[]` (auto-progress DISABLED — the "clear the field" behaviour).
     /// - SET ⇒ the NEWLINE-split entries, each trimmed, empties dropped. Newline separates entries
     ///   because an entry may itself be a whitespace-delimited multi-word prefix (e.g. `git push`).
     public static func parsePrefixes(envValue: String?) -> [String] {

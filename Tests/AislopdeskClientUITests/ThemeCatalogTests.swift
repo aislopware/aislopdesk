@@ -1,4 +1,4 @@
-// ThemeCatalog tests (E15 WI-6) — the available-themes directory + the `ThemeRef` → `OttyTheme` resolver
+// ThemeCatalog tests (E15 WI-6) — the available-themes directory + the `ThemeRef` → `SlateTheme` resolver
 // ClientUI uses. Pure logic only: the built-in id table, the injected custom-scan seam, `customDocument(slug:)`
 // lookup, `reloadCustom()` re-scan, and the resolve fallbacks. The folder scan is driven through the injected
 // `scan` closure so NO filesystem is touched; no SCStream/VT/Metal/surface is touched either.
@@ -36,7 +36,7 @@ final class ThemeCatalogTests: XCTestCase {
 
     // MARK: - resolve(builtin:)
 
-    /// A `.builtin` ref resolves to the matching shipped `OttyTheme`; an UNKNOWN id falls back to the default.
+    /// A `.builtin` ref resolves to the matching shipped `SlateTheme`; an UNKNOWN id falls back to the default.
     func testResolveBuiltinRef() {
         let cat = catalog(scanning: [])
         XCTAssertEqual(cat.resolve(.builtin("monokai-classic")).id, "monokai-classic")
@@ -48,7 +48,7 @@ final class ThemeCatalogTests: XCTestCase {
 
     // MARK: - resolve(custom:)
 
-    /// A `.custom` ref resolves to `OttyTheme(document:)` ONCE the slug is scanned in — the document's terminal
+    /// A `.custom` ref resolves to `SlateTheme(document:)` ONCE the slug is scanned in — the document's terminal
     /// colours drive the resolved theme. Revert-to-confirm: before `reloadCustom()` the same ref falls back to
     /// the default, proving the scan is load-bearing.
     func testResolveCustomRefAfterReload() {

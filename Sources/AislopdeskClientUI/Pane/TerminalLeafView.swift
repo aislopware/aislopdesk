@@ -2,9 +2,9 @@
 //   [ terminal surface seam (TerminalRendererFactory.make — the SEAM, else BuildStatusPlaceholderView) ]
 //   [ PromptQueueStrip — chips above the Composer (E12; self-hides when the queue is empty)            ]
 //   [ ComposerBar — the ⌘⇧E / ⌘⇧M Composer + Prompt-Queue input (E12; mounted only when visible)       ]
-// otty shows NO persistent cwd chrome in the resting window — the working-directory chip only appears in
+// The resting window shows NO persistent cwd chrome — the working-directory chip only appears in
 // menus/overlays — so there is no bottom cwd pill here. The bottom command `InputBar` is likewise NOT
-// persistently mounted: otty has no persistent composer in the resting window (it toggles one with ⌘⇧E).
+// persistently mounted: there is no persistent composer in the resting window; it toggles into view with ⌘⇧E.
 // The E12 ``ComposerBar`` reflows in below the surface ONLY while the durable ``ComposerModel/isVisible``
 // (and the queue strip while items are pending), exactly as `composer.png` shrinks the terminal to make room.
 //
@@ -122,7 +122,7 @@ struct TerminalLeafView: View {
                 // on the VStack fills the inset gutter, so the pane stays flat (no card). NB this insets the
                 // libghostty surface, so the host PTY grid loses ~1 col/row each side — it reflows through the
                 // existing PaneContainer.size → resize-scrim → host TIOCSWINSZ path, no new signal needed.
-                .padding(Otty.Metric.space2)
+                .padding(Slate.Metric.space2)
             bottomComposer
             // E13 WI-4 (ES-E13-4): the Claude bottom bar — mounted agent-gated (`claudeStatus != .none`)
             // just ABOVE the status bar, so it reflows in below the surface exactly like the Composer. The
@@ -164,8 +164,8 @@ struct TerminalLeafView: View {
         // Clear the callbacks when the leaf is torn down so a dead `@State` holder can't be driven by a
         // surviving model (the model is owned by the live session, which can outlive this `.id(PaneID)` leaf).
         .onDisappear { clearPaneCallbacks() }
-        .animation(Otty.Anim.reveal, value: live?.composer?.isVisible)
-        .animation(Otty.Anim.reveal, value: showAgentFooter)
+        .animation(Slate.Anim.reveal, value: live?.composer?.isVisible)
+        .animation(Slate.Anim.reveal, value: showAgentFooter)
     }
 
     /// The bottom Composer chrome — the Prompt-Queue chip strip + the ``ComposerBar``, reflowed in below the
@@ -259,14 +259,13 @@ struct TerminalLeafView: View {
         }
         // ONE top-trailing overlay holds the vi-mode pill (E17 WI-5), the read-only pill (E17 WI-3), the
         // SECURE INPUT pill (E17 WI-7) and the find bar (E5), stacked top→down so an open find bar reflows
-        // BELOW the persistent pills instead of overlapping them. otty places the pills in the window
-        // titlebar's top-right; aislopdesk has no
-        // persistent titlebar, so the pane's top-trailing overlay is the faithful equivalent (see
-        // `PaneStatusPills.swift` / `ViModeOverlay.swift`). The vi pill and the read-only pill are mutually
-        // exclusive by construction — `showReadOnlyPill` is gated `!copyModeBadgeActive`, so the lock pill
-        // steps aside while vi mode owns the slot.
+        // BELOW the persistent pills instead of overlapping them. aislopdesk has no persistent titlebar, so
+        // the pane's top-trailing overlay hosts these pills directly (see `PaneStatusPills.swift` /
+        // `ViModeOverlay.swift`). The vi pill and the read-only pill are mutually exclusive by construction —
+        // `showReadOnlyPill` is gated `!copyModeBadgeActive`, so the lock pill steps aside while vi mode owns
+        // the slot.
         .overlay(alignment: .topTrailing) {
-            VStack(alignment: .trailing, spacing: Otty.Metric.space2) {
+            VStack(alignment: .trailing, spacing: Slate.Metric.space2) {
                 if !staticMirror, showViModePill, let model = live?.terminalModel {
                     ViModePill(model: model, onExit: { model.exitCopyMode() })
                         .transition(.move(edge: .top).combined(with: .opacity))
@@ -284,7 +283,7 @@ struct TerminalLeafView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
-            .padding(Otty.Metric.space2)
+            .padding(Slate.Metric.space2)
         }
         // The vi key-hint bar (E17 WI-5) floats along the pane BOTTOM (the vi-mode spec's likely position) when
         // `⌘/` has toggled it on during a vi session — `showViHintBar` gates it on `copyModeBadgeActive` so it
@@ -292,7 +291,7 @@ struct TerminalLeafView: View {
         .overlay(alignment: .bottom) {
             if !staticMirror, showViHintBar {
                 ViKeyHintBar()
-                    .padding(Otty.Metric.space2)
+                    .padding(Slate.Metric.space2)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -305,17 +304,17 @@ struct TerminalLeafView: View {
         .overlay(alignment: .top) {
             if showReplayHUD, let id = live?.id {
                 RecipeReplayHUD(store: store, paneID: id)
-                    .padding(Otty.Metric.space2)
+                    .padding(Slate.Metric.space2)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .animation(Otty.Anim.reveal, value: findBar.visible)
-        .animation(Otty.Anim.reveal, value: showReadOnlyPill)
-        .animation(Otty.Anim.reveal, value: showSecureInputPill)
-        .animation(Otty.Anim.reveal, value: showViModePill)
-        .animation(Otty.Anim.reveal, value: showViHintBar)
-        .animation(Otty.Anim.reveal, value: showReplayHUD)
-        .animation(Otty.Anim.reveal, value: navigatorChrome.isVisible)
+        .animation(Slate.Anim.reveal, value: findBar.visible)
+        .animation(Slate.Anim.reveal, value: showReadOnlyPill)
+        .animation(Slate.Anim.reveal, value: showSecureInputPill)
+        .animation(Slate.Anim.reveal, value: showViModePill)
+        .animation(Slate.Anim.reveal, value: showViHintBar)
+        .animation(Slate.Anim.reveal, value: showReplayHUD)
+        .animation(Slate.Anim.reveal, value: navigatorChrome.isVisible)
     }
 
     /// Whether the command-replay banner (E16 WI-9) mounts over this pane: a live terminal pane, NOT the
@@ -652,7 +651,7 @@ struct TerminalLeafView: View {
         case let .link(link):
             actuate(linkAction(for: intent, link: link), model: model)
         case .ipAddress:
-            // Hint-to-OPEN on a bare IP browses to it (otty opens the dotted-quad as a host). `copy`/`reveal`
+            // Hint-to-OPEN on a bare IP browses to it, treating the dotted-quad as a host. `copy`/`reveal`
             // still copy the text — there is no Finder target for an IP. `http://` (not `https://`): a bare
             // IP almost always serves plain HTTP and a TLS cert won't match a raw address.
             switch intent {

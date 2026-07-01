@@ -164,7 +164,7 @@ final class WorkspaceBindingRoutingTests: XCTestCase {
         targetSession.agentActive = true
         store.focusPaneTree(source) // capture reads the ACTIVE pane's selection
 
-        // Capture: the active pane's selection wins (the primary otty path).
+        // Capture: the active pane's selection wins (the primary capture path).
         let context = try XCTUnwrap(store.captureSendToChatContext(), "a live selection yields a capture")
         XCTAssertEqual(context.quoted, "let answer = 42", "the captured quote is the verbatim selection")
 
@@ -335,7 +335,7 @@ final class WorkspaceBindingRoutingTests: XCTestCase {
     }
 
     /// The `pinWindow` registry binding exists, has the documented id, is in the `.view` category, and is
-    /// CHORD-LESS (`chord: nil`) — parity with otty's chord-less "View ▸ Pin Window" (surfaced for
+    /// CHORD-LESS (`chord: nil`) — "View ▸ Pin Window" is intentionally unbound by default (surfaced for
     /// discoverability without binding a key). FAILS on the un-fixed code (no binding) and on a
     /// category / chord regression.
     func testPinWindowBindingExistsIsViewAndChordless() {

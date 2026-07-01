@@ -1,12 +1,12 @@
 import Foundation
 
-// MARK: - WorkingDirectoryPolicy (otty `working-directory` / inherit-cwd policy)
+// MARK: - WorkingDirectoryPolicy (`working-directory` / inherit-cwd policy)
 
 /// How a freshly-opened pane (new window / new tab / new split) chooses its initial working directory — the
-/// faithful clone of otty's per-context `working-directory` config
+/// per-context `working-directory` config
 /// (`spec/user-interface__window-tab-split.md`, values a path / `home` / `inherit`).
 ///
-/// - ``inherit``: start in the **active pane's** last-known cwd (otty "Same as Current Tab"). The source cwd
+/// - ``inherit``: start in the **active pane's** last-known cwd ("Same as Current Tab"). The source cwd
 ///   is the host `cwd` RPC refreshed on command-completion — the OSC-7 equivalent (see `docs/DECISIONS.md`).
 /// - ``home``: start in the shell's login directory. Resolves to a **`nil`** cwd: a fresh login shell already
 ///   starts at `$HOME`, so emitting a literal `cd $HOME` would be redundant (and would fight a shell that is
@@ -15,16 +15,16 @@ import Foundation
 ///
 /// PURE — no filesystem I/O, never traps. ``init(rawConfig:)`` is validate-then-repair: an empty / unknown
 /// stored string falls back to a sane default rather than crashing on hostile persisted config. ``rawConfig``
-/// round-trips the stored otty config string so the setting persists losslessly.
+/// round-trips the stored config string so the setting persists losslessly.
 public enum WorkingDirectoryPolicy: Sendable, Equatable {
-    /// Same cwd as the active pane (otty `inherit`).
+    /// Same cwd as the active pane (`inherit`).
     case inherit
-    /// The shell's login directory — resolves to `nil` (no redundant `cd`); otty `home` / empty.
+    /// The shell's login directory — resolves to `nil` (no redundant `cd`); `home` / empty.
     case home
-    /// A fixed absolute path (any non-`inherit`/non-`home` otty config value).
+    /// A fixed absolute path (any non-`inherit`/non-`home` config value).
     case path(String)
 
-    /// Decodes the stored otty `working-directory` config string. Validate-then-repair: a (trimmed)
+    /// Decodes the stored `working-directory` config string. Validate-then-repair: a (trimmed)
     /// `"inherit"` → ``inherit``; `"home"` or an empty / whitespace-only string → ``home``; anything else →
     /// ``path`` carrying the trimmed string. Never traps.
     public init(rawConfig: String) {
@@ -40,7 +40,7 @@ public enum WorkingDirectoryPolicy: Sendable, Equatable {
         }
     }
 
-    /// The stored otty config string for this policy (the inverse of ``init(rawConfig:)``): ``inherit`` →
+    /// The stored config string for this policy (the inverse of ``init(rawConfig:)``): ``inherit`` →
     /// `"inherit"`, ``home`` → `"home"`, ``path(p)`` → `p`. Round-trips through ``init(rawConfig:)``.
     public var rawConfig: String {
         switch self {

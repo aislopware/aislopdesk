@@ -1,21 +1,21 @@
 import Foundation
 
-/// E15 (WI-4) — the themes-folder engine: locates `~/.config/aislopdesk/themes/`, scans its `.ottytheme`
+/// E15 (WI-4) — the themes-folder engine: locates `~/.config/aislopdesk/themes/`, scans its `.aislopdesktheme`
 /// files into validated ``ThemeDocument``s (resolving `inherits` + de-duplicating colliding slugs), and
-/// serialises a document back to `.ottytheme` TOML for write-back / duplicate.
+/// serialises a document back to `.aislopdesktheme` TOML for write-back / duplicate.
 ///
 /// WHY the client, macOS-only (E15 decision #1): aislopdesk renders the terminal on the HOST but resolves the
-/// theme + chrome on the CLIENT, so custom themes live on the client at `~/.config/aislopdesk/themes/` (the
-/// otty `~/.config/otty/themes/` analog). iOS has no `~/.config`, so the filesystem entry points are
+/// theme + chrome on the CLIENT, so custom themes live on the client at `~/.config/aislopdesk/themes/`.
+/// iOS has no `~/.config`, so the filesystem entry points are
 /// `#if os(macOS)`; the pure serialiser + slug helpers stay cross-platform (iOS still renders built-in
 /// themes). The directory layout follows ``KeybindConfigLoader`` exactly (XDG-aware, `$HOME/.config` base).
 ///
-/// VALIDATE-THEN-DROP: a missing folder, an unreadable file, or a malformed `.ottytheme` is never fatal — the
+/// VALIDATE-THEN-DROP: a missing folder, an unreadable file, or a malformed `.aislopdesktheme` is never fatal — the
 /// scan simply skips it and returns whatever parsed cleanly (``ThemeTOMLParser`` already drops invalid
 /// documents). No force-unwrap, no trap.
 ///
 /// GOLDEN-SAFETY: custom themes are pure client chrome. Nothing here reaches `EnvConfig` / the sidecar / the
-/// wire — a scanned ``ThemeDocument`` only feeds the chrome (`OttyTheme`) and the terminal palette
+/// wire — a scanned ``ThemeDocument`` only feeds the chrome (`SlateTheme`) and the terminal palette
 /// (`TerminalConfigBuilder` overrides), exactly the appearance-prefs invariant.
 public enum ThemeLibrary {
     /// The custom-themes directory: `$XDG_CONFIG_HOME/aislopdesk/themes/` (or `$HOME/.config/aislopdesk/themes/`).
@@ -53,7 +53,7 @@ public enum ThemeLibrary {
     }
 
     /// Assign each document a slug unique within the set, preserving order — the first document keeps its
-    /// derived slug, later collisions get `-1` / `-2`. (otty resolves duplicate theme names this way.)
+    /// derived slug, later collisions get `-1` / `-2`.
     static func resolveCollisions(_ documents: [ThemeDocument]) -> [ThemeDocument] {
         var used = Set<String>()
         var out: [ThemeDocument] = []
@@ -70,7 +70,7 @@ public enum ThemeLibrary {
 
     // MARK: - Serialisation (pure, cross-platform)
 
-    /// Serialise `document` to `.ottytheme` TOML. The output round-trips through ``ThemeTOMLParser/parse(_:fallbackName:resolveParent:)``
+    /// Serialise `document` to `.aislopdesktheme` TOML. The output round-trips through ``ThemeTOMLParser/parse(_:fallbackName:resolveParent:)``
     /// back to an equal document (the write-back / duplicate guarantee). Colours are emitted `"#RRGGBB"`
     /// (case preserved), `none` as the literal token; only present optional fields produce a line/section.
     public static func serialize(_ document: ThemeDocument) -> String {
@@ -191,7 +191,7 @@ public enum ThemeLibrary {
     }
 
     /// Scan a specific directory (the testable core of ``scan(environment:builtins:)``). Reads every
-    /// `.ottytheme` file, resolves `inherits` (standalone themes first, then a fixpoint over the dependants),
+    /// `.aislopdesktheme` file, resolves `inherits` (standalone themes first, then a fixpoint over the dependants),
     /// drops malformed files, and assigns collision-free slugs in a deterministic (file-name) order.
     public static func scan(directory: URL, builtins: [ThemeDocument] = []) -> [ThemeDocument] {
         let manager = FileManager.default
@@ -200,7 +200,7 @@ public enum ThemeLibrary {
         ) else { return [] }
 
         var raws: [(name: String, text: String)] = []
-        for url in entries where url.pathExtension.lowercased() == "ottytheme" {
+        for url in entries where url.pathExtension.lowercased() == "aislopdesktheme" {
             guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
             raws.append((url.deletingPathExtension().lastPathComponent, text))
         }
@@ -247,7 +247,7 @@ public enum ThemeLibrary {
         }
 
         // SLUG SOURCE OF TRUTH: each document already carries the parser's STABLE file-name slug (the
-        // `.ottytheme` basename), which is a custom theme's persisted identity — do NOT re-derive it from the
+        // `.aislopdesktheme` basename), which is a custom theme's persisted identity — do NOT re-derive it from the
         // mutable `[meta]` display name, or a persisted `customLightSlug`/`customDarkSlug` would silently become
         // unresolvable the moment the user renames the theme. This layer's only job is folder-wide
         // DE-COLLISION: two distinct files whose base names slug to the same value get `-1`/`-2` (deterministic,
@@ -255,19 +255,19 @@ public enum ThemeLibrary {
         return resolveCollisions(resolved)
     }
 
-    /// Serialise `document` to `<directory>/<slug>.ottytheme`, creating the directory if needed. Returns the
+    /// Serialise `document` to `<directory>/<slug>.aislopdesktheme`, creating the directory if needed. Returns the
     /// written URL + slug. The caller is responsible for choosing a collision-free slug (see
     /// ``uniqueSlug(_:existing:)`` / ``scan(directory:builtins:)``).
     @discardableResult
     public static func write(_ document: ThemeDocument, to directory: URL) throws -> WriteResult {
         let manager = FileManager.default
         try manager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appendingPathComponent("\(document.slug).ottytheme", isDirectory: false)
+        let url = directory.appendingPathComponent("\(document.slug).aislopdesktheme", isDirectory: false)
         try serialize(document).write(to: url, atomically: true, encoding: .utf8)
         return WriteResult(url: url, slug: document.slug)
     }
 
-    // MARK: - Import (read a third-party / `.ottytheme` file → write a slug-unique `.ottytheme`)
+    // MARK: - Import (read a third-party / `.aislopdesktheme` file → write a slug-unique `.aislopdesktheme`)
 
     /// Why an import can fail. Each case is a clean, surfaceable reason — never a crash on a hostile file.
     public enum ImportError: Error, Equatable, Sendable {
@@ -284,11 +284,11 @@ public enum ThemeLibrary {
 
     /// Import a theme file: read it, convert it (``ThemeImporters`` — `format` explicit, or auto-detected from
     /// extension + content sniff), pick a slug unique within the themes directory (and the supplied built-in
-    /// slugs), and write the resulting `.ottytheme`. Returns where it landed + the final slug. This is otty's
-    /// "Import Theme…" / Finder-drop flow — the slug-collision rule (`-1`, `-2`) matches otty's.
+    /// slugs), and write the resulting `.aislopdesktheme`. Returns where it landed + the final slug. This backs the
+    /// "Import Theme…" / Finder-drop flow; the slug-collision rule (`-1`, `-2`) is ``uniqueSlug(_:existing:)``.
     ///
     /// - Parameters:
-    ///   - url: the source file (`.ottytheme` / `.itermcolors` / `.conf` / `.toml` / Ghostty config).
+    ///   - url: the source file (`.aislopdesktheme` / `.itermcolors` / `.conf` / `.toml` / Ghostty config).
     ///   - format: the explicit import format (the dropdown picks one); `nil` auto-detects.
     ///   - directory: the destination themes folder; defaults to ``themesDirectoryURL(environment:)``.
     ///   - builtinSlugs: shipped-theme slugs the import must not collide with (so an imported "monokai-classic"

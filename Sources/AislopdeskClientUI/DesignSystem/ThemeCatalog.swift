@@ -1,6 +1,6 @@
-// ThemeCatalog (E15 WI-6) — the single ClientUI-side theme directory: the shipped built-in `OttyTheme`s
-// (keyed by their stable id) PLUS the scanned custom `.ottytheme` documents, and the one resolver that turns
-// a `ThemeRef` slot reference into a concrete `OttyTheme`.
+// ThemeCatalog (E15 WI-6) — the single ClientUI-side theme directory: the shipped built-in `SlateTheme`s
+// (keyed by their stable id) PLUS the scanned custom `.aislopdesktheme` documents, and the one resolver that turns
+// a `ThemeRef` slot reference into a concrete `SlateTheme`.
 //
 // WHY a catalog distinct from `ThemeStore`: `ThemeStore` owns the ACTIVE theme + the cross-`NSHostingController`
 // repaint seam; the catalog owns the AVAILABLE themes (the Theme picker lists `customThemes`, and the
@@ -18,8 +18,8 @@ import AislopdeskVideoProtocol
 import Foundation
 import Observation
 
-/// The available-themes directory: built-in `OttyTheme`s + scanned custom `ThemeDocument`s, and the
-/// `ThemeRef` → `OttyTheme` resolver ClientUI uses. `@Observable` so the Settings Theme picker re-renders when
+/// The available-themes directory: built-in `SlateTheme`s + scanned custom `ThemeDocument`s, and the
+/// `ThemeRef` → `SlateTheme` resolver ClientUI uses. `@Observable` so the Settings Theme picker re-renders when
 /// ``reloadCustom()`` re-scans (e.g. after an import).
 @MainActor
 @Observable
@@ -51,7 +51,7 @@ final class ThemeCatalog {
 
     /// Every shipped built-in theme, in the Theme-picker order. Pure list (the picker reads it for labels /
     /// preview; resolution goes through ``builtin(id:)`` / ``ThemeStore/builtin(id:)``).
-    static let builtinThemes: [OttyTheme] = [
+    static let builtinThemes: [SlateTheme] = [
         .monokaiProClassic,
         .monokaiProClassicLight,
         .monokaiProOctagon,
@@ -62,9 +62,9 @@ final class ThemeCatalog {
         .dark,
     ]
 
-    /// The shipped `OttyTheme` for a stable built-in id, or `nil` for an unknown id. Delegates to
+    /// The shipped `SlateTheme` for a stable built-in id, or `nil` for an unknown id. Delegates to
     /// ``ThemeStore/builtin(id:)`` so there is ONE built-in id→theme table.
-    func builtin(id: String) -> OttyTheme? { ThemeStore.builtin(id: id) }
+    func builtin(id: String) -> SlateTheme? { ThemeStore.builtin(id: id) }
 
     // MARK: - Customs
 
@@ -77,15 +77,15 @@ final class ThemeCatalog {
 
     // MARK: - Resolve
 
-    /// Resolve a ``ThemeRef`` slot reference → a concrete ``OttyTheme``: a built-in by id (unknown ⇒ the
+    /// Resolve a ``ThemeRef`` slot reference → a concrete ``SlateTheme``: a built-in by id (unknown ⇒ the
     /// default Monokai Pro Classic), a custom by slug through ``customDocument(slug:)`` (absent ⇒ the default).
     /// Total + graceful — a stale slot never crashes, it falls back to the default theme.
-    func resolve(_ ref: ThemeRef) -> OttyTheme {
+    func resolve(_ ref: ThemeRef) -> SlateTheme {
         switch ref {
         case let .builtin(id):
             return ThemeStore.builtin(id: id) ?? .monokaiProClassic
         case let .custom(slug):
-            if let document = customDocument(slug: slug) { return OttyTheme(document: document) }
+            if let document = customDocument(slug: slug) { return SlateTheme(document: document) }
             return .monokaiProClassic
         }
     }

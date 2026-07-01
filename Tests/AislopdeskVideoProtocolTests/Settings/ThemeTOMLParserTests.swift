@@ -1,4 +1,4 @@
-// ThemeTOMLParser tests (E15 WI-4) — the hand-rolled `.ottytheme` parser. Pure Foundation, headless:
+// ThemeTOMLParser tests (E15 WI-4) — the hand-rolled `.aislopdesktheme` parser. Pure Foundation, headless:
 // happy-path parse, `[meta]`/fallback naming, mode inference, `inherits` overlay, and the hostile cases the
 // validate-then-drop discipline must reject (missing `[terminal]`, short / bad-hex palette, missing
 // foreground, unbalanced garbage). No SwiftUI / AppKit / filesystem is touched.
@@ -188,7 +188,7 @@ final class ThemeTOMLParserTests: XCTestCase {
 
     // MARK: stable slug from the on-disk file name
 
-    /// The slug tracks the FILE NAME (the `.ottytheme` basename passed as `fallbackName`), not the mutable
+    /// The slug tracks the FILE NAME (the `.aislopdesktheme` basename passed as `fallbackName`), not the mutable
     /// `[meta] name` — so a persisted `customLightSlug`/`customDarkSlug` keeps resolving after a display-name
     /// change. REVERT-TO-CONFIRM-FAIL: deriving the slug from `displayName` yields `"renamed-theme"`.
     func testSlugDerivesFromFileNameNotDisplayName() {

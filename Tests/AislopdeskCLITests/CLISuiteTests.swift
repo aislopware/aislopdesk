@@ -2,7 +2,7 @@ import AislopdeskCLICore
 import AislopdeskProtocol
 import XCTest
 
-// Hang-safe tests for the user-facing `aislopdesk` CLI's pure core (otty-clone E20, WI-1).
+// Hang-safe tests for the user-facing `aislopdesk` CLI's pure core (ui-shell E20, WI-1).
 //
 // No socket, no GUI, no subprocess. The `AislopdeskCLICore` library (global-flag parsing, the
 // `version` summary builder, the per-shell completion generator) is driven directly. The

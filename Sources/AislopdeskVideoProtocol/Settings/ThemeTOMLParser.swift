@@ -1,15 +1,15 @@
 import Foundation
 
-/// E15 (WI-4) — the hand-rolled `.ottytheme` parser. Turns a user-authored TOML SUBSET into a validated
+/// E15 (WI-4) — the hand-rolled `.aislopdesktheme` parser. Turns a user-authored TOML SUBSET into a validated
 /// ``ThemeDocument`` (or `nil`).
 ///
-/// WHY hand-rolled (no TOML dependency): otty's `.ottytheme` files are "real TOML", but we only need a tiny,
+/// WHY hand-rolled (no TOML dependency): `.aislopdesktheme` files are "real TOML", but we only need a tiny,
 /// well-defined slice of it — `[section]` headers, `key = value` lines, double-quoted strings, booleans,
 /// numbers, and homogeneous arrays (`["a", "b"]` / `[8, 16]`, possibly spanning lines). Pulling in a full TOML
 /// library for that — across the `#if os(iOS)` slice too — is unjustified weight, so we follow the exact
 /// pattern ``KeybindConfigLoader`` set: a pure, headless, `String` → struct transform with NO I/O.
 ///
-/// **VALIDATE-THEN-DROP (CLAUDE.md §3, file edition).** A `.ottytheme` is an untrusted user file, handled with
+/// **VALIDATE-THEN-DROP (CLAUDE.md §3, file edition).** A `.aislopdesktheme` is an untrusted user file, handled with
 /// the same discipline as a hostile UDP datagram: every malformed shape is DROPPED rather than trapped. A line
 /// that does not parse is skipped; a value that is the wrong type is ignored for that key; and the whole
 /// document is returned ONLY if it satisfies ``ThemeDocument/isValid`` ( `[terminal]` foreground + background +
@@ -24,18 +24,18 @@ import Foundation
 /// documents, never re-parses) and never traps on a dangling / self-referential `inherits`.
 ///
 /// COLOUR NORMALISATION: a value like `"#FF6188"` is stored on the document WITHOUT the leading `#` (the shape
-/// libghostty's `palette = N=<hex>` and `Color(ottyHex:)` both consume). `background` additionally accepts the
+/// libghostty's `palette = N=<hex>` and `Color(slateHex:)` both consume). `background` additionally accepts the
 /// literal `none` (transparent). Case is preserved (``ThemeDocument/isValidHex(_:)`` is case-insensitive) so a
 /// serialise → parse round-trip is byte-stable.
 public enum ThemeTOMLParser {
-    /// Parse `text` (the contents of a `.ottytheme` file) into a validated ``ThemeDocument``, or `nil` when the
+    /// Parse `text` (the contents of a `.aislopdesktheme` file) into a validated ``ThemeDocument``, or `nil` when the
     /// file is malformed / incomplete (validate-then-drop).
     ///
     /// - Parameters:
     ///   - text: the raw TOML-subset file contents.
     ///   - fallbackName: the on-disk theme name (the file's base name) used as the display name when the file
-    ///     carries no `[meta] name`. otty theme files have no `[meta]` section — their identity IS the file
-    ///     name — so the library passes the file's base name here.
+    ///     carries no `[meta] name`. A `.aislopdesktheme` file need not include a `[meta]` section — its identity
+    ///     IS the file name — so the library passes the file's base name here.
     ///   - resolveParent: resolves a top-level `inherits = "<name>"` to a parent document (by display name or
     ///     slug). Defaults to "no parent" for the standalone parser tests.
     public static func parse(
@@ -71,8 +71,8 @@ public enum ThemeTOMLParser {
             ?? toml.color("terminal", "selection-background")
             ?? base?.selectionBackground
 
-        // STABLE slug from the on-disk FILE NAME (the `.ottytheme` basename), not the display name: a custom
-        // theme is written as `<slug>.ottytheme`, so the file name IS its identity. Deriving the slug from the
+        // STABLE slug from the on-disk FILE NAME (the `.aislopdesktheme` basename), not the display name: a custom
+        // theme is written as `<slug>.aislopdesktheme`, so the file name IS its identity. Deriving the slug from the
         // mutable `[meta] name` would make a persisted `customLightSlug`/`customDarkSlug` unresolvable the
         // moment the display name changed. This is the SINGLE SOURCE OF TRUTH for a custom theme's slug in
         // production: `ThemeLibrary.scan()` carries this value through unchanged (it only de-collides duplicates
@@ -107,7 +107,7 @@ public enum ThemeTOMLParser {
     }
 
     /// Resolve the light/dark slot: an explicit `[meta] mode` wins; otherwise infer from the background's
-    /// relative luminance ( otty importers infer the same way ); otherwise inherit / default to dark.
+    /// relative luminance; otherwise inherit / default to dark.
     private static func resolveMode(toml: ParsedTOML, base: ThemeDocument?) -> ThemeDocument.Mode {
         if let raw = toml.string("meta", "mode")?.lowercased(), let mode = ThemeDocument.Mode(rawValue: raw) {
             return mode

@@ -234,7 +234,7 @@ let package = Package(
                 // CLICore is a headless internal target (deps CtlCore/Protocol/WorkspaceCore, all already
                 // below ClientUI) — no HW deps, no cycle.
                 "AislopdeskCLICore",
-                // L8: external UI libraries (otty chrome). Cross-platform: SwiftUIIntrospect (reach AppKit
+                // L8: external UI libraries (chrome). Cross-platform: SwiftUIIntrospect (reach AppKit
                 // under SwiftUI), SFSafeSymbols (type-safe SF Symbols), Pow (micro-interactions).
                 .product(name: "SwiftUIIntrospect", package: "swiftui-introspect"),
                 .product(name: "SFSafeSymbols", package: "SFSafeSymbols"),
@@ -313,7 +313,7 @@ let package = Package(
         // the testable logic lives in AislopdeskCtlCore.
         .executableTarget(name: "aislopdesk-ctl", dependencies: ["AislopdeskCtlCore"]),
 
-        // PURE, testable core of the user-facing `aislopdesk` CLI (otty-clone E20): the global-flag
+        // PURE, testable core of the user-facing `aislopdesk` CLI (E20): the global-flag
         // parser (`CLIArgs`), the `version` summary builder (`CLIVersion`), the per-shell completion
         // generator (`CLICompletions`), and (later WIs) list formatting / watch-progress / jump
         // resolution. No socket I/O, no exit — Foundation-only so it builds macOS + iOS and is

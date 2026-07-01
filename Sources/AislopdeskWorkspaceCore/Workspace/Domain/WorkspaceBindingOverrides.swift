@@ -105,7 +105,7 @@ public extension WorkspaceBindingRegistry {
 // MARK: - Text-binding / unbind resolution (E1/WI-6 + WI-7)
 
 /// E1/WI-7: the dispatcher consults these BEFORE the action table. A `text:`/`csi:`/`esc:` config binding
-/// sends raw bytes to the focused terminal (otty's literal-byte bindings); an `unbind:` suppresses the
+/// sends raw bytes to the focused terminal (a literal-byte binding); an `unbind:` suppresses the
 /// default action so the chord passes through to the responder chain. Both maps are keyed by the persisted
 /// ``KeybindingPreferences/KeyChord`` shape, so a registry ``KeyChord`` (what the live dispatcher's
 /// `KeyChordNormalizer` produces) is bridged via ``KeyChord/asPreferencesChord`` before the lookup. Pure +

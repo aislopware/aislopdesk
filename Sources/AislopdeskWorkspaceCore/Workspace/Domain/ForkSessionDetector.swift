@@ -64,11 +64,11 @@ public enum ForkSessionDetector {
 
 // MARK: - ForkDestination (where a detected fork lands)
 
-/// Where a detected `/branch` fork is routed (E13, WI-7). Claude-only and a CLOSED set — otty's "Fork in New
-/// Window" is suppressed (no multi-window on the remote / iOS arch), and "Fork in Split Left / Up" are not
-/// surfaced (the three otty defaults aislopdesk ships are right / down / new-tab, matching the split chords).
-/// Both the original and the forked thread stay live (the existing multi-pane support); the destination only
-/// chooses the new pane's placement, orthogonal to the remote host.
+/// Where a detected `/branch` fork is routed (E13, WI-7). Claude-only and a CLOSED set — a "Fork in New
+/// Window" destination is suppressed (no multi-window on the remote / iOS arch), and "Fork in Split Left / Up"
+/// are not surfaced; aislopdesk ships only three destinations (right / down / new-tab, matching the split
+/// chords). Both the original and the forked thread stay live (the existing multi-pane support); the
+/// destination only chooses the new pane's placement, orthogonal to the remote host.
 public enum ForkDestination: Sendable, Equatable {
     /// A side-by-side column to the RIGHT of the active pane (the `⌘D` split axis).
     case splitRight

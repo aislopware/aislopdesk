@@ -15,13 +15,13 @@ final class PaletteReadOnlyTests: XCTestCase {
         SearchMixer.selectable(mixer().results(query: query)).map(\.id)
     }
 
-    /// The catalog carries a "Read Only" row under the SHELL section (otty's "Shell → Read Only" placement)
-    /// with no hint chip (otty ships no default chord ⇒ the registry glyph resolves to nil).
+    /// The catalog carries a "Read Only" row under the SHELL section ("Shell → Read Only" placement)
+    /// with no hint chip (Read Only ships no default chord ⇒ the registry glyph resolves to nil).
     func testReadOnlyRowExistsUnderShellWithNoChord() throws {
         let row = try XCTUnwrap(ActionsPaletteSource.catalog.first { $0.id == "action.toggleReadOnly" })
         XCTAssertEqual(row.title, "Read Only")
-        XCTAssertEqual(row.category, .shell, "Read Only sits under the Shell section (otty parity)")
-        XCTAssertNil(row.shortcut, "otty documents no default chord ⇒ no hint chip")
+        XCTAssertEqual(row.category, .shell, "Read Only sits under the Shell section")
+        XCTAssertNil(row.shortcut, "Read Only ships no default chord ⇒ no hint chip")
     }
 
     /// Every spec-accepted term surfaces the Read Only row — "read only" plus the synonyms `readonly` /

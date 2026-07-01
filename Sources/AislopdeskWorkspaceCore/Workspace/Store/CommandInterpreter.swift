@@ -107,7 +107,7 @@ public struct KeyChord: Hashable, Sendable {
         case `return`
         /// The Space bar as a NAMED key (keyCode 49), NOT a `.character(" ")` — the macOS normalizer rejects a
         /// whitespace character, so a Space chord must be a named key (like Tab/Return). Only ever bound with a
-        /// non-shift modifier (otty's Vi Mode entry is ⌃⇧Space); a bare/⇧-only Space stays normal typing.
+        /// non-shift modifier (Vi Mode entry is ⌃⇧Space); a bare/⇧-only Space stays normal typing.
         case space
         case leftArrow
         case rightArrow
@@ -275,7 +275,7 @@ public extension CommandInterpreter {
         map[KeyChord(character: "g", [.control, .command])] = .newGroup
         map[KeyChord(character: "g", [.option, .command])] = .groupSelection
 
-        // Geometric focus move: ⌃⌘ + arrows (otty's documented default — spec/reference__keybindings.md:82-85).
+        // Geometric focus move: ⌃⌘ + arrows (the documented default — spec/reference__keybindings.md:82-85).
         map[KeyChord(.leftArrow, [.control, .command])] = .focus(.left)
         map[KeyChord(.rightArrow, [.control, .command])] = .focus(.right)
         map[KeyChord(.upArrow, [.control, .command])] = .focus(.up)

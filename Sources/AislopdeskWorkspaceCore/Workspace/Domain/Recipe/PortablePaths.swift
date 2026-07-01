@@ -21,7 +21,7 @@ public enum PortablePaths {
     public static let currentFolderToken = "{{current_folder}}"
     /// `{{home_folder}}` — the user's home directory (`~`).
     public static let homeToken = "{{home_folder}}"
-    /// `{{recipe_location}}` — the folder containing the `.ottyrecipe` file on disk.
+    /// `{{recipe_location}}` — the folder containing the `.aislopdeskrecipe` file on disk.
     public static let recipeLocationToken = "{{recipe_location}}"
 
     // MARK: Save — portabilize

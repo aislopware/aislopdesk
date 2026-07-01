@@ -24,8 +24,8 @@ public struct FolderEntry: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-/// The PURE frecency scorer — `frequency × recency`, used to rank visited folders (otty's "frequently-used
-/// folders ranked by the built-in frecency database"). No IO, no SwiftUI, no store: a caseless namespace so
+/// The PURE frecency scorer — `frequency × recency`, used to rank visited folders (frequently-used
+/// folders ranked by a built-in frecency score). No IO, no SwiftUI, no store: a caseless namespace so
 /// it stays headlessly testable and is the single source of truth for the ordering the store enforces.
 ///
 /// ### Integer / ordered math only (CLAUDE.md core convention #2)

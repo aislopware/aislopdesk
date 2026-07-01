@@ -26,7 +26,7 @@ public extension WorkspaceStore {
         // E6 WI-3: a command finishing is tab activity — stamp the owning tab's recency so a completed
         // background tab floats up under the `.updated` sort. Only a real badge edge (set, not clear).
         if badge != nil { stampTabActivity(forPane: id, at: date) }
-        // Stamp the ephemeral `completedAt` that drives the otty checkmark→accent-dot decay: a fresh
+        // Stamp the ephemeral `completedAt` that drives the checkmark→accent-dot decay: a fresh
         // `.success` records the instant (brief `.completed` flash, settling to `.finished`). Only the
         // positive `.success` edge stamps; a `.failure` (→ `.error`) or a clear leaves any prior stamp
         // (harmless — the resolver reads it only in the completed/finished branch, and reconcile prunes
@@ -127,11 +127,11 @@ public extension WorkspaceStore {
         // documented `9;4;5`-equivalent (a program that finished without an explicit `9;4;0`, or was killed
         // mid-progress, must not leave the rail showing a spinner over a completed command). Idempotent.
         handleProgress(nil, for: id)
-        // M1 (E14): the otty PER-COMMAND finish/error gate is the PRIMARY authority. Route through the pure
+        // M1 (E14): the PER-COMMAND finish/error gate is the PRIMARY authority. Route through the pure
         // ``NotificationPolicy`` — Notify on Error (non-zero exit) / Notify on Finish (clean exit) + the
         // Notify-While-Foreground tri-state — per-command, ANY exit code, ANY duration. This is DECOUPLED from
         // both the ~10s long-running floor AND aislopdesk's own "Long-Command Completion" master, so a short
-        // failing `make` notifies just like otty (the old over-gating dropped it).
+        // failing `make` still notifies (the old over-gating dropped it).
         let perCommand = NotificationPolicy.shouldDeliver(
             event: .commandFinish(exit: exitCode),
             appActive: isAppActive,

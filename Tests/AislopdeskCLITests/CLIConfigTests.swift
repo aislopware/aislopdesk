@@ -2,7 +2,7 @@ import AislopdeskCLICore
 import AislopdeskVideoProtocol
 import XCTest
 
-// Hang-safe tests for the `aislopdesk config path | validate` PURE helpers (otty-clone E20, WI-4). No
+// Hang-safe tests for the `aislopdesk config path | validate` PURE helpers (E20, WI-4). No
 // file I/O: the path resolver takes its environment as a parameter, and the validator takes the file
 // contents as a string. The malformed-line assertions are genuine behavioral contracts (the validator
 // must reject them) — not tautologies against the validator's own output.

@@ -1,12 +1,12 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E10 WI-6 (ES-E10-2): the pure link gesture/menu → action mapping. These pin otty's "Click Actions"
-/// table (`user-interface__files-and-links`): a plain click does nothing; ⌘click opens (host for a path,
-/// client for a URL) / copies / nothing per `link-cmd-click`; ⌘⇧click reveals-in-Finder or opens-default
-/// (paths) but COPIES a URL; and the right-click items route through the same logic. Each assertion is
-/// revert-to-confirm-fail — it fails on a policy that opens on a plain click, routes a path open to the
-/// client, copies the wrong text, or offers reveal/cd for a URL.
+/// E10 WI-6 (ES-E10-2): the pure link gesture/menu → action mapping. These pin the "Click Actions"
+/// table (`docs/ui-shell/spec/user-interface__files-and-links.md`): a plain click does nothing; ⌘click opens
+/// (host for a path, client for a URL) / copies / nothing per `link-cmd-click`; ⌘⇧click reveals-in-Finder or
+/// opens-default (paths) but COPIES a URL; and the right-click items route through the same logic. Each
+/// assertion is revert-to-confirm-fail — it fails on a policy that opens on a plain click, routes a path open
+/// to the client, copies the wrong text, or offers reveal/cd for a URL.
 final class LinkActionPolicyTests: XCTestCase {
     // MARK: - Fixtures (one DetectedLink per kind; columns are immaterial to the policy)
 
@@ -60,7 +60,7 @@ final class LinkActionPolicyTests: XCTestCase {
         XCTAssertEqual(LinkActionPolicy.action(for: item, link: link), expected, file: file, line: line)
     }
 
-    // MARK: - Plain click: always nothing (otty "prevents accidental opens")
+    // MARK: - Plain click: always nothing (prevents accidental opens)
 
     func testPlainClickIsAlwaysNothing() {
         for cmd in LinkCmdClick.allCases {
@@ -126,7 +126,7 @@ final class LinkActionPolicyTests: XCTestCase {
         assertGesture(.commandShiftClick, relative, cfg, .openHost("/home/me/src/lib.rs"))
     }
 
-    /// The non-obvious otty rule: ⌘⇧click on a URL has no Finder target, so it COPIES the URL — regardless of
+    /// The non-obvious rule: ⌘⇧click on a URL has no Finder target, so it COPIES the URL — regardless of
     /// the (path-oriented) `link-cmd-shift-click` setting.
     func testCommandShiftClick_URLAlwaysCopies() {
         for shift in LinkCmdShiftClick.allCases {
@@ -190,7 +190,7 @@ final class LinkActionPolicyTests: XCTestCase {
         XCTAssertEqual(LinkActionPolicy.effectivePath(fileURL), "/a/b.txt")
     }
 
-    func testConfigDefaultMatchesOtty() {
+    func testConfigDefaultMatchesSlate() {
         XCTAssertEqual(LinkActionConfig.default.cmdClick, .open)
         XCTAssertEqual(LinkActionConfig.default.cmdShiftClick, .revealFinder)
     }

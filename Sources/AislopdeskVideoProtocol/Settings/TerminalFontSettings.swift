@@ -1,6 +1,6 @@
 import Foundation
 
-// E15 (WI-2) — the leaf-level FONT-PARITY model: the four otty font enums + their libghostty token
+// E15 (WI-2) — the leaf-level FONT-PARITY model: the four font-appearance enums + their libghostty token
 // mapping, plus the pure `FontScopeResolver`.
 //
 // WHY a separate leaf file: `TerminalConfigBuilder` (also in this leaf `AislopdeskVideoProtocol`) must turn
@@ -13,15 +13,15 @@ import Foundation
 // ONLY for their NON-default value; the ONE exception is `font-feature`, emitted UNCONDITIONALLY (ligatures
 // default `.off` ⇒ the disabling set `-calt,-liga,-dlig` must always be sent). So a default-constructed
 // `TerminalPreferences` is NOT byte-identical to the pre-E15 builder output — it gains exactly the one
-// `font-feature = -calt,-liga,-dlig` line (pinned by `TerminalConfigBuilderTests`). otty's two controls that
+// `font-feature = -calt,-liga,-dlig` line (pinned by `TerminalConfigBuilderTests`). The two controls that
 // have no STOCK ghostty key (SGR underline-off, SGR blink) and the three blending modes that have no
 // verified key (`srgb-over` / `linear` / `perceptual`) are PERSISTED + surfaced but deliberately NOT emitted
 // — we only emit keys verified to exist (an unknown key risks a config-load warning). See
-// `docs/otty-clone/plans/E15.md` decision #5.
+// `docs/ui-shell/plans/E15.md` decision #5.
 
-// MARK: - FontLigatures (otty `font-ligatures`)
+// MARK: - FontLigatures (`font-ligatures`)
 
-/// Ligature mode (otty `font-ligatures`, `customization__fonts.md`). Maps to libghostty `font-feature`.
+/// Ligature mode (`font-ligatures`). Maps to libghostty `font-feature`.
 public enum FontLigatures: String, Codable, Sendable, Equatable, CaseIterable {
     /// No ligation (the default). Unlike the other render prefs, `off` is NOT a no-op: fonts that ship
     /// programming ligatures (Fira Code, JetBrains Mono, Cascadia Code, …) enable `calt` BY DEFAULT in their
@@ -46,11 +46,11 @@ public enum FontLigatures: String, Codable, Sendable, Equatable, CaseIterable {
     }
 }
 
-// MARK: - FontStyleMode (otty `font-bold` / `font-italic`)
+// MARK: - FontStyleMode (`font-bold` / `font-italic`)
 
-/// Bold / italic face mode (otty `font-bold` / `font-italic`, four values). Maps to libghostty
+/// Bold / italic face mode (`font-bold` / `font-italic`, four values). Maps to libghostty
 /// `font-style-bold` / `font-style-italic` + `font-synthetic-style`. The bold and italic settings share
-/// this enum (otty surfaces the SAME four modes for each).
+/// this enum (the UI surfaces the SAME four modes for each).
 public enum FontStyleMode: String, Codable, Sendable, Equatable, CaseIterable {
     /// Use the real bold/italic face, borrowing from fallback if needed (the default → no line, libghostty
     /// default behaviour).
@@ -93,16 +93,16 @@ public enum FontStyleMode: String, Codable, Sendable, Equatable, CaseIterable {
     public var disablesFace: Bool { self == .off }
 }
 
-// MARK: - LineHeightMode (otty `line-height`)
+// MARK: - LineHeightMode (`line-height`)
 
-/// Cell-height mode (otty `line-height`, four values). Maps to libghostty `adjust-cell-height` (a
+/// Cell-height mode (`line-height`, four values). Maps to libghostty `adjust-cell-height` (a
 /// percentage relative to the natural cell height). ``default`` emits NO line (the theme/font decides).
 public enum LineHeightMode: Codable, Sendable, Equatable {
     /// Use whatever the theme/font defines (the default) → NO `adjust-cell-height` line.
     case `default`
-    /// Tight spacing (otty 1.0×) → `adjust-cell-height = 0%`.
+    /// Tight spacing (1.0×) → `adjust-cell-height = 0%`.
     case compact
-    /// Roomy spacing (otty 1.2×) → `adjust-cell-height = 20%`.
+    /// Roomy spacing (1.2×) → `adjust-cell-height = 20%`.
     case loose
     /// A user-supplied multiplier `m` → `adjust-cell-height = ((m - 1) * 100)%` (plain `*`/`+`).
     case custom(Double)
@@ -122,16 +122,16 @@ public enum LineHeightMode: Codable, Sendable, Equatable {
     }
 }
 
-// MARK: - FontBlending (otty `font-blending`)
+// MARK: - FontBlending (`font-blending`)
 
-/// Glyph anti-aliasing blend mode (otty `font-blending`, five values). Only ``macosLike`` has a verified
+/// Glyph anti-aliasing blend mode (`font-blending`, five values). Only ``macosLike`` has a verified
 /// libghostty key (`font-thicken = true`); ``default`` and the remaining three (`srgb-over` / `linear` /
 /// `perceptual`) are PERSISTED + surfaced but NOT emitted (no verified key — deferred-apply, like
-/// `cursorAnimation = .smooth`). Raw values are the otty config tokens 1:1 (for persistence + the UI).
+/// `cursorAnimation = .smooth`). Raw values are the config tokens 1:1 (for persistence + the UI).
 public enum FontBlending: String, Codable, Sendable, Equatable, CaseIterable {
     /// Defer to the active theme (falls back to `srgb-over`) — NO line.
     case `default`
-    /// otty baseline (`srgb-over`) — persisted, NOT emitted (no verified libghostty key).
+    /// Default baseline (`srgb-over`) — persisted, NOT emitted (no verified libghostty key).
     case srgbOver = "srgb-over"
     /// macOS-native Display-P3 path → `font-thicken = true` (the one mode that maps).
     case macosLike = "macos-like"
@@ -146,21 +146,19 @@ public enum FontBlending: String, Codable, Sendable, Equatable, CaseIterable {
 
 // MARK: - FontScopeResolver (Computed scope precedence — pure)
 
-/// The pure precedence resolver for otty's Font-Family SCOPE tabs (`Computed / Global / Light Theme /
+/// The pure precedence resolver for the Font-Family SCOPE tabs (`Computed / Global / Light Theme /
 /// Dark Theme / Fallback`). The "Computed" tab shows the EFFECTIVE family for the active OS-appearance slot.
 ///
 /// PRECEDENCE: an explicitly-set ACTIVE-slot per-theme font (`appearance.themeFonts[slug]`) WINS; else the
 /// Global family; else the bundled default — `scopeFont ?? globalFont ?? bundled`.
 ///
-/// WHY scope-over-Global (E15 review #4): in otty the Global tab is "unset" by DEFAULT — the bundled
-/// JetBrains Mono is a fallback, NOT a Global override value — so otty's "Global overrides theme; takes
-/// priority everywhere" banner (`customization__fonts.md` font-setting-bold.png) only bites once the user
-/// EXPLICITLY sets Global. aislopdesk's Global slot (`terminal.fontFamily`) instead carries a NON-EMPTY
-/// default, which can't represent "unset". Under a "Global wins everywhere" rule that non-empty default
-/// would permanently SHADOW a per-theme font, so setting a Dark-theme font while Global sat at its default
-/// did NOTHING (the silent-no-op the review flagged). Letting an explicitly-set per-scope font win restores
-/// the intended otty behaviour (a per-theme override travels with the theme). Trims whitespace and treats an
-/// empty/whitespace value as "unset" at every level.
+/// WHY scope-over-Global (E15 review #4): the Global slot (`terminal.fontFamily`) carries a NON-EMPTY
+/// default (the bundled JetBrains Mono is a fallback value, not an explicit override), so it can't represent
+/// "unset". Under a naive "Global wins everywhere" rule that non-empty default would permanently SHADOW a
+/// per-theme font, so setting a Dark-theme font while Global sat at its default did NOTHING (the
+/// silent-no-op the review flagged). Letting an explicitly-set per-scope font win instead means a per-theme
+/// override travels with the theme, and Global only takes priority once the user EXPLICITLY sets it. Trims
+/// whitespace and treats an empty/whitespace value as "unset" at every level.
 public enum FontScopeResolver {
     /// Resolve the effective terminal font family for the active theme slot.
     /// - Parameters:
@@ -185,7 +183,7 @@ public enum FontScopeResolver {
     // MARK: Per-slot slug resolution (the Light / Dark / Computed scope tabs, WI-8)
 
     /// The theme-font key (slug) the Font → **Light Theme** scope tab writes under: a non-empty
-    /// ``AppearancePreferences/customLightSlug`` (the slot points at a scanned `.ottytheme`), else the built-in
+    /// ``AppearancePreferences/customLightSlug`` (the slot points at a scanned `.aislopdesktheme`), else the built-in
     /// id the light slot's ``AppearancePreferences/theme`` choice resolves to under OS-light (so a `.system`
     /// light slot keys the OS-light default). Pure — mirrors ``ThemeResolution`` slot routing, headless.
     public static func lightSlotSlug(_ appearance: AppearancePreferences) -> String {

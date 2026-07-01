@@ -1,4 +1,4 @@
-// ThemeStore tests (WS-D / D3) — the runtime theme holder that defeats the STATIC `Otty.theme` across the
+// ThemeStore tests (WS-D / D3) — the runtime theme holder that defeats the STATIC `Slate.theme` across the
 // AppKit `NSSplitViewController` boundary. Pure logic only: `apply(_:)` mapping, the default Monokai Pro
 // Classic invariant, and the IDENTITY-keyed cross-boundary change notification (so a same-lightness variant
 // switch still repaints). NO SCStream/VT/Metal/VideoWindowView is touched.
@@ -47,10 +47,10 @@ final class ThemeStoreTests: XCTestCase {
     /// dark variant's terminal background must equal its chrome window hex. Guards the chrome↔terminal sync.
     func testTerminalBackgroundMatchesChromeWindow() {
         // Monokai Classic chrome window is #2D2A2E ⇒ the terminal background hex is the same, no `#`.
-        XCTAssertEqual(OttyTheme.monokaiProClassic.terminalBackgroundHex, "2D2A2E")
-        XCTAssertEqual(OttyTheme.monokaiProClassic.terminalForegroundHex, "FCFCFA")
-        XCTAssertEqual(OttyTheme.monokaiProSpectrum.terminalBackgroundHex, "222222")
-        XCTAssertEqual(OttyTheme.monokaiProClassicLight.terminalBackgroundHex, "FAF4F2")
+        XCTAssertEqual(SlateTheme.monokaiProClassic.terminalBackgroundHex, "2D2A2E")
+        XCTAssertEqual(SlateTheme.monokaiProClassic.terminalForegroundHex, "FCFCFA")
+        XCTAssertEqual(SlateTheme.monokaiProSpectrum.terminalBackgroundHex, "222222")
+        XCTAssertEqual(SlateTheme.monokaiProClassicLight.terminalBackgroundHex, "FAF4F2")
     }
 
     /// A theme change posts the cross-`NSHostingController` repaint notification keyed on theme IDENTITY —
@@ -160,7 +160,7 @@ final class ThemeStoreTests: XCTestCase {
         )
     }
 
-    /// A `.custom` slot resolves through the injected `resolveCustomDocument` seam → an `OttyTheme(document:)`
+    /// A `.custom` slot resolves through the injected `resolveCustomDocument` seam → an `SlateTheme(document:)`
     /// (the seam WI-6's `ThemeCatalog` fills). The terminal palette tracks the document.
     func testCustomSlotResolvesViaSeam() {
         let store = ThemeStore()
@@ -177,22 +177,22 @@ final class ThemeStoreTests: XCTestCase {
     }
 
     /// CROSS-MODULE PIN: every concrete ``ThemeChoice``'s `builtinID` (in the leaf) round-trips to a built-in
-    /// ``OttyTheme`` whose `id` matches (in ClientUI). Catches a drift between the leaf's id strings
-    /// (``ThemeResolution`` / ``ThemeChoice/builtinID``) and the SwiftUI `OttyTheme.id` halves.
-    func testBuiltinIDRoundTripsToOttyThemeID() {
+    /// ``SlateTheme`` whose `id` matches (in ClientUI). Catches a drift between the leaf's id strings
+    /// (``ThemeResolution`` / ``ThemeChoice/builtinID``) and the SwiftUI `SlateTheme.id` halves.
+    func testBuiltinIDRoundTripsToSlateThemeID() {
         for choice in ThemeChoice.allCases where choice != .system {
             guard let id = choice.builtinID else {
                 XCTFail("\(choice) must expose a builtinID")
                 continue
             }
             let theme = ThemeStore.builtin(id: id)
-            XCTAssertNotNil(theme, "\(choice) id \(id) must resolve to a built-in OttyTheme")
-            XCTAssertEqual(theme?.id, id, "round-trip: ThemeChoice.builtinID ⇄ OttyTheme.id")
+            XCTAssertNotNil(theme, "\(choice) id \(id) must resolve to a built-in SlateTheme")
+            XCTAssertEqual(theme?.id, id, "round-trip: ThemeChoice.builtinID ⇄ SlateTheme.id")
         }
         // The leaf's default ids match the shipped Classic / Classic-Light themes.
-        XCTAssertEqual(ThemeStore.builtin(id: ThemeResolution.defaultDarkID)?.id, OttyTheme.monokaiProClassic.id)
+        XCTAssertEqual(ThemeStore.builtin(id: ThemeResolution.defaultDarkID)?.id, SlateTheme.monokaiProClassic.id)
         XCTAssertEqual(
-            ThemeStore.builtin(id: ThemeResolution.defaultLightID)?.id, OttyTheme.monokaiProClassicLight.id,
+            ThemeStore.builtin(id: ThemeResolution.defaultLightID)?.id, SlateTheme.monokaiProClassicLight.id,
         )
     }
 }

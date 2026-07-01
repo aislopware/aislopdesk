@@ -1,5 +1,5 @@
 // ThemeImporters tests (E15 WI-5) — the third-party colour-scheme converters: iTerm2 `.itermcolors`,
-// Kitty `.conf`, Alacritty `[colors.*]` `.toml`, Ghostty config, plus the otty `.ottytheme` pass-through.
+// Kitty `.conf`, Alacritty `[colors.*]` `.toml`, Ghostty config, plus the native `.aislopdesktheme` pass-through.
 // Pure Foundation, headless: one fixture per format (assembled INLINE so the test is self-contained), the
 // light/dark inference, format auto-detect, and the validate-then-drop malformed cases. The filesystem
 // `ThemeLibrary.importFile` wiring (slug-collision, write-back) is exercised in a macOS-only block.
@@ -403,7 +403,7 @@ final class ThemeImportersTests: XCTestCase {
         XCTAssertEqual(doc?.palette.count, 16)
     }
 
-    func testParseOttythemeDelegatesAndPreservesChrome() {
+    func testParseAislopdeskThemeDelegatesAndPreservesChrome() {
         let toml = """
         [meta]
         name = "Mine"
@@ -421,16 +421,16 @@ final class ThemeImportersTests: XCTestCase {
         [sidebar]
         background = "#101010"
         """
-        let doc = ThemeImporters.parse(Data(toml.utf8), format: .ottytheme, fallbackName: "file")
+        let doc = ThemeImporters.parse(Data(toml.utf8), format: .aislopdeskTheme, fallbackName: "file")
         XCTAssertEqual(doc?.displayName, "Mine")
-        XCTAssertEqual(doc?.sidebar, "101010") // chrome preserved by the `.ottytheme` path
+        XCTAssertEqual(doc?.sidebar, "101010") // chrome preserved by the `.aislopdesktheme` path
     }
 
     func testDetectFormatByExtension() {
         XCTAssertEqual(ThemeImporters.detectFormat(pathExtension: "itermcolors", contents: ""), .iterm2)
         XCTAssertEqual(ThemeImporters.detectFormat(pathExtension: "conf", contents: ""), .kitty)
         XCTAssertEqual(ThemeImporters.detectFormat(pathExtension: "toml", contents: ""), .alacritty)
-        XCTAssertEqual(ThemeImporters.detectFormat(pathExtension: "ottytheme", contents: ""), .ottytheme)
+        XCTAssertEqual(ThemeImporters.detectFormat(pathExtension: "aislopdesktheme", contents: ""), .aislopdeskTheme)
     }
 
     func testDetectFormatByContentSniff() {
@@ -445,7 +445,7 @@ final class ThemeImportersTests: XCTestCase {
     func testFormatDisplayLabels() {
         XCTAssertEqual(
             ThemeImporters.Format.allCases.map(\.displayLabel),
-            ["Otty", "iTerm2", "Kitty", "Alacritty", "Ghostty"],
+            ["Aislopdesk", "iTerm2", "Kitty", "Alacritty", "Ghostty"],
         )
     }
 
@@ -474,11 +474,11 @@ final class ThemeImportersTests: XCTestCase {
         return url
     }
 
-    func testImportFileWritesOttythemeAndScans() throws {
+    func testImportFileWritesAislopdeskThemeAndScans() throws {
         let source = try writeSource("Nord.conf", kittyFixture())
         let result = try ThemeLibrary.importFile(at: source, format: .kitty, into: tempDir)
         XCTAssertEqual(result.slug, "nord")
-        XCTAssertEqual(result.url.lastPathComponent, "nord.ottytheme")
+        XCTAssertEqual(result.url.lastPathComponent, "nord.aislopdesktheme")
 
         let scanned = ThemeLibrary.scan(directory: tempDir)
         XCTAssertEqual(scanned.map(\.slug), ["nord"])

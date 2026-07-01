@@ -160,9 +160,9 @@ public final class HostServer: @unchecked Sendable {
     /// `AISLOPDESK_DETACH_TTL_SECS`, default 3600 = 1 hour). Resolved once at init.
     public let detachTTL: Duration
 
-    /// E13 WI-3 (ES-E13-6) — the otty "Resume Session on Recovery" host policy (client toggle
+    /// E13 WI-3 (ES-E13-6) — the "Resume Session on Recovery" host policy (client toggle
     /// ``AgentPreferences/resumeOnRecovery`` → `AISLOPDESK_AGENT_RESUME_ON_RECOVERY`, default-ON `!= "0"`).
-    /// otty maps this toggle directly onto ``DetachedSessionStore`` (spec
+    /// This toggle maps directly onto ``DetachedSessionStore`` (spec
     /// `getting-started__first-launch` §"Resume Session on Recovery"): when ON, a recovered terminal
     /// reattaches to the still-running detached agent session; when OFF, the host neither keeps nor
     /// reattaches detached sessions, so recovery yields a FRESH shell. Resolved once at init and AND-ed into
@@ -199,7 +199,7 @@ public final class HostServer: @unchecked Sendable {
 
         // S3: resolve detach from env (default-ON: only "0" disables) unless overridden by the caller.
         let envDetach = ProcessInfo.processInfo.environment["AISLOPDESK_DETACH_ENABLED"]
-        // E13 WI-3 (ES-E13-6): "Resume on Recovery" gates the SAME reattach machinery (otty maps the toggle
+        // E13 WI-3 (ES-E13-6): "Resume on Recovery" gates the SAME reattach machinery (the toggle maps
         // onto DetachedSessionStore). Resolve once (default-ON; the client sidecar reaches it via
         // AISLOPDESK_AGENT_RESUME_ON_RECOVERY) and AND it into the detach gate — when OFF, detached sessions
         // are neither kept (handleLinkDown hard-shuts down) nor reattached (spawnMuxChannel sees a nil store),

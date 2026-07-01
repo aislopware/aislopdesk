@@ -91,7 +91,7 @@ final class ReadOnlyStoreTests: XCTestCase {
     // MARK: - Read-only is strictly per-pane (splitting yields a fresh editable pane)
 
     /// Locking one pane leaves its sibling writable — both in the convergent set AND in each live model
-    /// (faithful to otty's "splitting gives you a fresh editable pane; the state does not propagate").
+    /// (splitting always yields a fresh editable pane; the read-only state does not propagate to it).
     func testReadOnlyIsPerPane() throws {
         let store = makeRecordingStore()
         let a = try XCTUnwrap(activePane(store))

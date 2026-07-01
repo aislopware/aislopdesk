@@ -20,7 +20,7 @@ import Observation
 /// its OWN surface in E11 (`OpenQuicklyView` / `OpenQuicklyModel`), NOT a palette mode — so there is no
 /// `openQuickly` case and no `multiSource` flag here (E11 / WI-5 removed the dead palette jump-to path).
 public enum PaletteMode: Sendable, Equatable {
-    /// ⌘⇧P — the verbs-only Command Palette (actions/verbs grouped by otty category; NO filter chips).
+    /// ⌘⇧P — the verbs-only Command Palette (actions/verbs grouped by category; NO filter chips).
     case command
     /// The title-bar omnibar entry (still verbs-only — a friendlier label over the command palette).
     case titleBarSearch
@@ -75,8 +75,8 @@ public final class OverlayCoordinator {
     // MARK: Global Search state (E5 / WI-4)
 
     /// Whether the cross-tab Global Search surface (⇧⌘F) is presented. UNLIKE the four scrimmed panels this is
-    /// a NON-modal, NON-scrimmed full surface — the closest faithful equivalent to otty's dedicated results
-    /// *tab* (E5 divergence #1), so it must NOT dim the workspace and is deliberately EXCLUDED from
+    /// a NON-modal, NON-scrimmed full surface — a dedicated results *overlay* rather than a results *tab*
+    /// (E5 divergence #1), so it must NOT dim the workspace and is deliberately EXCLUDED from
     /// ``anyModalVisible``. ``OverlayHostView`` mounts it WITHOUT a ``Scrim`` and gates its own hit-testing on
     /// this flag directly. Reopening it RESTORES the store's last in-memory results (held by
     /// ``WorkspaceStore/globalSearch``) until the query is re-run.
@@ -169,26 +169,26 @@ public final class OverlayCoordinator {
     /// View ▸ Details: * menu rows both route here, so every surface drives the same live state. No-op by
     /// default (tests / previews / a pre-`onAppear` scene).
     @ObservationIgnored public var selectDetailsTab: @MainActor (DetailsPanelTab) -> Void = { _ in }
-    /// E19/A30 (WI-4): toggles the window-pin flag (otty View ▸ Pin Window). Bound by ``WorkspaceRootView`` to
+    /// E19/A30 (WI-4): toggles the window-pin flag (the View ▸ Pin Window menu row). Bound by ``WorkspaceRootView`` to
     /// `chrome.togglePin()` so any palette / command surface routed here flips the SAME live
     /// `WorkspaceChromeState.pinned` the menu Button + the macOS `NSWindow.level` glue read. No-op by default
     /// (iOS / tests / previews), so the seam is never a trap when no Pin-Window row is surfaced.
     @ObservationIgnored public var togglePinWindow: @MainActor () -> Void = {}
-    /// Closes the active window (otty Window ▸ Close Window — the palette "Close Window" row). Bound on macOS
+    /// Closes the active window (the Window ▸ Close Window menu row — the palette "Close Window" row). Bound on macOS
     /// to `NSWindow.performClose(nil)` (→ the native `windowShouldClose` close-confirmation gate, preserving
     /// the configured ``CloseConfirmationPolicy``). `nil` (iOS / tests / a pre-`onAppear` scene) makes the run
     /// arm fall back to ``WorkspaceStore/requestCloseWindow()`` — the SAME parked-confirmation fallback the
     /// ⌘⇧W route arm uses, never a dead control.
     @ObservationIgnored public var closeWindow: (@MainActor () -> Void)?
-    /// Theme parity (Batch 4): switches the active local theme (otty palette "Switch Theme"). Bound app-side to
+    /// Theme parity (Batch 4): switches the active local theme (the palette "Switch Theme" row). Bound app-side to
     /// ``PreferencesStore`` (advance the primary slot through the built-in themes), so the palette row retints
     /// the chrome + terminal cells through the SAME live `appearance.theme` Settings → Appearance edits. No-op
     /// by default (tests / previews), so the row is never a trap.
     @ObservationIgnored public var switchTheme: @MainActor () -> Void = {}
-    /// Theme parity (Batch 4): re-applies the live client settings (otty palette "Reload Config"). Bound
+    /// Theme parity (Batch 4): re-applies the live client settings (the palette "Reload Config" row). Bound
     /// app-side to ``PreferencesStore/reapplyLiveSettings()`` + the config-reload broadcast. No-op by default.
     @ObservationIgnored public var reloadConfig: @MainActor () -> Void = {}
-    /// Theme parity (Batch 4): reveals the custom-themes folder in Finder (otty palette "Open Theme File").
+    /// Theme parity (Batch 4): reveals the custom-themes folder in Finder (the palette "Open Theme File" row).
     /// Bound app-side (macOS `NSWorkspace`); iOS has no `~/.config`, so it is a documented no-op there. No-op by
     /// default.
     @ObservationIgnored public var openThemeFile: @MainActor () -> Void = {}
@@ -291,14 +291,14 @@ public final class OverlayCoordinator {
         paletteSelection = 0
     }
 
-    /// Rebuild the verbs-only ⌘⇧P mixer: the action catalog grouped into otty categories (Working Directory /
+    /// Rebuild the verbs-only ⌘⇧P mixer: the action catalog grouped into fixed categories (Working Directory /
     /// Window / Pane / Tab / View / Shell / Settings), one section header each. A typed query gets one section
     /// header per matching category. (E11 / WI-5: the old multi-source Open-Quickly branch — a live Tabs
     /// snapshot + the file/conversation/repo `EmptyPaletteSource` stubs — was removed; that jump-to is now the
     /// dedicated `OpenQuicklyView`/`OpenQuicklyModel`, NOT a palette mode.)
     public func rebuildMixer() {
         // The verb-catalog categories, plus the live saved-snippet rows (E16 WI-7) and the recipe rows (E16 /
-        // M1: Save Recipe… / Open Recipe… + one row per saved `.ottyrecipe`) when a store is attached — each a
+        // M1: Save Recipe… / Open Recipe… + one row per saved `.aislopdeskrecipe`) when a store is attached — each a
         // snapshot taken here so the mixer stays a pure value over the snippets / saved recipes at palette-open.
         // The recipe rows are the cross-platform entry point that makes Save / Open Recipe reachable on iOS too.
         var sources = ActionsPaletteSource.categorySources()
@@ -311,7 +311,7 @@ public final class OverlayCoordinator {
 
     // MARK: Palette results (view binds these)
 
-    /// The current ordered, sectioned result list. Empty query ⇒ the otty-sectioned zero-state (WORKING
+    /// The current ordered, sectioned result list. Empty query ⇒ the sectioned zero-state (WORKING
     /// DIRECTORY, then Recents, then the catalog grouped by category) so the palette is never blank.
     public var paletteResults: [PaletteItem] {
         guard let mixer else { return [] }
@@ -337,9 +337,9 @@ public final class OverlayCoordinator {
         return mixer.ranked(query: q, activeFilter: paletteFilter)
     }
 
-    /// Zero-state (empty query, no filter): the otty-sectioned verb list. WORKING DIRECTORY leads (its header
+    /// Zero-state (empty query, no filter): the sectioned verb list. WORKING DIRECTORY leads (its header
     /// OWNS the cwd badge in the view, per command-palette.png) with its Copy Path row; then the MRU Recents
-    /// block; then the remaining catalog grouped into otty categories (Window / Pane / Tab / View / Settings).
+    /// block; then the remaining catalog grouped into fixed categories (Window / Pane / Tab / View / Settings).
     /// An empty category is skipped (no empty header). Hand-built (rather than `mixer.ranked("")`) so the
     /// aislopdesk-only Recents block can interleave after Working Directory.
     private func zeroStateResults() -> [PaletteItem] {
@@ -356,7 +356,7 @@ public final class OverlayCoordinator {
             out.append(.separator("Recents", filter: .actions))
             out.append(contentsOf: recentItems)
         }
-        // The rest of the catalog, grouped into otty categories in display order (Working Directory already
+        // The rest of the catalog, grouped into fixed categories in display order (Working Directory already
         // led above). A category with no rows is skipped — no empty section header. (Shell now carries the
         // E17 "Read Only" verb; a still-empty category like a future one stays skipped.)
         for category in PaletteCategory.commandOrder where category != .workingDirectory {
@@ -530,7 +530,7 @@ public final class OverlayCoordinator {
     // MARK: Global Search (⇧⌘F)
 
     /// Present the cross-tab Global Search surface (E5 ES-E5-5). `seed` is the active pane's current selection
-    /// when a caller has one (otty pre-fills the search with the selection): a non-empty seed that differs from
+    /// when a caller has one (pre-fills the search with the selection): a non-empty seed that differs from
     /// the last query immediately runs the search through ``WorkspaceStore/runGlobalSearch(query:caseSensitive:isRegex:)``
     /// (reusing the store's last `Aa`/`.*` flags); a nil / empty seed leaves the store's last results in place so
     /// ⇧⌘F REOPENS onto the previous results (E5 divergence #1). The view restores its field + pills from the

@@ -27,7 +27,7 @@
 // the iOS settings host is unit-testable on the headless macOS `swift test` host — iOS view code otherwise
 // rots silently (CLAUDE.md). It is referenced only inside `WorkspaceRootView`'s `#if os(iOS)` branch.
 //
-// Otty.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
+// Slate.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -85,8 +85,8 @@ struct SettingsSheet: View {
                 }
             }
         }
-        .tint(Otty.State.accent)
-        .preferredColorScheme(Otty.colorScheme)
+        .tint(Slate.State.accent)
+        .preferredColorScheme(Slate.colorScheme)
     }
 }
 

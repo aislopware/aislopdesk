@@ -1,16 +1,16 @@
 // RemoteFileTreeView — the Details Panel's Files tab (E4, WI-5).
 //
-// Ports the otty file-panel (spec/user-interface__details-panel.md §"Files Tab"): a top "Find" field over a
-// LAZY directory tree rooted at the pane's working directory, with disclosure triangles that fetch a
-// directory's children on first expand (the host `listDirectory` verb, one level per request — the model
-// caches each level so a re-expand is instant). The "Find" field filters the ALREADY-FETCHED subtree
+// Renders the Details Panel's Files tab (spec/user-interface__details-panel.md §"Files Tab"): a top "Find"
+// field over a LAZY directory tree rooted at the pane's working directory, with disclosure triangles that
+// fetch a directory's children on first expand (the host `listDirectory` verb, one level per request — the
+// model caches each level so a re-expand is instant). The "Find" field filters the ALREADY-FETCHED subtree
 // CLIENT-SIDE (no host round-trip), via the same vendored fzf `FuzzyMatcher` the command palette uses.
 //
-// The tree is plain-text rows with a leading triangle (no file-type icons — matching the otty screenshot).
-// The flatten + filter + sort logic (`RemoteFileTree`) is PURE + headlessly unit-tested; the view just
-// renders the resulting flat row list and dispatches expand/collapse + copy-path. Files are REMOTE host
-// paths — "Copy Path" (the remote-FS-safe equivalent of otty's Reveal/Open actions) is the row action;
-// Reveal-in-Finder / Open-in-app are deferred (see the E4 mapping notes).
+// The tree is plain-text rows with a leading disclosure triangle. The flatten + filter + sort logic
+// (`RemoteFileTree`) is PURE + headlessly unit-tested; the view just renders the resulting flat row list
+// and dispatches expand/collapse + copy-path. Files are REMOTE host paths — "Copy Path" (the
+// remote-FS-safe stand-in for a local Reveal/Open action) is the row action; Reveal-in-Finder / Open-in-app
+// are deferred (see the E4 mapping notes).
 
 #if canImport(SwiftUI)
 import AislopdeskProtocol
@@ -40,28 +40,28 @@ struct RemoteFileTreeView: View {
     var body: some View {
         VStack(spacing: 0) {
             findField
-            Rectangle().fill(Otty.Line.divider).frame(height: 1)
+            Rectangle().fill(Slate.Line.divider).frame(height: 1)
             treeBody
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .font(.system(size: Otty.Typeface.base))
+        .font(.system(size: Slate.Typeface.base))
     }
 
     // MARK: Find field
 
     private var findField: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.icon)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.icon)
             TextField("Find", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.base))
+                .font(.system(size: Slate.Typeface.base))
             if !query.isEmpty {
                 Button { query = "" } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: Otty.Typeface.footnote))
-                        .foregroundStyle(Otty.Text.icon)
+                        .font(.system(size: Slate.Typeface.footnote))
+                        .foregroundStyle(Slate.Text.icon)
                 }
                 .buttonStyle(.plain)
                 .help("Clear")
@@ -70,15 +70,15 @@ struct RemoteFileTreeView: View {
                 Task { await model.refresh() }
             } label: {
                 Image(systemName: "arrow.clockwise")
-                    .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                    .foregroundStyle(Otty.Text.icon)
+                    .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                    .foregroundStyle(Slate.Text.icon)
             }
             .buttonStyle(.plain)
             .disabled(!model.isConnected)
             .help("Refresh")
         }
-        .padding(.horizontal, Otty.Metric.space3)
-        .padding(.vertical, Otty.Metric.space2)
+        .padding(.horizontal, Slate.Metric.space3)
+        .padding(.vertical, Slate.Metric.space2)
     }
 
     // MARK: Tree
@@ -114,30 +114,30 @@ struct RemoteFileTreeView: View {
                 copyPath(row)
             }
         } label: {
-            HStack(spacing: Otty.Metric.space1) {
+            HStack(spacing: Slate.Metric.space1) {
                 if row.isDir {
                     Image(systemName: row.isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: Otty.Typeface.small, weight: .semibold))
-                        .foregroundStyle(Otty.Text.icon)
+                        .font(.system(size: Slate.Typeface.small, weight: .semibold))
+                        .foregroundStyle(Slate.Text.icon)
                         .frame(width: 10, alignment: .center)
                 } else {
                     Color.clear.frame(width: 10)
                 }
-                // otty's Files tree tags every row with a leading type glyph (see file-panel.png — the
-                // authoritative reference): an accent-tinted folder for directories, a muted doc for files.
+                // Every row is tagged with a leading type glyph (see file-panel.png — the authoritative
+                // reference): an accent-tinted folder for directories, a muted doc for files.
                 // (The spec prose mis-transcribed this as "icons absent"; the screenshot is source-of-truth.)
                 Image(systemName: row.isDir ? "folder" : "doc")
-                    .font(.system(size: Otty.Typeface.small))
-                    .foregroundStyle(row.isDir ? Otty.State.accent : Otty.Text.icon)
+                    .font(.system(size: Slate.Typeface.small))
+                    .foregroundStyle(row.isDir ? Slate.State.accent : Slate.Text.icon)
                     .frame(width: 14, alignment: .center)
                 Text(row.name)
-                    .foregroundStyle(Otty.Text.primary)
+                    .foregroundStyle(Slate.Text.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 0)
             }
-            .padding(.leading, Otty.Metric.space3 + CGFloat(row.depth) * 14)
-            .padding(.trailing, Otty.Metric.space3)
+            .padding(.leading, Slate.Metric.space3 + CGFloat(row.depth) * 14)
+            .padding(.trailing, Slate.Metric.space3)
             .padding(.vertical, 3)
             .contentShape(.rect)
         }
@@ -154,7 +154,7 @@ struct RemoteFileTreeView: View {
     // MARK: Behaviour
 
     /// Copies the REMOTE host path of a row (the pane cwd joined with the row's repo-relative path) — the
-    /// remote-FS-safe stand-in for otty's local Reveal/Open actions.
+    /// remote-FS-safe stand-in for a local Reveal/Open action.
     private func copyPath(_ row: FileTreeRow) {
         let base = model.cwd ?? ""
         let full = base.isEmpty ? row.path : RemoteFileTree.join(base, row.path)
@@ -180,8 +180,8 @@ struct FileTreeRow: Equatable, Identifiable {
 }
 
 /// Pure file-tree projection: flatten the model's lazy directory state (root entries + per-path fetched
-/// children + the expanded set) into an ordered, depth-indexed, FILTERED row list. Directories sort first
-/// (otty), names case-insensitively; the "Find" query filters the ALREADY-FETCHED subtree client-side via
+/// children + the expanded set) into an ordered, depth-indexed, FILTERED row list. Directories sort first,
+/// then names case-insensitively; the "Find" query filters the ALREADY-FETCHED subtree client-side via
 /// `FuzzyMatcher` (a node survives if it OR a fetched descendant matches). Headlessly unit-tested.
 enum RemoteFileTree {
     /// Joins a parent path with a leaf (empty parent ⇒ the leaf is the root-relative path).
@@ -197,7 +197,7 @@ enum RemoteFileTree {
     }
 
     /// Directories first, then case-insensitive name order (the host returns names sorted but not
-    /// dirs-first; otty groups dirs above files).
+    /// dirs-first, so the client re-groups dirs above files).
     static func sorted(_ entries: [MetadataCodec.DirEntry]) -> [MetadataCodec.DirEntry] {
         entries.sorted { a, b in
             if a.isDir != b.isDir { return a.isDir }

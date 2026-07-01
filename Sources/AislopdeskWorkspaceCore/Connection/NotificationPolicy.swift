@@ -3,20 +3,20 @@ import Foundation
 
 // MARK: - NotificationPolicy (E14/K9 — the PURE "should this notification be delivered" decision)
 
-/// The otty **Notify While Foreground** tri-state (`notification-while-foreground`) — how a system
+/// The **Notify While Foreground** tri-state (`notification-while-foreground`) — how a system
 /// notification banner behaves while aislopdesk is the FRONTMOST app. macOS otherwise suppresses banners
-/// for the foreground app; this overrides that policy. The rendered picker (notification-setting.png) shows
+/// for the foreground app; this overrides that policy. The rendered picker shows
 /// the long human label for ``tabUnfocused``.
 public enum NotifyWhileForeground: String, CaseIterable, Sendable, Equatable {
     /// Default — let the system suppress the banner while the app is frontmost.
     case off
     /// Always show the banner, even when the app is frontmost.
     case always
-    /// Show the banner only when the notification's SOURCE tab is NOT the active one (otty
-    /// `tab-unfocused`). The picker renders this as "Only when source tab is unfocused".
+    /// Show the banner only when the notification's SOURCE tab is NOT the active one
+    /// (`tab-unfocused`). The picker renders this as "Only when source tab is unfocused".
     case tabUnfocused = "tab-unfocused"
 
-    /// The human-readable picker label. notification-setting.png renders the long form for ``tabUnfocused``
+    /// The human-readable picker label. The picker renders the long form for ``tabUnfocused``
     /// ("Only when source tab is unfocused") rather than the raw enum token.
     public var displayLabel: String {
         switch self {
@@ -63,7 +63,7 @@ public enum NotificationEvent: Sendable, Equatable {
 
 /// The resolved per-event notification toggles + the foreground policy — the headless inputs to
 /// ``NotificationPolicy/shouldDeliver(event:appActive:sourcePaneFocused:settings:)``. The default values are
-/// the otty notification-setting.png defaults, so `NotificationSettings()` is the shipped baseline (and a
+/// the shipped notification defaults, so `NotificationSettings()` is the shipped baseline (and a
 /// test can pin those defaults). The live values are resolved from ``SettingsKey/notificationSettings``.
 public struct NotificationSettings: Sendable, Equatable {
     /// "Allow App Notifications" — the master switch for explicit OSC 9 / 777 / 99 notifications (default ON).

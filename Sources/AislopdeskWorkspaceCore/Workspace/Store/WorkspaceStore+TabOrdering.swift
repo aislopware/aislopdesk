@@ -12,7 +12,7 @@ import Foundation
 /// The grouping/sort selection is the SINGLE source of truth for the rendered row order (the carryover's
 /// "mutate the store order, not local `@State`"); the rail is a pure derivation via ``orderedTabGroups(now:)``.
 public extension WorkspaceStore {
-    /// Sets the sidebar grouping (otty hamburger "Group By") and PERSISTS it (Defaults-backed
+    /// Sets the sidebar grouping (the sidebar hamburger's "Group By") and PERSISTS it (Defaults-backed
     /// ``SettingsKey/tabGrouping``). Idempotent — a no-op when unchanged so it never churns the rail.
     func setTabGrouping(_ grouping: TabGrouping) {
         guard tabGrouping != grouping else { return }
@@ -23,7 +23,7 @@ public extension WorkspaceStore {
         refreshProjectKeysIfNeeded()
     }
 
-    /// Sets the within-section tab sort (otty hamburger "Sort By") and PERSISTS it
+    /// Sets the within-section tab sort (the sidebar hamburger's "Sort By") and PERSISTS it
     /// (``SettingsKey/tabSort``). Idempotent.
     func setTabSort(_ sort: TabSort) {
         guard tabSort != sort else { return }
@@ -31,7 +31,7 @@ public extension WorkspaceStore {
         Defaults[.tabSort] = sort
     }
 
-    /// Manual drag-reorder of the active session's tabs (otty: dragging a tab sets Sort = Manual). Permutes
+    /// Manual drag-reorder of the active session's tabs (dragging a tab sets Sort = Manual). Permutes
     /// `session.tabs` only — the leaf set is unchanged, so ``reconcileTree()`` is a registry no-op (no
     /// surface teardown; Design #4). A genuine move flips ``tabSort`` to ``TabSort/manual`` and persists the
     /// new order; a no-op move (same index / out-of-range) leaves the sort untouched.

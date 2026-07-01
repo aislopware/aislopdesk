@@ -39,14 +39,14 @@ struct WorkspaceCommands: Commands {
     var toggleSendToChat: (() -> Void)?
     var toggleDetailsPanel: (() -> Void)?
     var toggleSidebar: (() -> Void)?
-    /// E5 / WI-4: the cross-tab Global Search overlay toggle (otty ⇧⌘F, the View ▸ Global Search… menu item).
+    /// E5 / WI-4: the cross-tab Global Search overlay toggle (⇧⌘F, the View ▸ Global Search… menu item).
     /// `nil` keeps the menu item a graceful no-op via `route`, never dead.
     var toggleGlobalSearch: (() -> Void)?
-    /// E10 / WI-8 → E11 / WI-7: the View ▸ Jump To… menu item toggle (otty ⌘J). The app re-points it to the
+    /// E10 / WI-8 → E11 / WI-7: the View ▸ Jump To… menu item toggle (⌘J). The app re-points it to the
     /// folded-in Jump-To — the Open-Quickly picker at the `.current` pill. `nil` keeps the menu item a
     /// graceful no-op via `route`, never dead.
     var toggleJumpTo: (() -> Void)?
-    /// E11 / WI-7: the View ▸ Open Quickly… menu item toggle (otty ⌘⇧O → the merged `.all` pill). `nil` keeps
+    /// E11 / WI-7: the View ▸ Open Quickly… menu item toggle (⌘⇧O → the merged `.all` pill). `nil` keeps
     /// the menu item a graceful no-op via `route`, never dead. The ⌘⇧O chord itself is owned by the NSEvent
     /// dispatcher (this menu carries no `.keyboardShortcut`); the menu only mirrors it.
     var openQuickly: (() -> Void)?
@@ -55,16 +55,16 @@ struct WorkspaceCommands: Commands {
     /// NSEvent dispatcher's `selectDetailsTab`, matching how `toggleDetailsPanel`/`toggleSidebar` aren't
     /// threaded into the menu either), never dead.
     var selectDetailsTab: ((DetailsPanelTab) -> Void)?
-    /// E19 / WI-4: the View ▸ Pin Window menu item toggle (otty Pin Window). Pin Window is CHORD-LESS (otty
-    /// ships no default chord), so unlike the chorded actions the MENU Button is its primary entry — the app
+    /// E19 / WI-4: the View ▸ Pin Window menu item toggle. Pin Window is CHORD-LESS (no default chord is
+    /// bound), so unlike the chorded actions the MENU Button is its primary entry — the app
     /// threads `chrome.togglePin()` here so the row is live. `nil` keeps it a graceful no-op via `route`,
     /// never a dead menu item.
     var togglePinWindow: (() -> Void)?
-    /// E19 / WI-4: whether the window is currently PINNED — drives the View ▸ Pin Window row's ✓ (otty's Pin
+    /// E19 / WI-4: whether the window is currently PINNED — drives the View ▸ Pin Window row's ✓ (Pin
     /// Window is a CHECKABLE toggle, ES-E2-3). Read from the live `chrome.pinned` at the scene's `.commands`
     /// site so the row re-renders its checkmark when the pin flips from the menu / palette / a bound chord.
     var pinWindowOn = false
-    /// E3 WI-4 (audit fix): the Window ▸ Close Window actuator (otty ⌘⇧W). A macOS `NSWindow.performClose`
+    /// E3 WI-4 (audit fix): the Window ▸ Close Window actuator (⌘⇧W). A macOS `NSWindow.performClose`
     /// concern, so the app threads `window.performClose(nil)` here (which fires the native `windowShouldClose`
     /// → the existing window-close confirmation gate). `nil` falls back to the store's confirmation park in
     /// `route` — never a dead menu row, but the closure is what makes the menu item actually CLOSE the window.
@@ -76,7 +76,7 @@ struct WorkspaceCommands: Commands {
 
     var body: some Commands {
         // One top-level menu per display category, in the registry's display order. A `CommandMenu` inserts
-        // a brand-new top-level menu (after the app's standard menus) — exactly the otty workspace verbs.
+        // a brand-new top-level menu (after the app's standard menus) — the workspace's own action verbs.
         //
         // `CommandsBuilder` has NO `ForEach` (unlike `ViewBuilder`): `ForEach` is a `View`, not `Commands`, so
         // the category fan-out is UNROLLED here over the fixed `WorkspaceAction.Category.allCases`. The rows
@@ -140,7 +140,7 @@ struct WorkspaceCommands: Commands {
                 }
             }
         } else if binding.id == "view.pinWindow" {
-            // E19 / WI-4: otty's Pin Window is a CHECKABLE toggle — render it as a `Toggle` so the View menu
+            // E19 / WI-4: Pin Window is a CHECKABLE toggle — render it as a `Toggle` so the View menu
             // shows a ✓ while the window is pinned (a `Button` cannot show menu state). `isOn` reads the live
             // `pinWindowOn`; flipping it routes through the SAME chord-less `togglePinWindow` closure the
             // palette + a user-bound chord drive (no `.keyboardShortcut` — the menu-shortcutless rule holds).

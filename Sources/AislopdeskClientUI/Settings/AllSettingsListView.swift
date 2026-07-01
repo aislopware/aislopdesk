@@ -1,8 +1,8 @@
 // AllSettingsListView — the Advanced → "All Settings" searchable list (E7 WI-3).
 //
 // A searchable, scrollable list of every client-side config key (driven by the headless
-// `AllSettingsCatalog`), rendered into the Advanced `Form` as a `Group` of `Section`s. Faithful to otty's
-// `customization__advanced-settings.md` + `all-settings.png`:
+// `AllSettingsCatalog`), rendered into the Advanced `Form` as a `Group` of `Section`s. Matches the design
+// spec `customization__advanced-settings.md` + `all-settings.png`:
 //   • header "ALL SETTINGS" (uppercase, tertiary) with a trailing search field,
 //   • a "Reset All Settings" / "Reset Advanced Only" button row, each behind a confirmation alert,
 //   • rows: monospace key + gray description ("· Default: …"), then EITHER an inline control
@@ -10,7 +10,7 @@
 //
 // The catalog is the single source of WHAT to show; this view owns the `Defaults.Key` bindings + the
 // cross-tab jump (it sets the shared `selectedSection`). Cross-tab HIGHLIGHT of the target control is
-// deferred (the jump alone is the E7 deliverable). Otty.* tokens only (no raw font/radius literals).
+// deferred (the jump alone is the E7 deliverable). Slate.* tokens only (no raw font/radius literals).
 
 #if canImport(SwiftUI)
 import AislopdeskVideoProtocol
@@ -56,8 +56,8 @@ struct AllSettingsListView: View {
     @Default(.showBlockDividers) private var showBlockDividers
     @Default(.autoSwitchLayouts) private var autoSwitchLayouts
     @Default(.recordClipboardHistory) private var recordClipboardHistory
-    // E8 WI-3: the remaining Controls / Mouse / Scroll knobs + the OSC-52 read/write access pickers (otty
-    // homes the clipboard-read/write gates under Advanced → All Settings — `copy-and-paste` spec). Mirror the
+    // E8 WI-3: the remaining Controls / Mouse / Scroll knobs + the OSC-52 read/write access pickers (the
+    // clipboard-read/write gates live under Advanced → All Settings — `copy-and-paste` spec). Mirror the
     // catalog rows here so every `.advancedOnly` entry has an inline editor instead of falling to plain text.
     @Default(.clearSelectionOnTyping) private var clearSelectionOnTyping
     @Default(.clearSelectionOnCopy) private var clearSelectionOnCopy
@@ -75,14 +75,14 @@ struct AllSettingsListView: View {
     @Default(.optionAsAlt) private var optionAsAlt
     @Default(.scrollPastLastLine) private var scrollPastLastLine
     @Default(.scrollPastFirstLine) private var scrollPastFirstLine
-    // E10 (Path/link detection — otty Settings → Controls → Open With / Link Schemes). Client-side link
+    // E10 (Path/link detection — Settings → Controls → Open With / Link Schemes). Client-side link
     // knobs, so no `refresh:` config rebuild on change.
     @Default(.linkDetection) private var linkDetection
     @Default(.linkCmdClick) private var linkCmdClick
     @Default(.linkCmdShiftClick) private var linkCmdShiftClick
     @Default(.autoDetectLinkSchemes) private var autoDetectLinkSchemes
     @Default(.customLinkSchemes) private var customLinkSchemes
-    // Notification / sound / agent-notify keys (otty Shell → NOTIFICATION + SOUND groups). They have a richer
+    // Notification / sound / agent-notify keys (Shell → NOTIFICATION + SOUND groups). They have a richer
     // dedicated control on the Shell tab, but — exactly like `copyOnSelect` (Controls) and `oscNotifications`
     // (Shell) above — the All-Settings list mirrors them inline so every `.advancedOnly` row is editable here
     // rather than falling to a dead default-value label (the rows are kept in
@@ -111,7 +111,7 @@ struct AllSettingsListView: View {
     var body: some View {
         Group {
             Section {
-                HStack(spacing: Otty.Metric.space2) {
+                HStack(spacing: Slate.Metric.space2) {
                     Button("Reset All Settings") { confirmResetAll = true }
                     Button("Reset Advanced Only") { confirmResetAdvanced = true }
                     Spacer()
@@ -120,17 +120,17 @@ struct AllSettingsListView: View {
 
                 if filtered.isEmpty {
                     Text("No settings match “\(query)”.")
-                        .font(.system(size: Otty.Typeface.footnote))
-                        .foregroundStyle(Otty.Text.tertiary)
+                        .font(.system(size: Slate.Typeface.footnote))
+                        .foregroundStyle(Slate.Text.tertiary)
                 } else {
                     ForEach(filtered) { entry in row(for: entry) }
                 }
             } header: {
                 HStack {
                     Text("ALL SETTINGS")
-                        .font(.system(size: Otty.Typeface.footnote, weight: .medium))
+                        .font(.system(size: Slate.Typeface.footnote, weight: .medium))
                         .tracking(1)
-                        .foregroundStyle(Otty.Text.tertiary)
+                        .foregroundStyle(Slate.Text.tertiary)
                     Spacer()
                     TextField("Search", text: $query)
                         .textFieldStyle(.roundedBorder)
@@ -163,20 +163,20 @@ struct AllSettingsListView: View {
     // MARK: - Row
 
     private func row(for entry: AllSettingsCatalog.SettingEntry) -> some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             HStack(alignment: .firstTextBaseline) {
                 Text(entry.key)
-                    .font(.system(size: Otty.Typeface.body, design: .monospaced))
-                    .foregroundStyle(Otty.Text.primary)
-                Spacer(minLength: Otty.Metric.space2)
+                    .font(.system(size: Slate.Typeface.body, design: .monospaced))
+                    .foregroundStyle(Slate.Text.primary)
+                Spacer(minLength: Slate.Metric.space2)
                 control(for: entry)
             }
             Text("\(entry.description) · Default: \(entry.defaultText)")
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.vertical, Otty.Metric.space1)
+        .padding(.vertical, Slate.Metric.space1)
     }
 
     /// The trailing control: an inline editor for an `.advancedOnly` key, or a value + ✎ jump button for a
@@ -196,13 +196,13 @@ struct AllSettingsListView: View {
                 selectedSection = section
             }
         } label: {
-            HStack(spacing: Otty.Metric.space1) {
+            HStack(spacing: Slate.Metric.space1) {
                 Text(dedicatedValue(for: entry))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .foregroundStyle(Slate.Text.secondary)
                 Image(systemSymbol: .pencil)
-                    .foregroundStyle(Otty.Text.icon)
+                    .foregroundStyle(Slate.Text.icon)
             }
-            .font(.system(size: Otty.Typeface.footnote))
+            .font(.system(size: Slate.Typeface.footnote))
         }
         .buttonStyle(.borderless)
     }
@@ -252,14 +252,14 @@ struct AllSettingsListView: View {
         case SettingsKey.showBlockDividers: boolControl($showBlockDividers)
         case SettingsKey.autoSwitchLayouts: boolControl($autoSwitchLayouts)
         case SettingsKey.recordClipboardHistory: boolControl($recordClipboardHistory)
-        // OSC-52 clipboard access gates (allow / deny / ask) — otty's Advanced → All Settings home; feed the
+        // OSC-52 clipboard access gates (allow / deny / ask) — live under Advanced → All Settings; feed the
         // config passthrough, so refresh on change.
         case SettingsKey.clipboardReadKey:
             menuPicker($clipboardRead, refresh: true) { clipboardAccessOptions }
         case SettingsKey.clipboardWriteKey:
             menuPicker($clipboardWrite, refresh: true) { clipboardAccessOptions }
         case SettingsKey.allowShiftClickKey:
-            // otty exposes this as an ON/OFF switch (`spec/cursor-and-mouse`): ON ⇒ `.enabled` (⇧ extends the
+            // Exposed as an ON/OFF switch (`spec/cursor-and-mouse`): ON ⇒ `.enabled` (⇧ extends the
             // selection, the default), OFF ⇒ `.disabled` (⇧ forwarded to the program). The leaf enum retains
             // `.always`/`.never` for the token mapping, but the UI surfaces only the binary the spec shows.
             boolControl(
@@ -299,10 +299,10 @@ struct AllSettingsListView: View {
                 Text("First Line In Middle").tag(ScrollPastFirst.firstLineInMiddle)
             }
         case SettingsKey.scrollMultiplier:
-            AnyView(HStack(spacing: Otty.Metric.space1) {
+            AnyView(HStack(spacing: Slate.Metric.space1) {
                 Text(String(format: "%.2f×", scrollMultiplier))
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                     .monospacedDigit()
                 Stepper("", value: refreshing($scrollMultiplier), in: 0.25...5, step: 0.25).labelsHidden()
             })
@@ -348,10 +348,10 @@ struct AllSettingsListView: View {
         case SettingsKey.customLinkSchemes:
             // Read-only live summary here — the full editor lives on the Controls → Link Schemes section.
             AnyView(Text(customLinkSchemes.isEmpty ? "None" : customLinkSchemes.joined(separator: ", "))
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
                 .lineLimit(1))
-        // Notifications / sounds / agent-notify (otty Shell groups) — plain live toggles, no config rebuild.
+        // Notifications / sounds / agent-notify (Shell groups) — plain live toggles, no config rebuild.
         case SettingsKey.notifyOnFinish: boolControl($notifyOnFinish)
         case SettingsKey.notifyOnError: boolControl($notifyOnError)
         case SettingsKey.notifyOnWatchFinish: boolControl($notifyOnWatchFinish)
@@ -378,14 +378,14 @@ struct AllSettingsListView: View {
             // Read-only live summary — the list shows what the host's auto-progress matcher is driven from;
             // editing the prefix list is a power-user JSON / env action (no inline list editor by design).
             AnyView(Text(autoProgressCommands.isEmpty ? "None" : "\(autoProgressCommands.count) commands")
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
                 .lineLimit(1))
         default:
             // No inline editor wired (should not happen for an `.advancedOnly` entry) — show the default.
             AnyView(Text(entry.defaultText)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.tertiary))
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.tertiary))
         }
     }
 

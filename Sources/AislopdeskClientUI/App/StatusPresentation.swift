@@ -10,7 +10,7 @@ import AislopdeskAgentDetect
 import AislopdeskWorkspaceCore
 import SwiftUI
 
-// `@MainActor` because the colour mappers read the runtime ``Otty/theme`` (D3) — every call site is a
+// `@MainActor` because the colour mappers read the runtime ``Slate/theme`` (D3) — every call site is a
 // SwiftUI view body, all MainActor.
 @MainActor
 enum StatusPresentation {
@@ -21,15 +21,15 @@ enum StatusPresentation {
         ConnectionPresenter.shortLabel(for: status)
     }
 
-    /// The status-dot colour — otty status palette (cohesive on the active theme).
+    /// The status-dot colour — cohesive on the active theme.
     static func connectionColor(_ status: ConnectionStatus) -> Color {
         switch status {
-        case .connected: Otty.Status.ok
+        case .connected: Slate.Status.ok
         case .connecting,
-             .reconnecting: Otty.Status.warn
+             .reconnecting: Slate.Status.warn
         case .failed,
-             .unreachable: Otty.Status.err
-        case .disconnected: Otty.Text.secondary
+             .unreachable: Slate.Status.err
+        case .disconnected: Slate.Text.secondary
         }
     }
 
@@ -60,14 +60,14 @@ enum StatusPresentation {
         }
     }
 
-    /// otty-palette tint for an agent status (matches docs/42 glyph palette: idle🟢 working🟡 done🔵 needs🔴).
+    /// Tint for an agent status (docs/42 glyph palette: idle🟢 working🟡 done🔵 needs🔴).
     static func agentTint(_ status: ClaudeStatus) -> Color {
         switch status {
-        case .none: Otty.Text.secondary
-        case .idle: Otty.Status.ok
-        case .working: Otty.Status.warn
-        case .done: Otty.Status.info
-        case .needsPermission: Otty.Status.err
+        case .none: Slate.Text.secondary
+        case .idle: Slate.Status.ok
+        case .working: Slate.Status.warn
+        case .done: Slate.Status.info
+        case .needsPermission: Slate.Status.err
         }
     }
 
@@ -78,7 +78,7 @@ enum StatusPresentation {
 
     // MARK: Tab badge (E6 sidebar row, WI-4)
 
-    /// How a sidebar tab's fused ``TabBadgeKind`` renders — the otty glyph map, kept next to ``agentSymbol``
+    /// How a sidebar tab's fused ``TabBadgeKind`` renders — the glyph map, kept next to ``agentSymbol``
     /// so the two status vocabularies can't drift (`terminal-features__progress-state.md` "The full badge
     /// set"). `.spinner` (running) and `.dot` (the settled accent dot) are bespoke shapes; every other kind
     /// is a tinted SF-symbol fill. The view layer (``TabBadgeView``) switches on this so the symbol + tint
@@ -86,12 +86,12 @@ enum StatusPresentation {
     static func tabBadge(_ kind: TabBadgeKind) -> TabBadgeStyle {
         switch kind {
         case .running: .spinner
-        case .completed: .symbol(name: "checkmark.circle.fill", tint: Otty.Status.ok)
-        case .finished: .dot(Otty.Status.ok)
-        case .error: .symbol(name: "exclamationmark.triangle.fill", tint: Otty.Status.err)
-        case .awaitingInput: .symbol(name: "hand.raised.fill", tint: Otty.Status.warn)
-        case .caffeinate: .symbol(name: "cup.and.saucer.fill", tint: Otty.Text.secondary)
-        case .sudo: .symbol(name: "shield.lefthalf.filled", tint: Otty.Text.secondary)
+        case .completed: .symbol(name: "checkmark.circle.fill", tint: Slate.Status.ok)
+        case .finished: .dot(Slate.Status.ok)
+        case .error: .symbol(name: "exclamationmark.triangle.fill", tint: Slate.Status.err)
+        case .awaitingInput: .symbol(name: "hand.raised.fill", tint: Slate.Status.warn)
+        case .caffeinate: .symbol(name: "cup.and.saucer.fill", tint: Slate.Text.secondary)
+        case .sudo: .symbol(name: "shield.lefthalf.filled", tint: Slate.Text.secondary)
         }
     }
 
@@ -114,7 +114,7 @@ enum StatusPresentation {
     /// The taskbar-style percent readout for a pane's OSC 9;4 progress, or `nil` when there is no number to
     /// show. Only a DETERMINATE state (`9;4;1;<pct>`) carries a meaningful "taskbar" percent — an
     /// indeterminate spinner shows the spinner only, and an error is conveyed by its alert glyph (held red),
-    /// not a number. Matches otty's determinate "NN%" readout (`progress-state.md` Behaviors). Pure text.
+    /// not a number. Renders the determinate "NN%" readout (`progress-state.md` Behaviors). Pure text.
     static func progressPercentLabel(_ progress: PaneProgress?) -> String? {
         if case let .determinate(percent) = progress { return "\(percent)%" }
         return nil

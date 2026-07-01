@@ -53,7 +53,7 @@ public struct InteractiveCommandMatcher: Sendable, Equatable {
 
     // MARK: Defaults
 
-    /// The shared default matcher (the otty-parity interactive program set).
+    /// The shared default matcher (the built-in interactive program set).
     public static let `default` = Self()
 
     /// Always-interactive programs: remote shells, pagers, editors, full-screen TUIs, `su`.

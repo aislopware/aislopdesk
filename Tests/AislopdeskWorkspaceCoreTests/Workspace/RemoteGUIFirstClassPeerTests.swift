@@ -8,8 +8,8 @@ import XCTest
 /// **ES-E21-4 — every kind-generic surface treats `.remoteGUI` as a first-class peer of a terminal pane.**
 ///
 /// E21 is an AUDIT → FILL-GENUINE-GAPS epic (carry-overs §0): `.remoteGUI` (a real host window streamed over
-/// the PATH-2 UDP video path) must be a first-class peer in *every* clone surface E1–E20 shipped. There is no
-/// otty analog / no screenshot — the standard is the existing aislopdesk surfaces. This suite is the
+/// the PATH-2 UDP video path) must be a first-class peer in *every* surface E1–E20 shipped. There is no
+/// reference screenshot to compare against — the standard is the existing aislopdesk surfaces. This suite is the
 /// developer-facing peer-enumeration pin: it asserts the model entry points the per-WI fixes ride on
 /// (`newRemoteWindowTab`, `OpenQuicklyModel.openedItems`,
 /// `WorkspaceTreeOps.toggleFloating`, `WorkspaceTreeOps.splitPane`, `WorkspaceStore.isReadOnly`) all ADMIT /

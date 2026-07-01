@@ -1,9 +1,9 @@
 import Foundation
 
-// MARK: - RecipeLibrary (the `.ottyrecipe` folder + trust-store file engine)
+// MARK: - RecipeLibrary (the `.aislopdeskrecipe` folder + trust-store file engine)
 
 /// E16 (WI-8) — the recipes-folder + trust-store engine: locates `~/.config/aislopdesk/recipes/`, scans its
-/// `.ottyrecipe` files into validated ``Recipe``s, serialises a ``Recipe`` back out, and reads / writes the
+/// `.aislopdeskrecipe` files into validated ``Recipe``s, serialises a ``Recipe`` back out, and reads / writes the
 /// trust-on-first-use store (`~/Library/Application Support/Aislopdesk/trusted_recipes.json`). It mirrors
 /// ``ThemeLibrary`` exactly (XDG-aware `$HOME/.config` base, validate-then-drop scan, slug de-collision) but
 /// for the recipe domain — the pure codec (``RecipeTOMLCodec``) + trust value (``RecipeTrustStore``) sit
@@ -11,9 +11,9 @@ import Foundation
 ///
 /// **WHY the client (E16 decision, mirroring themes):** a recipe is pure client state — it restores a window
 /// layout + replays commands the CLIENT injects; nothing here reaches the host / wire / golden corpus. So
-/// recipes live on the client at `~/.config/aislopdesk/recipes/` (the otty `~/.config/otty/recipes/` analog).
+/// recipes live on the client at `~/.config/aislopdesk/recipes/`.
 ///
-/// **VALIDATE-THEN-DROP (CLAUDE.md §3):** a missing folder, an unreadable file, or a malformed `.ottyrecipe`
+/// **VALIDATE-THEN-DROP (CLAUDE.md §3):** a missing folder, an unreadable file, or a malformed `.aislopdeskrecipe`
 /// is never fatal — ``scan(directory:)`` simply skips it (``RecipeTOMLCodec/parse(_:)`` already drops invalid
 /// documents) and ``loadTrust(url:)`` decode-fails to the empty trust set. No force-unwrap, no trap.
 ///
@@ -21,8 +21,8 @@ import Foundation
 /// against a temp dir (no app container, no NSWindow). Cross-platform Foundation (no `#if os` needed in the
 /// core); the iOS document-picker import path is the app-side glue (WI-10), not this engine.
 public enum RecipeLibrary {
-    /// The `.ottyrecipe` filename extension (lowercase; the scan matches case-insensitively).
-    public static let fileExtension = "ottyrecipe"
+    /// The `.aislopdeskrecipe` filename extension (lowercase; the scan matches case-insensitively).
+    public static let fileExtension = "aislopdeskrecipe"
 
     // MARK: - Directory math (pure, cross-platform)
 
@@ -65,7 +65,7 @@ public enum RecipeLibrary {
     /// One scanned recipe file: its on-disk URL, the raw bytes (for the trust checksum), and the parsed
     /// ``Recipe`` (`nil` when the file failed validation — kept for the open picker to grey it honestly).
     public struct RecipeFile: Equatable, Sendable {
-        /// The `.ottyrecipe` file's URL.
+        /// The `.aislopdeskrecipe` file's URL.
         public var url: URL
         /// The raw file bytes — the input to ``RecipeTrustStore/sha256Hex(_:)`` (so the open path hashes the
         /// EXACT bytes on disk, not a re-emit).
@@ -95,7 +95,7 @@ public enum RecipeLibrary {
     // MARK: - Slug (pure, cross-platform)
 
     /// A filesystem-safe slug for a recipe display `name`: lowercased, non-alphanumerics collapsed to `-`,
-    /// trimmed; empty input falls back to `recipe`. Deterministic + total (mirrors otty's recipe filenames).
+    /// trimmed; empty input falls back to `recipe`. Deterministic + total.
     public static func slugify(_ name: String) -> String {
         var out = ""
         var lastDash = false
@@ -127,7 +127,7 @@ public enum RecipeLibrary {
 
     // MARK: - File IO
 
-    /// Read one `.ottyrecipe` file: returns its raw bytes + the parsed ``Recipe`` (`nil` recipe on a
+    /// Read one `.aislopdeskrecipe` file: returns its raw bytes + the parsed ``Recipe`` (`nil` recipe on a
     /// malformed file). `nil` only when the file itself is UNREADABLE (missing / no permission). Never traps.
     public static func read(url: URL) -> RecipeFile? {
         guard let data = try? Data(contentsOf: url) else { return nil }
@@ -137,7 +137,7 @@ public enum RecipeLibrary {
         return RecipeFile(url: url, bytes: bytes, recipe: recipe)
     }
 
-    /// Scan `directory` for `.ottyrecipe` files, returning every readable one (parsed or not) in a
+    /// Scan `directory` for `.aislopdeskrecipe` files, returning every readable one (parsed or not) in a
     /// deterministic file-name order. A missing / unreadable directory yields `[]` (validate-then-drop).
     public static func scan(directory: URL) -> [RecipeFile] {
         let manager = FileManager.default
@@ -158,7 +158,7 @@ public enum RecipeLibrary {
         Set(scan(directory: directory).map { $0.url.deletingPathExtension().lastPathComponent })
     }
 
-    /// Serialise `recipe` to `<directory>/<slug>.ottyrecipe`, creating the directory if needed. Returns the
+    /// Serialise `recipe` to `<directory>/<slug>.aislopdeskrecipe`, creating the directory if needed. Returns the
     /// written URL + the exact bytes (the trust-checksum input). The caller picks a collision-free `slug`
     /// (see ``uniqueSlug(_:existing:)`` / ``existingSlugs(in:)``).
     @discardableResult

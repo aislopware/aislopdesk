@@ -1,5 +1,5 @@
-// WebPaneView — the PRODUCTION local web-browser surface (`PaneKind.web`, E18; otty
-// `spec/user-interface__files-and-links.md` › Web Browser Pane, `web-broswer.png`).
+// WebPaneView — the PRODUCTION local web-browser surface (`PaneKind.web`, E18; see
+// `docs/ui-shell/spec/user-interface__files-and-links.md` › Web Browser Pane, `web-broswer.png`).
 //
 // This is the real `WKWebView` the cross-platform `WebLeafView` renders through the headless-safe
 // `WebRendererFactory` seam (registered in `AppMain.main()`, exactly like `VideoWindowFactory`). It lives in
@@ -8,7 +8,7 @@
 // same reason `SCStream` / `VTCompressionSession` live behind seams). It is compiled by xcodegen+xcodebuild
 // (`scripts/check-macos.sh` / `scripts/check-ios.sh`) and verified by GUI run, not by `swift test`.
 //
-// D9 / otty-spec posture, set on the `WKWebViewConfiguration`:
+// D9 posture, set on the `WKWebViewConfiguration`:
 //   • `websiteDataStore = .nonPersistent()` — no on-disk cookies/cache; nothing bleeds across panes or
 //     survives a restart (the pane is a throwaway local surface, never an auth boundary).
 //   • `mediaTypesRequiringUserActionForPlayback = .all` — no autoplay; audio/video needs a user gesture.
@@ -63,11 +63,11 @@ struct WebPaneView: WebViewRepresentable {
         let configuration = WKWebViewConfiguration()
         // D9: no on-disk cookies/cache — nothing persists or bleeds across panes.
         configuration.websiteDataStore = .nonPersistent()
-        // otty spec: no autoplay — media requires a user gesture.
+        // No autoplay — media requires a user gesture.
         configuration.mediaTypesRequiringUserActionForPlayback = .all
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
-        // otty spec (files-and-links › Web Browser Pane): two-finger trackpad swipe drives Back/Forward.
+        // Two-finger trackpad swipe drives Back/Forward.
         // The property lives on `WKWebView` on BOTH macOS and iOS, so this single shared line covers both
         // the `makeNSView` and `makeUIView` slices (alongside the ⌘[/⌘] chords + the chrome buttons).
         webView.allowsBackForwardNavigationGestures = true
@@ -183,7 +183,7 @@ extension WebPaneView.Coordinator: WKNavigationDelegate {
         syncHistory(webView)
     }
 
-    /// The page finished loading — final history + title (otty titles the pane after the loaded page).
+    /// The page finished loading — final history + title (the pane is titled after the loaded page).
     func webView(_ webView: WKWebView, didFinish _: WKNavigation?) {
         setLoading(false)
         syncHistory(webView)

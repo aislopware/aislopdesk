@@ -1,8 +1,8 @@
 import Foundation
 
-// MARK: - Tab grouping / sort preference (otty sidebar hamburger)
+// MARK: - Tab grouping / sort preference (sidebar hamburger menu)
 
-/// How the vertical sidebar BUCKETS tabs into sections (otty `user-interface__window-tab-split.md` →
+/// How the vertical sidebar BUCKETS tabs into sections (see `docs/ui-shell/spec/user-interface__window-tab-split.md` →
 /// the sort hamburger's "Group By" rows). The selection lives on ``WorkspaceStore/tabGrouping`` (the
 /// single source of truth for row order) and is persisted via ``SettingsKey/tabGroupingKey``; the
 /// rendered sections are a pure derivation of it (``TabOrderingEngine/groups(tabs:grouping:sort:projectKey:lastActiveAt:now:)``).
@@ -19,7 +19,7 @@ public enum TabGrouping: String, Codable, Sendable, CaseIterable {
     case byDate
 }
 
-/// How tabs are ORDERED **within** a group (otty hamburger's "Sort By" rows).
+/// How tabs are ORDERED **within** a group (the sidebar hamburger's "Sort By" rows).
 ///
 /// `created` and `manual` both preserve the `session.tabs` array order — `created` because a tab is
 /// appended on creation (so array order == creation order, Design #2 in the E6 plan — no timestamp), and

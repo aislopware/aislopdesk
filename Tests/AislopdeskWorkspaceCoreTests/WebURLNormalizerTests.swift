@@ -2,8 +2,8 @@ import Foundation
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E18 WI-3 — the address-bar / dropped-URL normalizer (otty `files-and-links.md` › Web Browser Pane:
-/// *"A bare host gets `https://` prepended; otherwise it acts as a DuckDuckGo search."*).
+/// E18 WI-3 — the address-bar / dropped-URL normalizer for the Web Browser pane:
+/// a bare host gets `https://` prepended; otherwise it acts as a DuckDuckGo search.
 ///
 /// These pin the validate-then-drop contract: web schemes pass, a bare host gets `https://`, everything
 /// else searches, and a dangerous/non-web scheme (`javascript:`/`file:`/…) DROPS to `nil` — the web pane

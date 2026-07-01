@@ -8,7 +8,7 @@ import CoreText
 import Darwin
 import Foundation
 
-// aislopdesk — the user-facing CLI (otty-clone E20). One binary, a superset of `aislopdesk-ctl`:
+// aislopdesk — the user-facing CLI (E20). One binary, a superset of `aislopdesk-ctl`:
 //
 //   aislopdesk                     launch the client GUI (like bare xterm/alacritty/ghostty)
 //   aislopdesk -e <cmd> [args...]  launch the GUI + run <cmd> in the first pane (xterm `-e`)
@@ -77,7 +77,7 @@ func printUsage() {
                                            idle/closed (blocks indefinitely by default; --block-timeout
                                            bounds it). --timeout is the per-poll IPC wait, NOT the block.
                                            Exit 0 (idle/closed) · 4 (id never seen) · 9 (block timed out).
-      open <recipe>                        Open a .ottyrecipe (path or saved-library name).
+      open <recipe>                        Open a .aislopdeskrecipe (path or saved-library name).
       view <path|url> [placement]          Read-only shim (less <path> / open <url>) in a new pane.
       edit <path|url> [placement]          Editor shim ($EDITOR <path>) in a new pane.
                                            placement: --new-tab (default) | --new-window |
@@ -613,7 +613,7 @@ func cmdConfigUnset(_ args: [String]) -> Never {
         }
     }
     guard let key else { die("config unset: requires <key>", code: 2) }
-    // Destructive op: gate behind -y/--yes (otty parity).
+    // Destructive op: gate behind -y/--yes.
     guard invocation.assumeYes else {
         die("unset '\(key)' is destructive — pass -y/--yes to confirm", code: 1)
     }
@@ -733,7 +733,7 @@ func cmdFontList(_ rest: [String]) -> Never {
 }
 
 /// `font apply "<name>"` — set the live terminal font family. Routes through the SAME running-app config path
-/// as `config set font-family <name>` (the otty-documented mapping), so an unknown/empty name is an honest
+/// as `config set font-family <name>`, so an unknown/empty name is an honest
 /// `config set rejected` rather than a silent no-op.
 func cmdFontApply(_ rest: [String]) -> Never {
     var name: String?
@@ -994,7 +994,7 @@ func cmdIgnore(_ rest: [String]) -> Never {
 
 // MARK: - open / view / edit (E20 WI-6)
 
-/// `open <recipe>` — open a `.ottyrecipe` by path or a saved-library recipe by name. The running app parses
+/// `open <recipe>` — open a `.aislopdeskrecipe` by path or a saved-library recipe by name. The running app parses
 /// the file (`RecipeTOMLCodec`, validate-then-drop) or resolves the name from its saved library, then restores
 /// it via `WorkspaceStore.openRecipe` — the SAME op File ▸ Open Recipe… drives (the E16 GUI open-recipe path;
 /// only this CLI subcommand was deferred to E20). Silent on success.
@@ -1005,7 +1005,7 @@ func cmdOpen(_ rest: [String]) -> Never {
         if reference == nil { reference = arg } else { die("open: unexpected argument '\(arg)'", code: 2) }
     }
     guard let reference, !reference.isEmpty else {
-        die("open: requires a <recipe> (a .ottyrecipe path or a saved-library name)", code: 2)
+        die("open: requires a <recipe> (a .aislopdeskrecipe path or a saved-library name)", code: 2)
     }
     requireResult(callClient(
         method: ClientControlProtocol.Method.openRecipe,

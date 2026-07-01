@@ -2,13 +2,13 @@
 // (E9/WI-7). Sibling of `WorkspaceChromeState`.
 //
 // The Details-tab selection was a private `@State` inside `InspectorColumn`, so it could not be driven from
-// outside the view — but otty exposes four bindable `Details: *` jump commands (ES-E9-5) that switch the
+// outside the view — but the app exposes four bindable `Details: *` jump commands (ES-E9-5) that switch the
 // tab. Hoisting the selection into this shared `@Observable` lets `WorkspaceRootView` install a
 // `selectDetailsTab` closure that writes `selected` (and reveals the panel) when a command routes through
 // `WorkspaceBindingRegistry.route`, while `InspectorColumn` reads `selected` to render the active tab — one
 // instance shared by both inspector mounts (the macOS split item + the iOS detail column).
 //
-// `selected` defaults to `.info` (otty's resting Details tab) and is the cross-module `DetailsPanelTab`, the
+// `selected` defaults to `.info` (the resting Details tab) and is the cross-module `DetailsPanelTab`, the
 // SAME vocabulary the `selectDetailsTab(_:)` action carries — so there is ONE source of truth for "which tab".
 
 #if canImport(SwiftUI)

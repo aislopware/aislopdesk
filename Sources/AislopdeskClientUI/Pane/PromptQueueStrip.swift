@@ -1,4 +1,4 @@
-// PromptQueueStrip — the otty "Prompt Queue" chip strip (E12 / WI-5). Sits just ABOVE the Composer and
+// PromptQueueStrip — the "Prompt Queue" chip strip (E12 / WI-5). Sits just ABOVE the Composer and
 // shows one chip per pending prompt; hidden entirely when the queue is empty (`queue.isEmpty`).
 //
 // Anatomy matches `queue.png`: a full-width light strip holding rounded chip pills, each `[ text  🗑 ]`,
@@ -32,22 +32,22 @@ struct PromptQueueStrip: View {
     #endif
 
     var body: some View {
-        // Hidden when empty (otty: "not visible when the queue is empty"). Read `items` so the strip
+        // Hidden when empty — not visible when the queue has no pending prompts. Read `items` so the strip
         // re-renders on every enqueue / dispatch / reorder.
         let items = composer.promptQueue.items
         if !items.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Otty.Metric.space2) {
+                HStack(spacing: Slate.Metric.space2) {
                     ForEach(items) { item in
                         chip(item)
                     }
                 }
-                .padding(.horizontal, Otty.Metric.space3)
-                .padding(.vertical, Otty.Metric.space2)
+                .padding(.horizontal, Slate.Metric.space3)
+                .padding(.vertical, Slate.Metric.space2)
             }
-            .background(Otty.Surface.element)
+            .background(Slate.Surface.element)
             .overlay(alignment: .top) {
-                Rectangle().fill(Otty.Line.divider).frame(height: Otty.Metric.hairline)
+                Rectangle().fill(Slate.Line.divider).frame(height: Slate.Metric.hairline)
             }
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
@@ -55,14 +55,14 @@ struct PromptQueueStrip: View {
 
     /// One queue chip — `[ text  🗑 ]`. Tap edits, 🗑 removes, drag-onto-another-chip reorders.
     private func chip(_ item: PromptQueueItem) -> some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             // Tap-to-edit: the whole label is the edit hit-target (separate Button from the 🗑 below).
             Button {
                 composer.editChip(id: item.id)
             } label: {
                 Text(item.text)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .contentShape(.rect)
@@ -75,18 +75,18 @@ struct PromptQueueStrip: View {
             } label: {
                 Image(systemSymbol: .trash)
                     .font(.system(size: trashSize, weight: .medium))
-                    .foregroundStyle(Otty.Text.icon)
+                    .foregroundStyle(Slate.Text.icon)
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .help("Remove from queue")
         }
-        .padding(.horizontal, Otty.Metric.space2)
+        .padding(.horizontal, Slate.Metric.space2)
         .frame(height: chipHeight)
-        .background(Otty.Surface.selectedCard, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall))
+        .background(Slate.Surface.selectedCard, in: RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall))
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
-                .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
+                .strokeBorder(Slate.Line.subtle, lineWidth: Slate.Metric.hairline),
         )
         // Drag-to-reorder: carry the chip's stable id; dropping onto another chip moves it there.
         .draggable(item.id.uuidString)

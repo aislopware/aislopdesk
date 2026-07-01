@@ -1,7 +1,7 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// O1 — the otty `On Launch` general setting is a LIVE control, not a dead accessor. Before this wiring the
+/// O1 — the `On Launch` general setting is a LIVE control, not a dead accessor. Before this wiring the
 /// General → On Launch picker persisted ``OnLaunchBehavior`` but NO launch path read it, so picking "New
 /// Window" was a silent no-op (`AislopdeskClientApp.init` always restored the persisted tree via
 /// `loadTree()`). The fix routes the app's store-construction site through

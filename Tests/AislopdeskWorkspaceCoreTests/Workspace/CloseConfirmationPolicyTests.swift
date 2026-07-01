@@ -35,9 +35,9 @@ final class CloseConfirmationPolicyTests: XCTestCase {
         XCTAssertFalse(CloseConfirmationPolicy.shouldConfirm(.multipleTabs, isBusy: true, tabCount: 0))
     }
 
-    // MARK: - rawValue (otty config strings) + validate-then-repair init
+    // MARK: - rawValue (config strings) + validate-then-repair init
 
-    func testRawValuesMatchOttyConfigStrings() {
+    func testRawValuesMatchSlateConfigStrings() {
         XCTAssertEqual(CloseConfirmationPolicy.process.rawValue, "process")
         XCTAssertEqual(CloseConfirmationPolicy.always.rawValue, "always")
         XCTAssertEqual(CloseConfirmationPolicy.multipleTabs.rawValue, "multiple_tabs")
@@ -54,7 +54,11 @@ final class CloseConfirmationPolicyTests: XCTestCase {
         // Validate-then-repair: a stale / hostile persisted string never traps — it falls back to `.process`.
         XCTAssertEqual(CloseConfirmationPolicy(rawValue: "garbage"), .process)
         XCTAssertEqual(CloseConfirmationPolicy(rawValue: ""), .process)
-        XCTAssertEqual(CloseConfirmationPolicy(rawValue: "multipleTabs"), .process, "camelCase ≠ the otty raw")
+        XCTAssertEqual(
+            CloseConfirmationPolicy(rawValue: "multipleTabs"),
+            .process,
+            "camelCase ≠ the persisted raw value",
+        )
     }
 }
 
@@ -114,7 +118,7 @@ final class CloseConfirmationStoreTests: XCTestCase {
         // split-brained the picker from these fire-sites fails here.
         XCTAssertEqual(SettingsKey.closeConfirmTabKey, "shell.closeConfirm.tab")
         XCTAssertEqual(SettingsKey.closeConfirmWindowKey, "shell.closeConfirm.window")
-        // An explicit otty config value round-trips through Defaults; an invalid stored value repairs.
+        // An explicit config value round-trips through Defaults; an invalid stored value repairs.
         UserDefaults.standard.set("always", forKey: SettingsKey.closeConfirmTabKey)
         XCTAssertEqual(SettingsKey.closeConfirmTab, .always)
         UserDefaults.standard.set("multiple_tabs", forKey: SettingsKey.closeConfirmWindowKey)

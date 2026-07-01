@@ -1,4 +1,4 @@
-// SendToChatDialog — the E13 WI-5 / ES-E13-5 "Send to Chat" modal sheet (otty ⌘⌃↩). A centered card over a
+// SendToChatDialog — the E13 WI-5 / ES-E13-5 "Send to Chat" modal sheet (bound to ⌘⌃↩). A centered card over a
 // dimmed workspace (mounted by the app inside the shared `Scrim` + centered ZStack, exactly like
 // `CloseConfirmationPanel`) that matches `send-to-chat-frame-03/04.png`: a title row (the source location),
 // a read-only quoted preview box, a "Send to:" Claude-only session picker, a focused "Comment:" field, and
@@ -10,7 +10,7 @@
 // ordered-OUT VERBATIM sink — and auto-focuses the pane); Copy Message → `onCopy` (the owner writes the
 // pasteboard); Cancel → `onCancel`. Claude-only (BINDING directive 1) — the picker never surfaces codex.
 //
-// `Otty.*` tokens ONLY (raw font/radius literals fail `scripts/check-ds-leaks.sh`). Shared
+// `Slate.*` tokens ONLY (raw font/radius literals fail `scripts/check-ds-leaks.sh`). Shared
 // `AislopdeskClientUI` view — compiles for iOS (only the AppKit Esc handler is `#if os(macOS)`-gated, with
 // an `onKeyPress(.escape)` iOS fallback); no dead iOS affordance.
 
@@ -73,14 +73,14 @@ struct SendToChatDialog: View {
 
     var body: some View {
         OverlayPanel(width: panelWidth) {
-            VStack(alignment: .leading, spacing: Otty.Metric.space3) {
+            VStack(alignment: .leading, spacing: Slate.Metric.space3) {
                 titleRow
                 quotedPreview
                 sendToRow
                 commentSection
                 buttonRow
             }
-            .padding(Otty.Metric.space4)
+            .padding(Slate.Metric.space4)
         }
         .onAppear { DispatchQueue.main.async { commentFocused = true } }
         #if os(macOS)
@@ -97,8 +97,8 @@ struct SendToChatDialog: View {
 
     private var titleRow: some View {
         Text(context.title)
-            .font(.system(size: Otty.Typeface.body, weight: .semibold))
-            .foregroundStyle(Otty.Text.primary)
+            .font(.system(size: Slate.Typeface.body, weight: .semibold))
+            .foregroundStyle(Slate.Text.primary)
             .lineLimit(1)
     }
 
@@ -107,26 +107,26 @@ struct SendToChatDialog: View {
     private var quotedPreview: some View {
         ScrollView {
             Text(context.quoted)
-                .font(.system(size: Otty.Typeface.footnote).monospaced())
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote).monospaced())
+                .foregroundStyle(Slate.Text.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
-                .padding(Otty.Metric.space2)
+                .padding(Slate.Metric.space2)
         }
         .frame(maxHeight: previewMaxHeight)
         .background(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                .fill(Otty.Surface.element),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                .fill(Slate.Surface.element),
         )
     }
 
     // MARK: - "Send to:" Claude-only session picker
 
     private var sendToRow: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Text("Send to:")
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
             Picker("Send to", selection: $selectedSessionID) {
                 ForEach(sessions) { session in
                     sessionRow(session).tag(Optional(session.id))
@@ -136,44 +136,44 @@ struct SendToChatDialog: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .tint(Otty.Text.primary)
+            .tint(Slate.Text.primary)
             .onChange(of: selectedSessionID) { _, new in onSelectionChange?(new) }
             Spacer(minLength: 0)
         }
     }
 
     private func sessionRow(_ session: SendToChatSession) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Text(session.name)
-                .foregroundStyle(Otty.Text.primary)
+                .foregroundStyle(Slate.Text.primary)
             Text(session.agentLabel) // Claude-only badge — never "codex"
-                .foregroundStyle(Otty.Text.tertiary)
+                .foregroundStyle(Slate.Text.tertiary)
         }
     }
 
     // MARK: - "Comment:" field (focused, multi-line)
 
     private var commentSection: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Text("Comment:")
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
             TextField("", text: $comment, axis: .vertical)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.primary)
+                .tint(Slate.State.accent)
                 .focused($commentFocused)
                 .lineLimit(3...8)
-                .padding(Otty.Metric.space2)
+                .padding(Slate.Metric.space2)
                 .frame(minHeight: commentMinHeight, alignment: .topLeading)
                 .background(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                        .fill(Otty.Surface.element),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                        .fill(Slate.Surface.element),
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                        .stroke(Otty.Line.card, lineWidth: Otty.Metric.hairline),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                        .stroke(Slate.Line.card, lineWidth: Slate.Metric.hairline),
                 )
         }
     }
@@ -181,29 +181,29 @@ struct SendToChatDialog: View {
     // MARK: - Buttons (Copy Message · Cancel · Send)
 
     private var buttonRow: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Button("Copy Message") { onCopy(composedMessage) }
                 .buttonStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
-                .padding(.horizontal, Otty.Metric.space3)
-                .padding(.vertical, Otty.Metric.space1)
-            Spacer(minLength: Otty.Metric.space2)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
+                .padding(.horizontal, Slate.Metric.space3)
+                .padding(.vertical, Slate.Metric.space1)
+            Spacer(minLength: Slate.Metric.space2)
             Button("Cancel") { onCancel() }
                 .buttonStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
-                .padding(.horizontal, Otty.Metric.space3)
-                .padding(.vertical, Otty.Metric.space1)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
+                .padding(.horizontal, Slate.Metric.space3)
+                .padding(.vertical, Slate.Metric.space1)
             Button { onSend(selectedSessionID, composedMessage) } label: {
                 Text("Send")
-                    .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                    .foregroundStyle(Otty.Surface.card)
-                    .padding(.horizontal, Otty.Metric.space3)
-                    .padding(.vertical, Otty.Metric.space1)
+                    .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                    .foregroundStyle(Slate.Surface.card)
+                    .padding(.horizontal, Slate.Metric.space3)
+                    .padding(.vertical, Slate.Metric.space1)
                     .background(
-                        RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                            .fill(Otty.State.accent),
+                        RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                            .fill(Slate.State.accent),
                     )
             }
             .buttonStyle(.plain)

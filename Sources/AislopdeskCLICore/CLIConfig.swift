@@ -1,14 +1,14 @@
 import Foundation
 
-// `aislopdesk config path | edit | validate` — the LOCAL (no-socket) config-file ops (otty-clone
-// E20, WI-4). These operate on the optional user config FILE (otty parity: `~/.config/otty/`), which
+// `aislopdesk config path | edit | validate` — the LOCAL (no-socket) config-file ops (E20,
+// WI-4). These operate on the optional user config FILE (XDG-style: `~/.config/aislopdesk/`), which
 // is the persisted source a launch-time bridge reads. The RUNNING-app config ops
 // (`get`/`set`/`unset`/`show`/`reload`, incl. `--transient`) go over the control socket instead;
 // only `path`/`edit`/`validate` are pure file ops, so the path resolution + the validator live here,
 // PURE and unit-tested (the `edit` $EDITOR spawn lives in the compiled-only `main.swift`).
 //
-// **The split is deliberate and documented (M2 fix).** Unlike otty — where every `config` subcommand
-// acts on the SAME file — aislopdesk's launch-time bridge (`KeybindConfigLoader`) reads ONLY the
+// **The split is deliberate and documented (M2 fix): not every `config` subcommand acts on the
+// SAME file.** aislopdesk's launch-time bridge (`KeybindConfigLoader`) reads ONLY the
 // `keybind = <chord>:<action>` lines of `config.toml`; every other key (font-size, theme, …) is
 // silently ignored there and instead lives in the running app's `PreferencesStore`, reached by
 // `get`/`set`/`unset`/`show`/`reload` over the socket. So `path`/`edit`/`validate` target the KEYBIND
@@ -31,7 +31,7 @@ public enum CLIConfig {
         return defaultPath(environment: environment)
     }
 
-    /// `$XDG_CONFIG_HOME/aislopdesk/config.toml`, else `~/.config/aislopdesk/config.toml` (otty parity).
+    /// `$XDG_CONFIG_HOME/aislopdesk/config.toml`, else `~/.config/aislopdesk/config.toml` (XDG Base Directory convention).
     public static func defaultPath(
         environment: [String: String] = ProcessInfo.processInfo.environment,
     ) -> String {

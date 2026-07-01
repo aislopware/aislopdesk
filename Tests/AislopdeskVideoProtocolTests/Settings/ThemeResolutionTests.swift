@@ -116,7 +116,7 @@ final class ThemeResolutionTests: XCTestCase {
             if choice == .system {
                 XCTAssertNil(choice.builtinID, ".system follows the OS, so it has no fixed id")
             } else {
-                XCTAssertNotNil(choice.builtinID, "\(choice) must map to a stable OttyTheme id")
+                XCTAssertNotNil(choice.builtinID, "\(choice) must map to a stable SlateTheme id")
             }
         }
     }

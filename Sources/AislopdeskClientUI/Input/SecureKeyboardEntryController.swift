@@ -1,6 +1,6 @@
 // SecureKeyboardEntryController — the macOS Secure Keyboard Entry actuator (E17 ES-E17-4 / WI-7).
 //
-// otty's "Secure Keyboard Entry" engages macOS's PROCESS-GLOBAL `EnableSecureEventInput()` so no other
+// "Secure Keyboard Entry" engages macOS's PROCESS-GLOBAL `EnableSecureEventInput()` so no other
 // process can sniff keystrokes while the remote shell is at a hidden-password prompt (`sudo` / `ssh` /
 // `login` / `read -s` / `getpass` — the host signals the termios `ECHO` edge over wire type 31, which the
 // client folds into ``TerminalViewModel/hostNoEcho``).
@@ -55,7 +55,7 @@ public final class SecureKeyboardEntryController {
     /// pill (``TerminalViewModel/secureInputActive``) if it drives the indicator off the actuator directly.
     public private(set) var engaged = false
 
-    /// The "Auto Secure Input" setting (otty `auto-secure-input`): when ON, a host no-echo prompt engages
+    /// The "Auto Secure Input" setting (`auto-secure-input`): when ON, a host no-echo prompt engages
     /// secure input automatically. When OFF, only the manual toggle engages it.
     private var autoSecureInput: Bool
     /// The host's termios-`ECHO` state inverted: `true` while the remote shell is at a no-echo password

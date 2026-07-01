@@ -1,4 +1,4 @@
-// ComposerFloatPanel — the macOS "float panel" mode of the otty Composer (E12 / WI-6). Clicking the float
+// ComposerFloatPanel — the macOS "float panel" mode of the Composer (E12 / WI-6). Clicking the float
 // button (② in `composer.png`) detaches the Composer into a Spotlight-style floating window that stays on
 // top of every other window WITHOUT activating the app or claiming the menu bar (`composer-float.png`).
 //
@@ -24,7 +24,7 @@ import SwiftUI
 // MARK: - The non-activating floating panel
 
 /// The Spotlight-style floating `NSPanel` that hosts the detached Composer. `.nonactivatingPanel` +
-/// `becomesKeyOnlyIfNeeded` + `level = .floating` is the otty "stays on top without activating the app"
+/// `becomesKeyOnlyIfNeeded` + `level = .floating` implements a "stays on top without activating the app"
 /// behaviour; `canBecomeKey` is overridden so the hosted text field can still take keystrokes.
 final class ComposerFloatPanel: NSPanel {
     init(contentView: NSView) {
@@ -53,7 +53,7 @@ final class ComposerFloatPanel: NSPanel {
 
     /// A `.nonactivatingPanel` reports `canBecomeKey == false` by default — override so the hosted
     /// ``ComposerBar`` text field can still receive keystrokes (the panel becomes key WITHOUT activating the
-    /// app, exactly the otty float behaviour).
+    /// app, exactly the intended float behaviour).
     override var canBecomeKey: Bool { true }
 }
 

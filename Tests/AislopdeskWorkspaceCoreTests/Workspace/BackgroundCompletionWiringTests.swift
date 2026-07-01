@@ -107,7 +107,7 @@ final class BackgroundCompletionWiringTests: XCTestCase {
         XCTAssertEqual(observed, [.success, .failure, nil], "one mutation per distinct value")
     }
 
-    // MARK: - completion freshness (the otty checkmark→accent-dot decay clock)
+    // MARK: - completion freshness (the checkmark→accent-dot decay clock)
 
     /// A `.success` badge stamps the ephemeral `completedAt`, so ``WorkspaceStore/completionFreshness``
     /// reports `.fresh` inside the flash window and `.settled` past it — the input that decays the resolver
@@ -131,7 +131,7 @@ final class BackgroundCompletionWiringTests: XCTestCase {
     }
 
     /// An agent entering `.done` stamps the SAME freshness clock, so an idle-done agent flashes `.completed`
-    /// then settles to the `.finished` dot (otty's "a dot when the agent goes idle").
+    /// then settles to the `.finished` dot (a dot when the agent goes idle).
     func testAgentDoneStampsFreshness() throws {
         let store = makeStore()
         let paneID = try XCTUnwrap(store.tree.allPaneIDs().first)
@@ -305,7 +305,7 @@ final class BackgroundCompletionWiringTests: XCTestCase {
     /// M1: a SHORT failing command must notify PER-COMMAND through the pure ``NotificationPolicy`` (Notify on
     /// Error, default ON) — DECOUPLED from both the ~10s long-running floor AND aislopdesk's own "Long-Command
     /// Completion" master. The app is backgrounded so the Notify-While-Foreground gate is a pass-through; the
-    /// master is forced OFF to prove the otty per-event toggle has INDEPENDENT authority. Revert-to-confirm-fail:
+    /// master is forced OFF to prove the per-event toggle has INDEPENDENT authority. Revert-to-confirm-fail:
     /// the un-fixed store gates ONLY on `BackgroundCompletionPolicy.shouldNotify` (long + enabled), so a 500ms
     /// command with the master OFF never fires the sink — this asserts it now does.
     func testShortBackgroundedFailureNotifiesPerCommandEvenWithLongMasterOff() throws {

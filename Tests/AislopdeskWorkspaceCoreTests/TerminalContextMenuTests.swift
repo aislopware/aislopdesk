@@ -107,7 +107,7 @@ final class TerminalContextMenuTests: XCTestCase {
         }
     }
 
-    func testPasteAsSubmenuOrderMatchesOtty() {
+    func testPasteAsSubmenuOrderMatchesSlate() {
         XCTAssertEqual(
             TerminalContextMenu.pasteAsItems,
             [.pasteSelection, .pasteFileBase64, .pasteEscaped, .pasteBracketed, .pasteToComposer],

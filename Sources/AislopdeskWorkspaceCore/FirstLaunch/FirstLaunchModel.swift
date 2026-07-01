@@ -3,24 +3,24 @@ import Foundation
 
 // MARK: - E20 WI-9 (ES-E20-4): the first-launch gating model (PURE, headless-testable)
 
-/// One step of the guided first-launch flow — the faithful clone of otty's first-launch checklist
-/// (`spec/getting-started__first-launch.md`): On-Launch, Set-as-Default-Terminal, Install-CLI, Theme,
+/// One step of the guided first-launch checklist
+/// (`docs/ui-shell/spec/getting-started__first-launch.md`): On-Launch, Set-as-Default-Terminal, Install-CLI, Theme,
 /// Install-Claude-hooks. PURE (a `String`-raw `CaseIterable`) so the gating is exhaustively unit-pinned and
 /// the view can enumerate it. The two macOS-only steps (the `/usr/local/bin` install + the OS default-handler
 /// registration) are marked ``isMacOnly`` so ``FirstLaunchModel/steps(for:)`` drops them on iOS — iOS keeps
 /// the cross-platform steps (On-Launch, Theme, Install-Claude-hooks), per the E20 carry-over §3 iOS rule.
 public enum FirstLaunchStep: String, CaseIterable, Identifiable, Sendable {
-    /// otty step 1 — On Launch (Restore Last Session vs New Window). Cross-platform (E7 already ships it).
+    /// Step 1 — On Launch (Restore Last Session vs New Window). Cross-platform (E7 already ships it).
     case onLaunch
-    /// otty step 2 — Set as Default Terminal (LOCAL OS handler; the remote / "Common Apps" case is
+    /// Step 2 — Set as Default Terminal (LOCAL OS handler; the remote / "Common Apps" case is
     /// honestly-disabled per the E20 exclusion). **macOS-only.**
     case defaultTerminal
-    /// otty step 3 — Install the `aislopdesk` CLI (`/usr/local/bin` symlink + Omit-Prefix + Allow-Overwrite).
+    /// Step 3 — Install the `aislopdesk` CLI (`/usr/local/bin` symlink + Omit-Prefix + Allow-Overwrite).
     /// **macOS-only.**
     case installCLI
-    /// otty step 4 — Change Theme (the E15 theme picker). Cross-platform.
+    /// Step 4 — Change Theme (the E15 theme picker). Cross-platform.
     case theme
-    /// otty step 5 — Install Claude Code hooks (the E13 install card). Cross-platform. **Claude only.**
+    /// Step 5 — Install Claude Code hooks (the E13 install card). Cross-platform. **Claude only.**
     case installClaudeHooks
 
     public var id: String { rawValue }
@@ -40,7 +40,7 @@ public enum FirstLaunchStep: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// The step's headline (otty first-launch checklist wording).
+    /// The step's headline (first-launch checklist wording).
     public var title: String {
         switch self {
         case .onLaunch: "On Launch"
@@ -51,7 +51,7 @@ public enum FirstLaunchStep: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// The step's one-line subtitle (otty first-launch checklist wording).
+    /// The step's one-line subtitle (first-launch checklist wording).
     public var subtitle: String {
         switch self {
         case .onLaunch:
@@ -106,7 +106,7 @@ public final class FirstLaunchModel {
     /// The current step index into ``steps`` (always in-bounds — ``advance()`` / ``back()`` clamp).
     public private(set) var index: Int = 0
     /// The set of steps the user has actioned (Install CLI succeeded, hooks installed, …). Drives the per-step
-    /// checkmark; never gates navigation (every step is skippable — otty's first-launch is non-blocking).
+    /// checkmark; never gates navigation (every step is skippable — first-launch is non-blocking).
     public private(set) var completed: Set<FirstLaunchStep> = []
 
     /// Injected persistence for ``finish()`` (default flips the ``hasCompletedFirstLaunch`` `Defaults` flag);
@@ -128,7 +128,7 @@ public final class FirstLaunchModel {
     // MARK: - Pure gating (nonisolated static → unit-pinned with no actor hop / no view)
 
     /// The ordered step set for `platform`: every step in declaration order, minus the macOS-only steps on
-    /// iOS. The order is otty's checklist order (On-Launch → Default-Terminal → Install-CLI → Theme →
+    /// iOS. The order is fixed (On-Launch → Default-Terminal → Install-CLI → Theme →
     /// Claude-hooks); the relative order of the cross-platform steps is identical on both platforms.
     public nonisolated static func steps(for platform: FirstLaunchPlatform) -> [FirstLaunchStep] {
         FirstLaunchStep.allCases.filter { platform == .macOS || !$0.isMacOnly }
@@ -150,7 +150,7 @@ public final class FirstLaunchModel {
         #endif
     }
 
-    /// The default ``finish()`` sink — persists the otty `hasCompletedFirstLaunch` flag so the sheet never
+    /// The default ``finish()`` sink — persists the `hasCompletedFirstLaunch` flag so the sheet never
     /// re-presents. Overridden in tests with a captured-flag closure (no `Defaults.standard` write).
     public nonisolated static func defaultPersistCompletion(_ done: Bool) {
         Defaults[.hasCompletedFirstLaunch] = done
@@ -212,23 +212,23 @@ public final class FirstLaunchModel {
     public func finish() { onFinish(true) }
 }
 
-// MARK: - CLIShellShim (E20 WI-9 — the otty "Omit Prefix" shell-function snippet; PURE)
+// MARK: - CLIShellShim (E20 WI-9 — the "Omit Prefix" shell-function snippet; PURE)
 
-/// The PURE builder for the otty "Omit `aislopdesk` Prefix" shell snippet — the `edit`/`view`/`watch`/
+/// The PURE builder for the "Omit `aislopdesk` Prefix" shell snippet — the `edit`/`view`/`watch`/
 /// `jump`/`learn` functions exposed in app-launched shells so a user can type `edit foo.txt` instead of
-/// `aislopdesk edit foo.txt` (`spec/getting-started__first-launch.md` §3). No I/O — a string/byte builder
-/// only — so it is unit-pinned without touching the filesystem (``CLIInstaller`` does the actual write under
-/// `#if os(macOS)`). The set is otty-faithful and **Claude-aware by omission**: it never surfaces a
+/// `aislopdesk edit foo.txt` (`docs/ui-shell/spec/getting-started__first-launch.md` §3). No I/O — a
+/// string/byte builder only — so it is unit-pinned without touching the filesystem (``CLIInstaller`` does the
+/// actual write under `#if os(macOS)`). The set is fixed and **Claude-aware by omission**: it never surfaces a
 /// non-Claude agent verb.
 public enum CLIShellShim {
-    /// The bare command names exposed when "Omit Prefix" is ON, in otty's documented order. Each wraps
+    /// The bare command names exposed when "Omit Prefix" is ON, in documented order. Each wraps
     /// `aislopdesk <name> "$@"`. (No agent-specific names — `watch:claude` stays a full subcommand, never a
     /// bare function.)
     public static let functionNames = ["edit", "view", "watch", "jump", "learn"]
 
     /// The POSIX-sh snippet defining the prefix-less functions. When `allowOverwrite` is `false` each function
     /// is defined ONLY if no command of that name already exists (`command -v <name>` fails) — so a user's own
-    /// `edit`/`view`/… is never clobbered (otty "Allow Overwrite" OFF, the safe default); when `true` they are
+    /// `edit`/`view`/… is never clobbered ("Allow Overwrite" OFF, the safe default); when `true` they are
     /// defined unconditionally. `binary` is the resolved CLI command (default `aislopdesk`). Pure — the caller
     /// owns where/whether to source it.
     public static func snippet(allowOverwrite: Bool, binary: String = "aislopdesk") -> String {

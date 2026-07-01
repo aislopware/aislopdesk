@@ -70,8 +70,8 @@ final class TabBadgeResolverTests: XCTestCase {
         XCTAssertEqual(badge(agent: .done, completionFreshness: .fresh), .completed)
     }
 
-    /// A SETTLED idle/done agent that is still unread ⇒ the accent dot (finished) — otty's "a dot when
-    /// the agent goes idle". Also fails on the pre-fix both-to-`.completed` resolver (revert-to-confirm-fail).
+    /// A SETTLED idle/done agent that is still unread ⇒ the accent dot (finished) — a dot when the agent goes
+    /// idle. Also fails on the pre-fix both-to-`.completed` resolver (revert-to-confirm-fail).
     func testSettledDoneAgentMapsToFinished() {
         XCTAssertEqual(badge(agent: .done, completionFreshness: .settled), .finished)
     }

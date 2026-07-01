@@ -1,8 +1,8 @@
 import AislopdeskAgentDetect
 import Foundation
 
-/// The single status badge a sidebar tab row carries — one icon, right-aligned (otty
-/// `terminal-features__progress-state.md`, "Tab badges reflect the current progress state per tab").
+/// The single status badge a sidebar tab row carries — one icon, right-aligned (see
+/// `docs/ui-shell/spec/terminal-features__progress-state.md`, "Tab badges reflect the current progress state per tab").
 ///
 /// PURE value type, **no SwiftUI**: the SF-symbol + tint mapping lives in the view layer
 /// (`AislopdeskClientUI` `TabBadgeView`, WI-4) so this resolver unit-tests headless. There is
@@ -10,7 +10,7 @@ import Foundation
 ///
 /// Each case maps to a badge described in `progress-state.md` → "The full badge set".
 public enum TabBadgeKind: Equatable, Sendable {
-    /// **Running** — a spinner. `OSC 9;4;1`/`3` in progress, `otty watch` running, or a busy shell /
+    /// **Running** — a spinner. `OSC 9;4;1`/`3` in progress, a long-running watch command, or a busy shell /
     /// a working agent. Rendered as an indeterminate spinner in the view layer.
     case running
     /// **Completed** — the green checkmark. The brief success flash a command shows on a clean exit
@@ -51,8 +51,8 @@ public enum TabBadgeKind: Equatable, Sendable {
 /// ```
 ///
 /// Caffeinate/sudo deliberately sit **below** the active states so a *running* privileged command still
-/// spins; the privilege badge only surfaces when the shell is at rest (otty's "session is active"
-/// semantics).
+/// spins; the privilege badge only surfaces when the shell is at rest (i.e., not actively running a
+/// foreground command).
 ///
 /// Headless + deterministic: no SwiftUI, no clock, no I/O. The only inputs are the agent verdict, the
 /// stored completion badge, the busy bit, and the (untrusted) foreground-process string — which is
@@ -126,7 +126,7 @@ public enum TabBadgeResolver {
 
         // 6. Completed/finished — a clean exit, or an agent that just finished its turn. While the
         // completion is FRESH it shows the brief `.completed` checkmark flash; once the caller reports
-        // it SETTLED it decays to the persistent `.finished` accent dot (otty's "unread output" marker,
+        // it SETTLED it decays to the persistent `.finished` accent dot (the "unread output" marker,
         // held until the tab is viewed). Freshness is an input — no clock here.
         if completion == .success || agent == .done {
             switch completionFreshness {

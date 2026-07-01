@@ -230,7 +230,7 @@ public struct ClientControlDispatcher {
         return Self.success(id: id, result: [:])
     }
 
-    /// `open-recipe` → open a `.ottyrecipe` reference or saved-library name.
+    /// `open-recipe` → open a `.aislopdeskrecipe` reference or saved-library name.
     private func openRecipe(id: String, params: [String: Any]) -> [String: Any] {
         guard let reference = params["reference"] as? String, !reference.isEmpty else {
             return Self.error(id: id, message: "missing params.reference")

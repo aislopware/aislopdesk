@@ -58,11 +58,11 @@ final class AllSettingsCatalogTests: XCTestCase {
 
     // MARK: - Full coverage (anti-drift)
 
-    /// Every client-side ``SettingsKey`` that the otty settings taxonomy surfaces MUST appear in the catalog
+    /// Every client-side ``SettingsKey`` that the settings taxonomy surfaces MUST appear in the catalog
     /// — the All-Settings list is "complete". Revert-to-fail: dropping a `SettingEntry` makes this fail. The
     /// required list references the `SettingsKey` constants directly (independent of `entries`), so it is a
     /// real anti-drift pin, not a tautology. (Canvas-mode keys — `canvas.*` — are intentionally excluded;
-    /// they belong to the legacy canvas surface, not the otty 8-section settings.)
+    /// they belong to the legacy canvas surface, not the 8-section settings.)
     func testCatalogCoversEveryClientSettingsKey() {
         let required: [String] = [
             // General (close confirmation is on the General page — launch-option.png)
@@ -138,14 +138,14 @@ final class AllSettingsCatalogTests: XCTestCase {
         }
     }
 
-    /// E7 fidelity fix: the ✎ jump destinations match the otty section taxonomy proven by the screenshots
-    /// (`docs/otty-clone/screenshots/font-setting.png` shows FONT FAMILY under Appearance;
+    /// E7 fidelity fix: the ✎ jump destinations match the section taxonomy proven by the screenshots
+    /// (`docs/ui-shell/screenshots/font-setting.png` shows FONT FAMILY under Appearance;
     /// `cursor-style.png` shows the CURSOR group under Appearance; `terminal-features__scroll.md` puts
     /// Scrollback under Controls → Scroll). Pins — against an INDEPENDENT expectation table, not the catalog's
     /// own derivation — that font + cursor + theme + density jump to **appearance** and scrollback jumps to
     /// **controls**. Revert-to-fail: the pre-fix catalog routed font/scrollback → `editor` and cursor →
     /// `controls`, which fails this.
-    func testDedicatedTabTargetSectionsMatchOttyTaxonomy() {
+    func testDedicatedTabTargetSectionsMatchSlateTaxonomy() {
         let expected: [String: String] = [
             "font-family": "appearance",
             "font-size": "appearance",

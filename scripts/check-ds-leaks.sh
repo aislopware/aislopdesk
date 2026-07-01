@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Design-token leak RATCHET for the otty design system (REBUILD-V2 / otty pivot).
+# Design-token leak RATCHET for the client UI design system (REBUILD-V2).
 #
-# The otty UI (`Sources/AislopdeskClientUI`) drives every font size + corner radius through the `Otty`
-# token layer (`DesignSystem/OttyDesign.swift`: `Otty.Typeface.*`, `Otty.Metric.radius*`). This gate fails
+# The client UI (`Sources/AislopdeskClientUI`) drives every font size + corner radius through the `Slate`
+# token layer (`DesignSystem/SlateDesign.swift`: `Slate.Typeface.*`, `Slate.Metric.radius*`). This gate fails
 # on a NEW raw literal in that view tree, so a dimension can't silently bypass the scale. Text-only (no
 # compile); runs in `make lint` / CI swift-lint.
 #
 # (History: an earlier ratchet was retired in the native-SwiftUI rewrite when the token target was deleted;
-# the otty pivot re-introduced a token layer, so the ratchet is back — now enforcing the `Otty.*` scale.)
+# a later rebuild re-introduced a token layer, so the ratchet is back — now enforcing the `Slate.*` scale.)
 #
 # Banned raw-literal shapes (both spellings of each, so a leak can't dodge the regex):
 #   * font:   `.font(.system(size: N…))`           — `size: ?` tolerates the canonical + unspaced forms.
@@ -17,7 +17,7 @@
 # the token DEFINITIONS (`static let radiusCard: CGFloat = 8` is not `cornerRadius`-prefixed).
 #
 # Comment/string safety: this is a plain-text grep, so a doc comment that SHOWS a banned shape as an example
-# (this repo's heavy comment style — e.g. the sibling comment in OttyDesign.swift) would otherwise false-fail
+# (this repo's heavy comment style — e.g. the sibling comment in SlateDesign.swift) would otherwise false-fail
 # a merge-gating check. The post-filter drops comment-ONLY lines (content starts with `//`, `///`, or a `*`
 # block-comment body); real code with a trailing comment still matches on its code half. (SwiftFormat
 # `--lint` runs FIRST in `make lint` and normalizes spacing, so only canonical spellings reach this gate.)
@@ -41,12 +41,12 @@ hits="$(grep -rnE "${font_pat}|${radius_pat}" "${root}" --include='*.swift' |
   grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)' || true)"
 
 if [[ -n "${hits}" ]]; then
-  echo "check-ds-leaks: RAW design-token literals found in ${root} — use the Otty token scale instead:" >&2
-  echo "  font size    → Otty.Typeface.{display,body,base,footnote,small}" >&2
-  echo "  cornerRadius → Otty.Metric.radius{Card,Tab,Control,Item,Small,Pill}" >&2
+  echo "check-ds-leaks: RAW design-token literals found in ${root} — use the Slate token scale instead:" >&2
+  echo "  font size    → Slate.Typeface.{display,body,base,footnote,small}" >&2
+  echo "  cornerRadius → Slate.Metric.radius{Card,Tab,Control,Item,Small,Pill}" >&2
   echo "" >&2
   echo "${hits}" >&2
   exit 1
 fi
 
-echo "check-ds-leaks: no raw font/radius literals in ${root} — Otty token scale intact."
+echo "check-ds-leaks: no raw font/radius literals in ${root} — Slate token scale intact."

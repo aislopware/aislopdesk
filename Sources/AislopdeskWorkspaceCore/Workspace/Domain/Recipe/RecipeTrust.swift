@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - RecipeTrust (local trust-on-first-use checksum + replay-safety decision)
 
-// The pure trust model behind the command-replay safety prompt: when a `.ottyrecipe` carries commands,
+// The pure trust model behind the command-replay safety prompt: when a `.aislopdeskrecipe` carries commands,
 // opening an *unfamiliar* file shows those commands first (Always-Trust / Run-Once / Cancel). A file is
 // remembered by the SHA-256 checksum of its bytes — so EDITING the file changes the bytes → a fresh hash →
 // a fresh prompt — and a self-saved recipe is recorded trusted up front so it never prompts.

@@ -3,8 +3,8 @@ import Foundation
 
 // MARK: - Drop zones
 
-/// The five labelled drop targets the external-drop overlay shows over a pane (otty
-/// `spec/user-interface__drag-and-drop.md`, `screenshots/drop-overlay-frame-action.png`): a central
+/// The five labelled drop targets the external-drop overlay shows over a pane (see
+/// `docs/ui-shell/spec/user-interface__drag-and-drop.md`, `screenshots/drop-overlay-frame-action.png`): a central
 /// vertical column of three circles (New Tab → Insert Path → Open In-Place, top-to-bottom) plus a
 /// large ellipse hugging each side edge (Split Left / Split Right, extending off-screen).
 public enum DropZone: String, CaseIterable, Sendable, Equatable {

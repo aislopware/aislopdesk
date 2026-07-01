@@ -3,13 +3,14 @@ import Foundation
 // MARK: - OutlinePresentation (E9 — the Outline tab's PURE presentation mapping)
 
 /// The Outline tab's pure (no-SwiftUI) presentation mapping: a row's relative-timestamp string and its
-/// exit-status gutter classification. Kept free of `Otty` / SwiftUI so the ONLY theme-coupled part is the
+/// exit-status gutter classification. Kept free of `Slate` / SwiftUI so the ONLY theme-coupled part is the
 /// view's `Gutter → colour` map — the classification itself is headlessly unit-tested. Mirrors the
 /// ``MetadataFormatting/uptime(_:)`` precedent (a single coarse unit; integer arithmetic only — no float).
 public enum OutlinePresentation {
-    /// otty-style relative time from `from` to `now`: sub-second → "now", then "34s ago" / "4m ago" /
-    /// "2h ago" / "3d ago" — the Outline row's exact shape (outline-panel.png + `user-interface__outline.md`
-    /// / `user-interface__details-panel.md`: "4m ago" / "7h ago" / "7s ago"). It carries the "ago" suffix
+    /// Relative time from `from` to `now`: sub-second → "now", then "34s ago" / "4m ago" /
+    /// "2h ago" / "3d ago" — the Outline row's exact shape (see `docs/ui-shell/screenshots/outline-panel.png` +
+    /// `docs/ui-shell/spec/user-interface__outline.md` / `user-interface__details-panel.md`: "4m ago" / "7h ago" /
+    /// "7s ago"). It carries the "ago" suffix
     /// that ``MetadataFormatting/uptime(_:)`` (the Process-section uptime) does NOT — that bare form is the
     /// uptime callers' contract, while THIS is read only by the Outline (`OutlineView`), so the suffix lives
     /// here. A SINGLE coarse unit; the Date delta is truncated to whole seconds ONCE and all bucketing is
@@ -27,7 +28,7 @@ public enum OutlinePresentation {
     }
 
     /// The Outline row's exit-status gutter bucket — grey while running, green on success, red on a
-    /// non-zero exit. The view maps this to `Otty.Status.ok` / `.err` / `Otty.Text.tertiary`, so this enum
+    /// non-zero exit. The view maps this to `Slate.Status.ok` / `.err` / `Slate.Text.tertiary`, so this enum
     /// is the testable classification and the colour map is the only theme-coupled part.
     public enum Gutter: Equatable, Sendable {
         /// Still executing (no OSC 133 `D` yet) — a grey dot.

@@ -190,8 +190,8 @@ public enum HostEnvironment {
     public static let autoProgressCommandsEnvKey = "AISLOPDESK_AUTO_PROGRESS_COMMANDS"
 
     /// Resolves the host's auto-progress prefix list (E14/K2). UNSET ⇒ ``AutoProgressMatcher/builtInPrefixes``
-    /// (the otty default list — auto-progress ON for known slow commands); SET-but-EMPTY ⇒ `[]`
-    /// (auto-progress DISABLED, the otty "clear the field" behaviour); SET ⇒ the parsed entries. Same
+    /// (the built-in default list — auto-progress ON for known slow commands); SET-but-EMPTY ⇒ `[]`
+    /// (auto-progress DISABLED, the "clear the field" behaviour); SET ⇒ the parsed entries. Same
     /// ``EnvConfig`` overlay resolution as the other gates (an empty overlay is byte-identical to a
     /// `ProcessInfo` read), so a GUI override reaches the matcher; an explicit `environment:` (tests)
     /// bypasses the overlay.
@@ -257,7 +257,7 @@ public enum HostEnvironment {
     }
 
     /// E13 WI-3 (ES-E13-3) — whether the host holds a system-sleep assertion while ANY agent is processing
-    /// (otty "Prevent Sleep While Processing"). Default idiom = DEFAULT-OFF via `env[key] == "1"` (like
+    /// ("Prevent Sleep While Processing"). Default idiom = DEFAULT-OFF via `env[key] == "1"` (like
     /// ``agentHooksEnvKey``): blocking system sleep is not something to enable silently. The CLIENT toggle is
     /// the ``AgentPreferences/preventSleep`` field, shipped via the `video-prefs.json` sidecar (reconnect-
     /// tagged); the daemon reads this gate at launch and, when ON, drives ``PreventSleepAssertion`` off the
@@ -275,12 +275,12 @@ public enum HostEnvironment {
         environment[agentPreventSleepEnvKey] == "1"
     }
 
-    /// E13 WI-3 — whether the host re-arms a detached agent session on connection recovery (otty "Resume on
+    /// E13 WI-3 — whether the host re-arms a detached agent session on connection recovery ("Resume on
     /// Recovery"). Default idiom = DEFAULT-ON via `env[key] != "0"` (like ``agentDetectEnvKey``): re-arming a
     /// recovered session is the helpful default, opt-OUT only. The CLIENT toggle is
     /// ``AgentPreferences/resumeOnRecovery``, sidecar-borne (reconnect-tagged). ACTUATED by ``HostServer``:
-    /// it AND-s this flag into ``HostServer/detachEnabled`` (otty maps "Resume on Recovery" onto the
-    /// ``DetachedSessionStore`` reattach machinery), so OFF makes a recovered terminal spawn a fresh shell
+    /// it AND-s this flag into ``HostServer/detachEnabled``, mapping "Resume on Recovery" onto the
+    /// ``DetachedSessionStore`` reattach machinery, so OFF makes a recovered terminal spawn a fresh shell
     /// instead of reattaching the still-running detached agent session.
     public static let agentResumeOnRecoveryEnvKey = "AISLOPDESK_AGENT_RESUME_ON_RECOVERY"
 

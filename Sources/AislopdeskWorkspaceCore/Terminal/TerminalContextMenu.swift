@@ -17,7 +17,7 @@ public enum TerminalContextMenu {
         case cut // ⌘X — copies the selection and (at an editable prompt) deletes it; read-only → copy only
         case paste
         case pasteAsKeystrokes
-        // E8 / ES-E8-4 — the "Paste as…" submenu variants (otty parity). These are NOT in the top-level
+        // E8 / ES-E8-4 — the "Paste as…" submenu variants. These are NOT in the top-level
         // `items` list; they hang off the `pasteAsItems` submenu (see `pasteAsSubmenuTitle`).
         case pasteSelection // pastes the current selection instead of the clipboard (X11 middle-click)
         case pasteFileBase64 // base64-encodes a chosen file's bytes and types them
@@ -140,7 +140,7 @@ public enum TerminalContextMenu {
         .splitRight, .splitDown, .find,
     ]
 
-    /// E8 / ES-E8-4: the "Paste as…" submenu items, in otty's order (`spec/terminal-features__copy-and-paste`):
+    /// E8 / ES-E8-4: the "Paste as…" submenu items, in display order (`spec/terminal-features__copy-and-paste`):
     /// Paste Selection · Paste File Base64-Encoded… · Paste Escaping Special Characters · Bracketed Paste ·
     /// Paste and continue in Composer.
     public static let pasteAsItems: [Item] = [
@@ -153,19 +153,19 @@ public enum TerminalContextMenu {
     // MARK: - E10 WI-6 (ES-E10-2): path / URL link items (right-click ON a detected link)
 
     /// A right-click context-menu item shown ONLY when the click lands on a detected path / URL span
-    /// (otty `user-interface__files-and-links` §"Right-click Context Menu Items"). These are kept SEPARATE
-    /// from the always-present ``Item`` set: the GUI prepends them (with a separator) above the standard
-    /// copy/paste/split menu when ``TerminalLinkDetector`` finds a span under the cursor, and each routes
-    /// through ``LinkActionPolicy/action(for:link:)`` carrying the ``DetectedLink`` the view stashed at
+    /// (`docs/ui-shell/spec/user-interface__files-and-links.md` §"Right-click Context Menu Items"). These are
+    /// kept SEPARATE from the always-present ``Item`` set: the GUI prepends them (with a separator) above the
+    /// standard copy/paste/split menu when ``TerminalLinkDetector`` finds a span under the cursor, and each
+    /// routes through ``LinkActionPolicy/action(for:link:)`` carrying the ``DetectedLink`` the view stashed at
     /// build time. The raw `String` tags the `NSMenuItem.representedObject` (the cd item also gives the
     /// tests / cheat-sheet a stable id).
     ///
-    /// Only the actionable subset of otty's menu is offered — *Open With…* (host app enumeration) and
-    /// *Open in Otty* (a remote-file pane needs a file-transfer sub-protocol that does not exist yet; see
-    /// the files-and-links mapping notes #2/#3) are deliberately omitted rather than shipped as dead
+    /// Only a functional subset of link actions is offered — *Open With…* (host app enumeration) and
+    /// *Open in [target app]* (a remote-file pane needs a file-transfer sub-protocol that does not exist yet;
+    /// see the files-and-links mapping notes #2/#3) are deliberately omitted rather than shipped as dead
     /// controls (the WI-3 honesty discipline; tracked in `docs/DECISIONS.md`).
     public enum LinkItem: String, CaseIterable, Sendable, Equatable {
-        /// Open the path in its best HOST handler, or the URL on the client (otty "Open Link / Open File").
+        /// Open the path in its best HOST handler, or the URL on the client ("Open Link" / "Open").
         case open
         /// Copy the resolved absolute path (or the URL) to the CLIENT pasteboard.
         case copyPath

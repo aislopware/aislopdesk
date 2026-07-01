@@ -1,5 +1,5 @@
 // DispatcherSendToChatTests (E13 WI-5 / ES-E13-5) — the live `WorkspaceKeyDispatcher` FIRES the Send-to-Chat
-// toggle (otty ⌘⌃↩) through the SAME NSEvent monitor that owns every chord, and SWALLOWS the event (never
+// toggle (⌘⌃↩) through the SAME NSEvent monitor that owns every chord, and SWALLOWS the event (never
 // leaks the chord to the PTY). This is the exact wiring the review found missing: `dispatch(_:)` resolved
 // `.sendToChat` but called `WorkspaceBindingRegistry.route(...)` WITHOUT threading `toggleSendToChat`, so the
 // chord was a permanent no-op (the closure defaulted to nil → graceful no-op) and the dialog never appeared.
@@ -37,7 +37,7 @@ final class DispatcherSendToChatTests: XCTestCase {
         WorkspaceStore(liveModel: .tree, makeSession: { MountTestPaneSession($0) })
     }
 
-    /// ⌘⌃↩ (Return, keyCode 36, command+control) — the otty Send-to-Chat chord — fires the threaded
+    /// ⌘⌃↩ (Return, keyCode 36, command+control) — the Send-to-Chat chord — fires the threaded
     /// `toggleSendToChat` closure EXACTLY once and SWALLOWS the event (returns nil), so the chord never leaks a
     /// CR to the focused PTY. This pins the wiring the review found missing (the dialog now actually opens).
     func testSendToChatChordFiresTheToggleAndSwallows() {

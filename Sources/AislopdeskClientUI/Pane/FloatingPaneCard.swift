@@ -15,7 +15,7 @@
 // the same structural node either way.
 //
 // A floating pane overlays the tiled split layout, so — UNLIKE the flush, borderless tiled pane — it reads
-// as a CARD: an otty rounded surface (radius + `Otty.Line.card` hairline border + a faint `Otty.State.shadow`
+// as a CARD: a rounded surface (radius + `Slate.Line.card` hairline border + a faint `Slate.State.shadow`
 // drop shadow) with a slim top grab strip carrying the pane title + embed/close controls. A tiled pane
 // collapses all of that to nothing (0-height strip, 0 radius, transparent border/shadow), so its rendering is
 // visually identical to the old bare `PaneContainer`.
@@ -33,7 +33,7 @@
 // jumps on release.
 //
 // No AppKit child window / no PiP (E19 deferred that): this is a pure SwiftUI overlay inside the split
-// container's compositor ZStack. SYSTEM / Otty tokens only.
+// container's compositor ZStack. SYSTEM / Slate tokens only.
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -71,7 +71,7 @@ struct CompositorPaneCard: View {
     /// The bottom-right resize grip's square size.
     private let resizeGrip: CGFloat = 16
     /// The card corner radius when floating; 0 (a plain rectangle) when tiled so a tiled pane stays flush.
-    private var radius: CGFloat { isFloating ? Otty.Metric.radiusCard : 0 }
+    private var radius: CGFloat { isFloating ? Slate.Metric.radiusCard : 0 }
 
     /// Whether a float drag (move or resize) is currently in flight — bumps the card's z-order so a grabbed
     /// card draws above any overlapping neighbour while it moves (the store commits the real raise on release).
@@ -131,8 +131,8 @@ struct CompositorPaneCard: View {
                 .clipped()
                 .allowsHitTesting(isFloating && !staticMirror)
             Rectangle()
-                .fill(Otty.Line.card)
-                .frame(height: isFloating ? Otty.Metric.hairline : 0)
+                .fill(Slate.Line.card)
+                .frame(height: isFloating ? Slate.Metric.hairline : 0)
                 .opacity(isFloating ? 1 : 0)
             PaneContainer(
                 store: store,
@@ -149,14 +149,14 @@ struct CompositorPaneCard: View {
         // The card surface / border / shadow / rounded clip are FLOATING-only chrome, gated by opacity (never
         // an `if`, which would restructure the subtree) so the tiled pane reads as the old flush, borderless
         // panel. `radius == 0` when tiled makes the clip a plain rectangle (a visual no-op over the solver rect).
-        .background(Otty.Surface.card.opacity(isFloating ? 1 : 0))
+        .background(Slate.Surface.card.opacity(isFloating ? 1 : 0))
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(Otty.Line.card, lineWidth: Otty.Metric.cardBorderWidth)
+                .strokeBorder(Slate.Line.card, lineWidth: Slate.Metric.cardBorderWidth)
                 .opacity(isFloating ? 1 : 0),
         )
-        .shadow(color: isFloating ? Otty.State.shadow : .clear, radius: isFloating ? 12 : 0, y: isFloating ? 4 : 0)
+        .shadow(color: isFloating ? Slate.State.shadow : .clear, radius: isFloating ? 12 : 0, y: isFloating ? 4 : 0)
         .overlay(alignment: .bottomTrailing) {
             resizeHandle
                 .opacity(isFloating ? 1 : 0)
@@ -168,7 +168,7 @@ struct CompositorPaneCard: View {
     /// tiled the strip + hairline are 0-height so the content fills the whole leaf. Uses the ordered,
     /// NaN-faithful `CGFloat.maximum` (the house float idiom — never a bare `<`/`>` clamp).
     private var contentSize: CGSize {
-        let chrome = isFloating ? titleBarHeight + Otty.Metric.hairline : 0
+        let chrome = isFloating ? titleBarHeight + Slate.Metric.hairline : 0
         return CGSize(
             width: CGFloat.maximum(0, liveFrame.width),
             height: CGFloat.maximum(0, liveFrame.height - chrome),
@@ -178,13 +178,13 @@ struct CompositorPaneCard: View {
     // MARK: - Grab strip (move)
 
     private var titleBar: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Text(title)
-                .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                .foregroundStyle(Slate.Text.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             // Embed: drop the float back into the tiled grid (the store re-inserts it next to where focus was).
             PlateIconButton(symbol: .pipExit, size: 11, plate: 20) {
                 guard !staticMirror else { return }
@@ -196,10 +196,10 @@ struct CompositorPaneCard: View {
                 store.closeFloating(paneID)
             }
         }
-        .padding(.horizontal, Otty.Metric.space2)
+        .padding(.horizontal, Slate.Metric.space2)
         .frame(maxWidth: .infinity)
         .frame(height: titleBarHeight)
-        .background(Otty.Surface.element)
+        .background(Slate.Surface.element)
         .contentShape(Rectangle())
         // A plain click on the strip focuses (+ raises) the pane without a move.
         .onTapGesture { if !staticMirror { store.focusPaneTree(paneID) } }
@@ -231,9 +231,9 @@ struct CompositorPaneCard: View {
 
     private var resizeHandle: some View {
         ResizeGrip()
-            .fill(Otty.Text.tertiary)
+            .fill(Slate.Text.tertiary)
             .frame(width: resizeGrip, height: resizeGrip)
-            .padding(Otty.Metric.space1)
+            .padding(Slate.Metric.space1)
             .contentShape(Rectangle())
             .gesture(resizeGesture)
         #if os(macOS)

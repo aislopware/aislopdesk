@@ -1,7 +1,7 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// Pins the pure ``CutSelectionPolicy`` — the testable heart of otty's terminal Cut (⌘X). The GUI surface
+/// Pins the pure ``CutSelectionPolicy`` — the testable heart of the terminal's Cut (⌘X). The GUI surface
 /// (`GhosttyTerminalView`, compile-only behind `#if canImport(CGhostty)`) is a thin actuator: it always
 /// performs `copy_to_clipboard` for a non-`.none` decision and on `.copyAndDelete` sends the
 /// geometry-ceiling DEL count.

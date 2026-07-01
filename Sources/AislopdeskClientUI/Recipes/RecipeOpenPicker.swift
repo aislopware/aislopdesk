@@ -1,18 +1,18 @@
 // RecipeOpenPicker — the File ▸ Open Recipe surface (E16 WI-10, spec `customization__custom-commands.md`
-// §Opening a Recipe). An otty-card sheet with two ways in:
-//   • the in-app recipe DATABASE — the saved `.ottyrecipe` files under `~/.config/aislopdesk/recipes/`
+// §Opening a Recipe). A card-styled sheet with two ways in:
+//   • the in-app recipe DATABASE — the saved `.aislopdeskrecipe` files under `~/.config/aislopdesk/recipes/`
 //     (`store.savedRecipeFiles()`); tap one to open it (source `.savedLibrary`, follows the Saved-Recipes
 //     replay mode). A malformed file keeps its slot GREYED (honest — never a crash, never a dead-looking
 //     enabled row);
-//   • **Open File…** → a `.fileImporter` for an external `.ottyrecipe` (source `.file`, follows the
+//   • **Open File…** → a `.fileImporter` for an external `.aislopdeskrecipe` (source `.file`, follows the
 //     Recipe-Files replay mode + the trust prompt). On iOS `.fileImporter` is backed by
 //     `UIDocumentPickerViewController`, so the same call covers the spec's iOS document-picker requirement.
 //
 // DEFERRED (plan §6, documented honestly — NOT shipped as dead UI): Finder double-click → new window
-// (`CFBundleDocumentTypes`, app packaging) and the `aislopdesk open foo.ottyrecipe` CLI (→ E20). File ▸ Open
+// (`CFBundleDocumentTypes`, app packaging) and the `aislopdesk open foo.aislopdeskrecipe` CLI (→ E20). File ▸ Open
 // Recipe + the palette are the baseline entry points E16 ships.
 //
-// Otty.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
+// Slate.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -20,10 +20,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 extension UTType {
-    /// The content type for an `.ottyrecipe` document — plain TOML text, so declared conforming to
+    /// The content type for an `.aislopdeskrecipe` document — plain TOML text, so declared conforming to
     /// `.plainText`. Declared `exportedAs` (we own the extension) but created at runtime; no Info.plist entry
     /// is needed for the picker to function (mirrors ``UTType/aislopdeskWorkspace``).
-    static let ottyRecipe = UTType(exportedAs: "com.aislopdesk.ottyrecipe", conformingTo: .plainText)
+    static let aislopdeskRecipe = UTType(exportedAs: "com.aislopdesk.recipe", conformingTo: .plainText)
 }
 
 /// The Open-Recipe picker. Lists the saved recipe library off `store` and opens a tapped / imported recipe
@@ -36,27 +36,27 @@ struct RecipeOpenPicker: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    /// The types the `.fileImporter` accepts: our dedicated type plus the bare `.ottyrecipe` extension and
+    /// The types the `.fileImporter` accepts: our dedicated type plus the bare `.aislopdeskrecipe` extension and
     /// plain text (a file that lost its UTI tag is still TOML text). `.compactMap` drops a nil extension type.
     private static var recipeContentTypes: [UTType] {
-        [UTType.ottyRecipe, UTType(filenameExtension: RecipeLibrary.fileExtension), .plainText, .text]
+        [UTType.aislopdeskRecipe, UTType(filenameExtension: RecipeLibrary.fileExtension), .plainText, .text]
             .compactMap(\.self)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space4) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space4) {
             header
             libraryList
             footer
         }
-        .padding(Otty.Metric.space4)
+        .padding(Slate.Metric.space4)
         #if os(macOS)
             .frame(width: 520)
         #else
             .frame(maxWidth: 520)
         #endif
-            .background(Otty.Surface.card)
-            .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard))
+            .background(Slate.Surface.card)
+            .clipShape(RoundedRectangle(cornerRadius: Slate.Metric.radiusCard))
             .onAppear { files = store.savedRecipeFiles() }
             // `.fileImporter` presents an `NSOpenPanel` on macOS and a `UIDocumentPickerViewController` on iOS.
             .fileImporter(
@@ -71,13 +71,13 @@ struct RecipeOpenPicker: View {
     private var header: some View {
         HStack {
             Text("Open Recipe")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
             Spacer(minLength: 0)
             Button { dismiss() } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                    .foregroundStyle(Slate.Text.tertiary)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -89,12 +89,12 @@ struct RecipeOpenPicker: View {
 
     @ViewBuilder private var libraryList: some View {
         if files.isEmpty {
-            Text("No saved recipes yet. Save one with ⌘S, or open an external .ottyrecipe file below.")
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+            Text("No saved recipes yet. Save one with ⌘S, or open an external .aislopdeskrecipe file below.")
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
         } else {
             ScrollView {
-                VStack(spacing: Otty.Metric.space1) {
+                VStack(spacing: Slate.Metric.space1) {
                     ForEach(Array(files.enumerated()), id: \.offset) { _, file in
                         recipeRow(file)
                     }
@@ -120,25 +120,25 @@ struct RecipeOpenPicker: View {
     }
 
     private func rowBody(title: String, subtitle: String, enabled: Bool) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Image(systemName: "doc.text")
-                .font(.system(size: Otty.Metric.iconSize))
-                .foregroundStyle(enabled ? Otty.Text.icon : Otty.Text.tertiary)
-            VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                .font(.system(size: Slate.Metric.iconSize))
+                .foregroundStyle(enabled ? Slate.Text.icon : Slate.Text.tertiary)
+            VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                 Text(title)
-                    .font(.system(size: Otty.Typeface.body))
-                    .foregroundStyle(enabled ? Otty.Text.primary : Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.body))
+                    .foregroundStyle(enabled ? Slate.Text.primary : Slate.Text.tertiary)
                 Text(subtitle)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.tertiary)
             }
             Spacer(minLength: 0)
         }
-        .padding(Otty.Metric.space2)
+        .padding(Slate.Metric.space2)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                .fill(Otty.Surface.element),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                .fill(Slate.Surface.element),
         )
         .contentShape(Rectangle())
     }
@@ -146,17 +146,17 @@ struct RecipeOpenPicker: View {
     // MARK: Footer
 
     private var footer: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Spacer(minLength: 0)
             Button { importing = true } label: {
                 Text("Open File…")
-                    .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                    .foregroundStyle(Otty.Surface.card)
-                    .padding(.horizontal, Otty.Metric.space3)
-                    .padding(.vertical, Otty.Metric.space1)
+                    .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                    .foregroundStyle(Slate.Surface.card)
+                    .padding(.horizontal, Slate.Metric.space3)
+                    .padding(.vertical, Slate.Metric.space1)
                     .background(
-                        RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                            .fill(Otty.State.accent),
+                        RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                            .fill(Slate.State.accent),
                     )
             }
             .buttonStyle(.plain)
@@ -183,7 +183,7 @@ struct RecipeOpenPicker: View {
         dismiss()
     }
 
-    /// Reads a picked external `.ottyrecipe` and hands its EXACT bytes to the store (which parses, consults
+    /// Reads a picked external `.aislopdeskrecipe` and hands its EXACT bytes to the store (which parses, consults
     /// the trust store, and either restores or parks the trust prompt). Opens a security-scoped read
     /// (sandbox-correct) and never traps on a bad read; a cancel / IO error is a silent no-op.
     private func handleImport(_ result: Result<[URL], Error>) {

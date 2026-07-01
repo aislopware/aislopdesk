@@ -78,7 +78,7 @@ final class KeybindConfigLoaderTests: XCTestCase {
         XCTAssertTrue(prefs.textBindings.isEmpty)
     }
 
-    // MARK: lenient flat-config dialect (otty config-file format)
+    // MARK: lenient flat-config dialect
 
     /// Blank lines, `#` comments, OTHER config keys (silently ignored), lenient `=` whitespace, and an
     /// optional quoted value all parse — only `keybind` lines contribute, every other key is dropped.
@@ -175,7 +175,7 @@ final class KeybindConfigLoaderTests: XCTestCase {
         XCTAssertTrue(prefs.unbinds.contains(.init(key: "q", command: true)))
     }
 
-    // MARK: WI-2 — the production-shaped resolver folds otty named/param actions end-to-end
+    // MARK: WI-2 — the production-shaped resolver folds named/param actions end-to-end
 
     /// A hand-built stand-in for the production `WorkspaceBindingRegistry.bindingID(forConfigName:arg:)`
     /// resolver installed at launch (`AislopdeskClientApp.swift`). The VideoProtocol test target cannot import

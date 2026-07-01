@@ -14,20 +14,20 @@ import Foundation
 /// built-in ``ThemeChoice`` (the slot then points at a scanned custom theme).
 ///
 /// GOLDEN-SAFE: this resolver is pure client-chrome routing — it never touches the wire / `EnvConfig` /
-/// sidecar (it just selects which `OttyTheme` / `ThemeDocument` the chrome + terminal cells adopt).
+/// sidecar (it just selects which `SlateTheme` / `ThemeDocument` the chrome + terminal cells adopt).
 public enum ThemeResolution {
     /// The compile-time default DARK built-in id (Monokai Pro Classic) — the OS-dark fallback for an unset
-    /// slot OR the `.system` choice (both follow the OS). MIRRORS `OttyTheme.monokaiProClassic.id`.
+    /// slot OR the `.system` choice (both follow the OS). MIRRORS `SlateTheme.monokaiProClassic.id`.
     public static let defaultDarkID = "monokai-classic"
     /// The compile-time default LIGHT built-in id (Monokai Pro Classic Light) — the OS-light fallback for an
-    /// unset slot OR the `.system` choice. MIRRORS `OttyTheme.monokaiProClassicLight.id`.
+    /// unset slot OR the `.system` choice. MIRRORS `SlateTheme.monokaiProClassicLight.id`.
     public static let defaultLightID = "monokai-classic-light"
 
     /// Resolve the active theme-slot reference for `appearance` under the current OS appearance.
     ///
     /// `osIsDark` ⇒ the live system colour scheme (the caller probes `NSApp.effectiveAppearance` on macOS; a
     /// test injects a stub). Returns a ``ThemeRef`` — `.builtin(id)` for a shipped theme, `.custom(slug)` for
-    /// a scanned `.ottytheme`. The custom payload is NOT validated here (the ``ThemeStore`` / catalog resolves
+    /// a scanned `.aislopdesktheme`. The custom payload is NOT validated here (the ``ThemeStore`` / catalog resolves
     /// the slug → document and gracefully falls back when it's missing) — this stays a pure, total selector.
     public static func activeRef(appearance: AppearancePreferences, osIsDark: Bool) -> ThemeRef {
         if appearance.useSeparateDarkTheme ?? false, osIsDark {
@@ -42,13 +42,13 @@ public enum ThemeResolution {
         return .builtin(builtinID(for: choice, osIsDark: osIsDark))
     }
 
-    /// The built-in ``OttyTheme`` id for a (possibly `nil` / `.system`) ``ThemeChoice`` under `osIsDark`:
+    /// The built-in ``SlateTheme`` id for a (possibly `nil` / `.system`) ``ThemeChoice`` under `osIsDark`:
     ///   - `nil` (unset slot — the FRESH-INSTALL default) ⇒ FOLLOWS the OS (dark → ``defaultDarkID``, light →
     ///     ``defaultLightID``), matching the Theme picker, which presents an unset light slot as "System"; a
     ///     fresh install therefore renders the light default in light mode and the dark default in dark mode,
     ///     rather than a fixed dark theme regardless of OS appearance (ES-E15);
     ///   - `.system` ⇒ likewise FOLLOWS the OS (dark → ``defaultDarkID``, light → ``defaultLightID``);
-    ///   - any concrete choice ⇒ its fixed `OttyTheme.id` (via ``ThemeChoice/builtinID``).
+    ///   - any concrete choice ⇒ its fixed `SlateTheme.id` (via ``ThemeChoice/builtinID``).
     public static func builtinID(for choice: ThemeChoice?, osIsDark: Bool) -> String {
         guard let choice else { return osIsDark ? defaultDarkID : defaultLightID }
         if let id = choice.builtinID { return id }

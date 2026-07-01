@@ -24,7 +24,7 @@ public enum AppearanceApplier {
     /// libghostty `background`/`foreground` (6-hex, no `#`) PLUS (E15 WI-3) the 16-entry ANSI `palette` and
     /// `selection-background` — read from `ThemeStore.shared.active`, which already resolves the dual-slot /
     /// `.system` selection to a concrete light/dark theme. ``PreferencesStore`` consults this when rebuilding
-    /// the terminal config so the terminal CELLS adopt the same flat palette as the chrome (otty flat design).
+    /// the terminal config so the terminal CELLS adopt the same flat palette as the chrome (a flat, gradient-free design).
     /// `nil` (headless / pre-launch) ⇒ the terminal keeps the ``TerminalPreferences`` colours, unchanged.
     public static var resolveTerminalColors: (() -> ResolvedTerminalTheme?)?
 

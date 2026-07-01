@@ -31,10 +31,10 @@ struct KeybindingsEditorView: View {
     /// records at a time so the local key monitor has a single unambiguous target.
     @State private var recordingID: String?
 
-    /// The live "Search key bindings" query (otty filters by action name OR chord). Empty ⇒ show all rows.
+    /// The live "Search key bindings" query (filters by action name OR chord). Empty ⇒ show all rows.
     @State private var searchQuery: String = ""
 
-    /// Whether the "Reset all key bindings?" confirmation is showing (otty's global reset, no per-row revert).
+    /// Whether the "Reset all key bindings?" confirmation is showing (a global reset, no per-row revert).
     @State private var showResetConfirm: Bool = false
 
     var body: some View {
@@ -42,14 +42,14 @@ struct KeybindingsEditorView: View {
         // The set of binding ids that collide with at least one other id on the same chord (for the badge).
         let conflictingIDs = Set(conflicts.values.flatMap(\.self))
 
-        VStack(alignment: .leading, spacing: Otty.Metric.space3) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space3) {
             header
             searchField
             if !conflicts.isEmpty {
                 conflictBanner(conflicts)
             }
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: Otty.Metric.space3, pinnedViews: [.sectionHeaders]) {
+                LazyVStack(alignment: .leading, spacing: Slate.Metric.space3, pinnedViews: [.sectionHeaders]) {
                     ForEach(WorkspaceAction.Category.allCases, id: \.self) { category in
                         let rows = bindings(in: category)
                         if !rows.isEmpty {
@@ -58,15 +58,15 @@ struct KeybindingsEditorView: View {
                                     row(for: binding, isConflicting: conflictingIDs.contains(binding.id))
                                 }
                             } header: {
-                                OttySectionHeader(category.rawValue)
-                                    .background(Otty.Surface.window)
+                                SlateSectionHeader(category.rawValue)
+                                    .background(Slate.Surface.window)
                             }
                         }
                     }
                 }
             }
         }
-        .padding(Otty.Metric.space4)
+        .padding(Slate.Metric.space4)
         .confirmationDialog(
             "Reset all key bindings?",
             isPresented: $showResetConfirm,
@@ -88,57 +88,57 @@ struct KeybindingsEditorView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+            VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                 Text("Keyboard Shortcuts")
-                    .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                    .foregroundStyle(Slate.Text.primary)
                 Text("Click a shortcut to record a replacement; Backspace clears it, Esc cancels.")
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
             }
-            Spacer(minLength: Otty.Metric.space2)
-            // otty: the "Reset to Default" button appears in the top-right ONLY once a binding has been
+            Spacer(minLength: Slate.Metric.space2)
+            // The "Reset to Default" button appears in the top-right ONLY once a binding has been
             // customized; clicking it confirms then clears ALL overrides (there is NO per-row revert).
             if KeybindingsEditorModel.hasCustomizations(store.keybindings) {
                 Button("Reset to Default") { showResetConfirm = true }
                     .buttonStyle(.plain)
-                    .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                    .foregroundStyle(Otty.State.accent)
+                    .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                    .foregroundStyle(Slate.State.accent)
                     .help("Reset every customized shortcut to its default")
             }
         }
     }
 
-    /// otty's full-width rounded "Search key bindings" field (magnifier + clear button) that filters rows by
+    /// The full-width rounded "Search key bindings" field (magnifier + clear button) that filters rows by
     /// action name OR chord — see `KeybindingsEditorModel.matches`.
     private var searchField: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Image(systemSymbol: .magnifyingglass)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
             TextField("Search key bindings", text: $searchQuery)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.base))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.base))
+                .foregroundStyle(Slate.Text.primary)
             if !searchQuery.isEmpty {
                 Button { searchQuery = "" } label: {
                     Image(systemSymbol: .xmarkCircleFill)
-                        .font(.system(size: Otty.Typeface.footnote))
-                        .foregroundStyle(Otty.Text.secondary)
+                        .font(.system(size: Slate.Typeface.footnote))
+                        .foregroundStyle(Slate.Text.secondary)
                 }
                 .buttonStyle(.plain)
                 .help("Clear search")
             }
         }
-        .padding(.horizontal, Otty.Metric.space2)
-        .padding(.vertical, Otty.Metric.space1)
+        .padding(.horizontal, Slate.Metric.space2)
+        .padding(.vertical, Slate.Metric.space1)
         .background(
-            Otty.Surface.element,
-            in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall, style: .continuous),
+            Slate.Surface.element,
+            in: RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall, style: .continuous),
         )
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall, style: .continuous)
-                .strokeBorder(Otty.Line.subtle, lineWidth: 1),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall, style: .continuous)
+                .strokeBorder(Slate.Line.subtle, lineWidth: 1),
         )
     }
 
@@ -148,40 +148,40 @@ struct KeybindingsEditorView: View {
             let titles = ids.compactMap { id in binding(forID: id)?.title }.sorted()
             return "\(chord): \(titles.joined(separator: ", "))"
         }.sorted()
-        return VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        return VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Label("Shortcut conflicts", systemImage: "exclamationmark.triangle.fill")
-                .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
-                .foregroundStyle(Otty.Status.warn)
+                .font(.system(size: Slate.Typeface.footnote, weight: .semibold))
+                .foregroundStyle(Slate.Status.warn)
             ForEach(lines, id: \.self) { line in
                 Text(line)
-                    .font(.system(size: Otty.Typeface.small))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.small))
+                    .foregroundStyle(Slate.Text.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Otty.Metric.space2)
-        .ottyCard()
+        .padding(Slate.Metric.space2)
+        .slateCard()
     }
 
     private func row(for binding: WorkspaceBinding, isConflicting: Bool) -> some View {
         let isRecording = recordingID == binding.id
-        return HStack(spacing: Otty.Metric.space2) {
+        return HStack(spacing: Slate.Metric.space2) {
             Image(systemName: binding.symbol)
-                .font(.system(size: Otty.Metric.iconSize))
-                .foregroundStyle(Otty.Text.icon)
+                .font(.system(size: Slate.Metric.iconSize))
+                .foregroundStyle(Slate.Text.icon)
                 .frame(width: 18)
             Text(binding.title)
-                .font(.system(size: Otty.Typeface.base))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.base))
+                .foregroundStyle(Slate.Text.primary)
                 .lineLimit(1)
             if isConflicting {
                 Image(systemSymbol: .exclamationmarkTriangleFill)
-                    .font(.system(size: Otty.Typeface.small))
-                    .foregroundStyle(Otty.Status.warn)
+                    .font(.system(size: Slate.Typeface.small))
+                    .foregroundStyle(Slate.Status.warn)
                     .help("This shortcut conflicts with another command")
             }
-            Spacer(minLength: Otty.Metric.space2)
-            // otty has NO per-row revert — the chord chip records a replacement; Backspace (while recording)
+            Spacer(minLength: Slate.Metric.space2)
+            // There is NO per-row revert — the chord chip records a replacement; Backspace (while recording)
             // clears it, and the header's "Reset to Default" reverts everything at once.
             chordChip(for: binding, isRecording: isRecording)
         }
@@ -195,19 +195,19 @@ struct KeybindingsEditorView: View {
             toggleRecording(binding.id)
         } label: {
             Text(isRecording ? "Press a key…" : effectiveGlyph(for: binding))
-                .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                .foregroundStyle(isRecording ? Otty.State.accent : Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                .foregroundStyle(isRecording ? Slate.State.accent : Slate.Text.secondary)
                 .lineLimit(1)
-                .padding(.horizontal, Otty.Metric.space2)
+                .padding(.horizontal, Slate.Metric.space2)
                 .padding(.vertical, 2)
                 .frame(minWidth: 64)
                 .background(
-                    isRecording ? Otty.State.accentMuted : Otty.Surface.element,
-                    in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall, style: .continuous),
+                    isRecording ? Slate.State.accentMuted : Slate.Surface.element,
+                    in: RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall, style: .continuous),
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall, style: .continuous)
-                        .strokeBorder(isRecording ? Otty.State.accent : Otty.Line.subtle, lineWidth: 1),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall, style: .continuous)
+                        .strokeBorder(isRecording ? Slate.State.accent : Slate.Line.subtle, lineWidth: 1),
                 )
         }
         .buttonStyle(.plain)
@@ -266,7 +266,7 @@ struct KeybindingsEditorView: View {
         store.keybindings = KeybindingPreferences(overrides: overrides)
     }
 
-    /// otty's global "Reset to Default": clear EVERY customization (single-chord, sequence, text-byte, and
+    /// The global "Reset to Default": clear EVERY customization (single-chord, sequence, text-byte, and
     /// unbind overrides) at once by assigning a fresh empty model — the single persistence channel republishes
     /// the cleared overrides to the live registry.
     private func resetAllOverrides() {
@@ -286,7 +286,7 @@ struct KeybindingsEditorView: View {
     #if os(macOS)
     /// Map a captured `NSEvent` to a ``KeybindingCaptureOutcome`` (pure, headless logic in
     /// `KeybindingCapture`) and apply it to the recording row: Escape cancels (no write), Backspace /
-    /// Forward-Delete CLEAR the binding (otty unbind), a usable chord is recorded, and an unmappable key is
+    /// Forward-Delete CLEAR the binding (unbind), a usable chord is recorded, and an unmappable key is
     /// ignored (stays in recording mode).
     private func handleCapturedEvent(_ event: NSEvent) {
         guard let id = recordingID else { return }

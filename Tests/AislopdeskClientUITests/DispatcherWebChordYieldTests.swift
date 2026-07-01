@@ -1,4 +1,4 @@
-// DispatcherWebChordYieldTests (E18 M2) — the live `WorkspaceKeyDispatcher` YIELDS the otty web-browser
+// DispatcherWebChordYieldTests (E18 M2) — the live `WorkspaceKeyDispatcher` YIELDS the standard web-browser
 // chords (⌘[ Back / ⌘] Forward / ⌘⇧R hard-Reload / ⌘F Find-in-page) to a FOCUSED `.web` pane instead of
 // resolving their global pane-cycle / Toggle-Details / Find bindings. The monitor PREEMPTS the responder
 // chain, so without this yield the web pane's focus-scoped `.keyboardShortcut` (WebLeafView) would never see

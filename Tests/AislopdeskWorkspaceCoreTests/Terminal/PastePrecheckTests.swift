@@ -2,12 +2,12 @@ import XCTest
 @testable import AislopdeskWorkspaceCore
 
 /// E8 WI-4 (ES-E8-3): pins the pure ``PastePrecheck`` — the embedder's paste entry-point decision that makes
-/// otty's paste-protection reachable for the danger classes libghostty's own (narrower) `isSafe` gate misses.
+/// paste-protection reachable for the danger classes libghostty's own (narrower) `isSafe` gate misses.
 ///
 /// The bug this guards: libghostty trips `confirm_read_clipboard_cb` (the only old caller of
 /// ``PasteSafetyAnalyzer``) ONLY for a `\n` / bracketed-end payload, so a SINGLE-LINE `sudo`, an ESC-laced
-/// control-char paste, or a bare-`\r` paste reached the shell SILENTLY — two of otty's four advertised
-/// dangers were suppressed. ``PastePrecheck/decide(clipboard:protectionOn:isAlternateScreen:)`` runs the
+/// control-char paste, or a bare-`\r` paste reached the shell SILENTLY — two of the four advertised
+/// paste dangers were suppressed. ``PastePrecheck/decide(clipboard:protectionOn:isAlternateScreen:)`` runs the
 /// analyzer BEFORE handing the bytes to libghostty, so all four classes confirm regardless of newlines.
 ///
 /// These assertions are discriminating, not tautological: an implementation that returned `.pasteDirect`
@@ -55,7 +55,7 @@ final class PastePrecheckTests: XCTestCase {
     }
 
     /// A bare `\r` (CR, no LF) paste — libghostty's `isSafe` flags only `\n`, so this reached the shell
-    /// silently and ran the command. otty classifies the trailing CR as a trailing-newline danger → confirm.
+    /// silently and ran the command. The trailing CR is classified as a trailing-newline danger → confirm.
     func testBareCarriageReturnConfirms() {
         let decision = PastePrecheck.decide(
             clipboard: "make deploy\r",

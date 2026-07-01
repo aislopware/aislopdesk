@@ -1,23 +1,23 @@
 import Foundation
 
-/// A parsed `.ottytheme` (E15) — the UNIFORM, leaf-level model both the terminal palette path and the chrome
+/// A parsed `.aislopdesktheme` (E15) — the UNIFORM, leaf-level model both the terminal palette path and the chrome
 /// path read.
 ///
 /// WHY it lives in the leaf ``AislopdeskVideoProtocol``: the terminal palette (`foreground`/`background`/the
 /// 16-entry ANSI `palette`/`selectionBackground`) must reach ``TerminalConfigBuilder`` (also in this leaf),
-/// while the chrome roles must reach `OttyTheme` (up in `AislopdeskClientUI`). A single pure-Foundation model
+/// while the chrome roles must reach `SlateTheme` (up in `AislopdeskClientUI`). A single pure-Foundation model
 /// that both layers see — and that the file parsers/importers (WI-4/WI-5) build — keeps the parse logic
 /// headlessly testable with no SwiftUI / AppKit. It carries NO behaviour onto the wire: appearance is pure
 /// client chrome (the golden-safety invariant ``AppearancePreferences`` documents).
 ///
 /// COLOUR STORAGE: every colour field holds a canonical 6-hex string WITHOUT a leading `#` (e.g. `"FF6188"`)
-/// — the shape both libghostty's `palette = N=<hex>` config value and `Color(ottyHex:)` consume directly. The
+/// — the shape both libghostty's `palette = N=<hex>` config value and `Color(slateHex:)` consume directly. The
 /// one exception is `background`, which may also be the literal `"none"` (a transparent terminal background).
 /// The parsers/importers normalise `"#rrggbb"` → `"rrggbb"` BEFORE constructing a document; ``isValid`` then
 /// rejects anything that is not a clean 6-hex (validate-then-drop, the same discipline as a hostile datagram).
 public struct ThemeDocument: Codable, Sendable, Equatable {
     /// Whether the theme is meant for the light or the dark OS-appearance slot (`[meta] mode`). Drives the
-    /// dual-slot assignment + `OttyTheme.isLight`.
+    /// dual-slot assignment + `SlateTheme.isLight`.
     public enum Mode: String, Codable, Sendable, Equatable {
         case light
         case dark

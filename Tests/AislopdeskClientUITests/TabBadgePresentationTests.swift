@@ -1,5 +1,5 @@
 // TabBadgePresentationTests — pins E6 WI-4's pure view-side badge map. `StatusPresentation.tabBadge` resolves
-// each `TabBadgeKind` to the correct otty glyph (spinner / accent dot / tinted SF-symbol), and `tabBadgeLabel`
+// each `TabBadgeKind` to the correct glyph (spinner / accent dot / tinted SF-symbol), and `tabBadgeLabel`
 // gives every kind a distinct non-empty AX/tooltip string. Headless VALUE assertions — no SwiftUI render, no
 // video/Metal/SCStream. Each test fails on the pre-WI-4 code (the two helpers did not exist), so none is
 // tautological. (Tints are deliberately NOT asserted here — `Color` equality is provider-fragile; the symbol

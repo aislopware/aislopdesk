@@ -7,7 +7,7 @@ import Foundation
 /// delivered by a `GHOSTTY_ACTION_MOUSE_VISIBILITY` action maps 1:1 WITHOUT importing `CGhostty` into this
 /// headless, AppKit-free module — keeping the visibility decision unit-testable.
 ///
-/// `mouse-hide-while-typing = true` (otty H9, default ON) only makes libghostty DECIDE to hide the pointer;
+/// `mouse-hide-while-typing = true` (H9, default ON) only makes libghostty DECIDE to hide the pointer;
 /// it then delegates the actual hide/show to the embedder via this action (`Surface.zig` `hideMouse`/
 /// `showMouse` → `performAction(.mouse_visibility, .hidden/.visible)`). The GUI surface
 /// (`GhosttyTerminalView`, compile-only behind `#if canImport(CGhostty)`) reads the raw int and asks

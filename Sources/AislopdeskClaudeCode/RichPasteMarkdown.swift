@@ -1,7 +1,6 @@
 import Foundation
 
-/// PURE HTML→Markdown converter behind the Composer's **rich paste** (`⌘V`, otty parity —
-/// E12 / ES-E12-3).
+/// PURE HTML→Markdown converter behind the Composer's **rich paste** (`⌘V` — E12 / ES-E12-3).
 ///
 /// When the user pastes into the Composer with `⌘V`, the platform pasteboard is read for an
 /// HTML (or RTF, rendered to HTML) flavour at the **view call site** (NSPasteboard on macOS,
@@ -16,7 +15,7 @@ import Foundation
 /// degraded**, never force-unwrapped and never crashed on; the worst case is that an
 /// unrecognised fragment passes through as text. Empty input yields the empty string.
 ///
-/// Coverage (the otty rich-paste set): headings (`<h1>`…`<h6>` → `#`…`######`), bold
+/// Coverage (the supported rich-paste set): headings (`<h1>`…`<h6>` → `#`…`######`), bold
 /// (`<strong>`/`<b>` → `**…**`), italic (`<em>`/`<i>` → `*…*`), links
 /// (`<a href=…>` → `[…](…)`), unordered lists (`<ul><li>` → `- …`), ordered lists
 /// (`<ol><li>` → `1. …`), inline code (`<code>` → `` `…` ``), preformatted blocks

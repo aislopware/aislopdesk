@@ -2,9 +2,9 @@ import Foundation
 
 // MARK: - PermissionStatus (E14/K11 — the PURE "what dot does the System Permission row show" decision)
 
-/// The macOS/iOS notification-permission status row that otty shows at the top of Settings → Shell →
-/// Notification (`terminal-features__notifications.md`): a coloured dot (green = allowed, amber = will-prompt
-/// / unknown, red = blocked) plus an **Open System Settings** button.
+/// The macOS/iOS notification-permission status row shown at the top of Settings → Shell →
+/// Notification (`docs/ui-shell/spec/terminal-features__notifications.md`): a coloured dot (green = allowed,
+/// amber = will-prompt / unknown, red = blocked) plus an **Open System Settings** button.
 ///
 /// PURE + framework-free so the whole green/amber/red decision is unit-pinned WITHOUT importing
 /// UserNotifications (the view layer queries `UNUserNotificationCenter.current().getNotificationSettings`

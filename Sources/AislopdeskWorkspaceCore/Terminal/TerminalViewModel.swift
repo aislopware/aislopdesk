@@ -299,8 +299,8 @@ public final class TerminalViewModel {
     /// an OSC-133;A prompt mark (`ESC]133;A`) WHILE on the main screen (`.shellPrompt`) — i.e. the shell has
     /// returned to an idle prompt. The pane's ``LivePaneSession`` wires it to the composer's
     /// `notePromptIdle()`, which dispatches the next queued prompt (one per idle, FIFO). This is the literal
-    /// otty "next idle prompt" trigger; the AGENT (alt-screen Claude Code) pane has no OSC-133 marks, so its
-    /// faithful equivalent is the host's `claudeStatus → .idle` transition (``LivePaneSession``). Gated on
+    /// "next idle prompt" trigger; the AGENT (alt-screen Claude Code) pane has no OSC-133 marks, so its
+    /// equivalent is the host's `claudeStatus → .idle` transition (``LivePaneSession``). Gated on
     /// `.shellPrompt` so an alt-screen TUI's embedded/own prompt marks never double-fire it. No behaviour
     /// change while nil (headless/preview). `@ObservationIgnored`: wiring, not view state.
     @ObservationIgnored public var onPromptIdle: (() -> Void)?
@@ -416,7 +416,7 @@ public final class TerminalViewModel {
 
     // MARK: Vi/copy-mode repeat-count + visual-mode (E17 WI-4 — pure, NSEvent-free)
 
-    /// The three vi visual-selection modes (otty parity) plus `.none` (plain scrollback navigation). Drives
+    /// The three vi visual-selection modes plus `.none` (plain scrollback navigation). Drives
     /// the ``ViModeOverlay`` pill label AND switches the line-motion handler from scroll (`scroll_page_lines`)
     /// to selection-EXTEND (`adjust_selection:<dir>`). Public so the GUI overlay (WI-5) reads ``viVisualMode``.
     public enum VisualMode: Equatable, Sendable {
@@ -425,7 +425,7 @@ public final class TerminalViewModel {
         case line
         case block
 
-        /// The pill label otty shows per visual mode; `nil` = not in a visual mode (the bare "VI" pill).
+        /// The pill label shown per visual mode; `nil` = not in a visual mode (the bare "VI" pill).
         public var pillLabel: String? {
             switch self {
             case .none: nil
@@ -479,7 +479,7 @@ public final class TerminalViewModel {
 
     /// Vi-mode key-hint bar visibility (the `⌘/` reference card; WI-5 renders the bar). Observable so the GUI
     /// hint bar shows/hides; toggled per copy-mode session via ``toggleViKeyHints()`` and reset on
-    /// enter/exit (off by default — otty shows the hints on demand).
+    /// enter/exit (off by default — the hints show on demand only).
     public private(set) var showViKeyHints = false
 
     /// `⌘/` (contextual, only while in copy-mode) → toggle the vi key-hint bar. The store routes the chord
@@ -770,7 +770,7 @@ public final class TerminalViewModel {
     /// TRUE while this pane is READ-ONLY: the single input ingress seam ``sendInput(_:)`` drops every
     /// outbound byte (keys / paste / IME commit / mouse-report / click-to-move / iOS input-bar /
     /// synchronized-input broadcast) and rings a (rate-limited) beep instead of forwarding it. Output
-    /// ingest is UNTOUCHED — the host's video/bytes keep streaming (faithful to otty's "view only").
+    /// ingest is UNTOUCHED — the host's video/bytes keep streaming; the pane is "view only".
     ///
     /// VIEW state, NOT persisted (the `isCopyMode` / `copyModeBadgeActive` twin pattern):
     /// `@ObservationIgnored` because the renderer's `keyDown` / mouse-report path READS this flag from
@@ -810,8 +810,8 @@ public final class TerminalViewModel {
     }
 
     /// Minimum spacing between read-only blocked-input beeps. A mouse-report flood (every pointer motion
-    /// event funnels through ``sendInput(_:)`` while read-only) would otherwise beep per event; otty beeps
-    /// ONCE, so ``rateLimitedBeep`` coalesces to one beep per window. Instance-settable so a test drives the
+    /// event funnels through ``sendInput(_:)`` while read-only) would otherwise beep per event, so
+    /// ``rateLimitedBeep`` coalesces to one beep per window. Instance-settable so a test drives the
     /// throttle without real-time waits. `@ObservationIgnored`: tuning, not view state.
     @ObservationIgnored var readOnlyBeepInterval: Duration = .milliseconds(400)
 
@@ -820,7 +820,7 @@ public final class TerminalViewModel {
     @ObservationIgnored private var lastReadOnlyBeepAt: ContinuousClock.Instant?
 
     /// Rings the (injected) ``beep`` at most once per ``readOnlyBeepInterval`` — so a mouse-report or
-    /// key-repeat flood blocked by read-only beeps once, not per event (faithful to otty's "beeps once").
+    /// key-repeat flood blocked by read-only beeps once, not per event.
     private func rateLimitedBeep() {
         let now = ContinuousClock.now
         if let last = lastReadOnlyBeepAt, now - last < readOnlyBeepInterval { return }
@@ -864,7 +864,7 @@ public final class TerminalViewModel {
         }
     }
 
-    /// The MANUAL Secure-Keyboard-Entry toggle (otty Edit ▸ Secure Keyboard Entry / the palette term): engages
+    /// The MANUAL Secure-Keyboard-Entry toggle (Edit ▸ Secure Keyboard Entry / the palette term): engages
     /// secure input regardless of the host echo state. Toggled by the store seam over the active pane
     /// (``WorkspaceStore/toggleSecureKeyboardEntryInActivePane()``); the macOS leaf forwards it
     /// (``onManualSecureInputChanged``) to the pane's ``SecureKeyboardEntryController``. `@ObservationIgnored`
@@ -1022,8 +1022,9 @@ public final class TerminalViewModel {
     /// 2-letter labels. A NO-OP when there is no live surface (headless / placeholder), when the surface is on
     /// the ALT screen (don't fight a TUI), or when no target is found — so the chord never enters an empty mode.
     ///
-    /// CEILING: otty's "Hint to copy" also scans SCROLLBACK, but a label can only be SHOWN over a visible cell,
-    /// so all three intents scan the visible viewport here (a scrollback-copy refinement is deferred — DECISIONS).
+    /// CEILING: a "Hint to copy" intent could in principle also scan SCROLLBACK, but a label can only be
+    /// SHOWN over a visible cell, so all three intents scan the visible viewport here (a scrollback-copy
+    /// refinement is deferred — DECISIONS).
     public func beginHint(_ intent: HintIntent) {
         guard !isAlternateScreen, let snapshot = surface as? TerminalViewportSnapshotting else { return }
         let targets = HintLabelAssigner.targets(
@@ -1171,7 +1172,7 @@ public final class TerminalViewModel {
         // input-bar submit, the Ctrl+C0 raw fast-path, and the synchronized-input broadcast. Dropping at
         // the very top (before `inputSink`/`broadcastTap`, and before any echo-probe / glitch-caret
         // bookkeeping) blocks EVERY input path with one check, so neither the local host nor the broadcast
-        // siblings see the bytes. A blocked input rings the rate-limited beep (otty "beeps once"). Output
+        // siblings see the bytes. A blocked input rings the rate-limited beep once, not per byte. Output
         // ingest (`ingestBatch`/`ingestPass`) is intentionally NOT gated — read-only never blocks inbound.
         if isReadOnly {
             rateLimitedBeep()
@@ -1584,7 +1585,7 @@ public final class TerminalViewModel {
         for chunk in chunks {
             let modeEvents = modeTracker.consume(chunk)
             // E12 NORMAL-pane Prompt-Queue idle dispatch: an OSC-133;A prompt mark on the MAIN screen means
-            // the shell is back at an idle prompt (the literal otty "next idle prompt" trigger). Fire the
+            // the shell is back at an idle prompt (the literal "next idle prompt" trigger). Fire the
             // queue's idle signal so it dispatches the next queued prompt. GATED on `.shellPrompt` so an
             // alt-screen TUI's own prompt marks don't double-fire it (the alt-screen / agent-pane idle path
             // is `claudeStatus → .idle`, wired in LivePaneSession). No-op when `onPromptIdle` is nil
@@ -1716,8 +1717,8 @@ public final class TerminalViewModel {
             if SettingsKey.titleShellControlledEnabled, !text.isEmpty { title = text }
         case .bell:
             bellPending = true
-            // otty "Sound — Shell Controlled" (E14/K10): a BEL rings the system beep (audio-only — otty
-            // implements no visual bell). The pure ``BellPolicy`` gates it on the `soundShellControlled`
+            // "Sound — Shell Controlled" (E14/K10): a BEL rings the system beep (audio-only — no visual
+            // bell is implemented). The pure ``BellPolicy`` gates it on the `soundShellControlled`
             // toggle (default ON); the injected ``beep`` seam actuates (so tests count without a real NSSound).
             if BellPolicy.shouldBeep(soundShellControlled: SettingsKey.soundShellControlledEnabled) {
                 beep()
@@ -1734,7 +1735,7 @@ public final class TerminalViewModel {
                 // determinate/indeterminate badge — `ProgressOSCParser` DROPS state 5, so this completion edge
                 // is what clears it. The store mirror is cleared on the same edge (handleCommandCompleted).
                 progress = nil
-                // otty "Sound on Error Exit" (E14/K10): a non-zero exit beeps when enabled (default OFF;
+                // "Sound on Error Exit" (E14/K10): a non-zero exit beeps when enabled (default OFF;
                 // requires the OSC-133 shell-integration mark that carries the exit code). Pure
                 // ``ErrorSoundPolicy`` → the `soundOnErrorExit` toggle + a non-zero exit. Same `beep` seam.
                 if ErrorSoundPolicy.shouldBeep(

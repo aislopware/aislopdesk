@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Dropped content (the classified payload)
 
 /// What an external drag is carrying, once the platform pasteboard has been inspected and reduced to a
-/// single semantic value (otty `spec/user-interface__drag-and-drop.md`). This is the PURE value the
+/// single semantic value (see `docs/ui-shell/spec/user-interface__drag-and-drop.md`). This is the PURE value the
 /// drop policy reasons over — the AppKit / SwiftUI drop layer (E18 WI-5) extracts the raw pasteboard,
 /// hands it to ``DropPayloadClassifier``, and gets one of these back (or `nil` for an unsupported /
 /// empty drag — validate-then-drop).

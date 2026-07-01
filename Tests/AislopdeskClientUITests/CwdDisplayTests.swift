@@ -1,6 +1,6 @@
 // CwdDisplayTests (Batch-5b follow-up) — pins the pure home-abbreviation the command-palette WORKING
-// DIRECTORY pill uses (`CwdDisplay.abbreviate`). `command-palette.png` renders the pill as `~/Workplace/otty/`
-// — a `/Users/<name>` home prefix collapsed to `~`, plus a trailing directory slash — while the clone now
+// DIRECTORY pill uses (`CwdDisplay.abbreviate`). `command-palette.png` renders the pill as `~/Workplace/myproject/`
+// — a `/Users/<name>` home prefix collapsed to `~`, plus a trailing directory slash — while aislopdesk
 // receives the RAW remote-host path from the `cwd()` RPC. The helper is SwiftUI/AppKit-free so it runs
 // headlessly on the macOS `swift test` host. Each case asserts against an INDEPENDENT expected literal (not
 // the helper's own derivation), so dropping the abbreviation (or the trailing-slash marker) fails the build.
@@ -13,8 +13,8 @@ final class CwdDisplayTests: XCTestCase {
     // MARK: Home-prefix collapse (the command-palette.png case)
 
     func testCollapsesMacOSHomePrefixToTildeWithTrailingSlash() {
-        // The screenshot case: /Users/abner/Workplace/otty -> ~/Workplace/otty/
-        XCTAssertEqual(CwdDisplay.abbreviate("/Users/abner/Workplace/otty"), "~/Workplace/otty/")
+        // The screenshot case: /Users/abner/Workplace/myproject -> ~/Workplace/myproject/
+        XCTAssertEqual(CwdDisplay.abbreviate("/Users/abner/Workplace/myproject"), "~/Workplace/myproject/")
     }
 
     func testCollapsesLinuxHomePrefixToTilde() {
@@ -52,11 +52,11 @@ final class CwdDisplayTests: XCTestCase {
 
     func testAlreadyTildeRootedKeepsTildeAndGainsSlash() {
         XCTAssertEqual(CwdDisplay.abbreviate("~"), "~/")
-        XCTAssertEqual(CwdDisplay.abbreviate("~/Workplace/otty"), "~/Workplace/otty/")
+        XCTAssertEqual(CwdDisplay.abbreviate("~/Workplace/myproject"), "~/Workplace/myproject/")
     }
 
     func testTrailingSlashIsNotDoubled() {
-        XCTAssertEqual(CwdDisplay.abbreviate("/Users/abner/Workplace/otty/"), "~/Workplace/otty/")
+        XCTAssertEqual(CwdDisplay.abbreviate("/Users/abner/Workplace/myproject/"), "~/Workplace/myproject/")
         XCTAssertEqual(CwdDisplay.abbreviate("/etc/"), "/etc/")
     }
 

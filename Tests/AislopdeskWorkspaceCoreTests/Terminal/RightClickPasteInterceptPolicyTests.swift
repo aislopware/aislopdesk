@@ -4,7 +4,7 @@ import XCTest
 /// Pins the pure ``RightClickPasteInterceptPolicy`` — the decision that closes the right-click
 /// paste-protection hole. libghostty owns the bare-right-click dispatch, so a `Paste` / `Copy or Paste`
 /// action pastes through its OWN narrower gate (only `\n` / bracketed-end). This policy decides when the
-/// embedder must INTERCEPT the click and run otty's broad ``PastePrecheck`` instead.
+/// embedder must INTERCEPT the click and run the broad ``PastePrecheck`` instead.
 ///
 /// Discriminating, not tautological: an implementation that forwarded everything to libghostty (the OLD
 /// hole) fails ``testPasteIntercepts`` / ``testCopyOrPasteInterceptsWithoutSelection``; one that stole

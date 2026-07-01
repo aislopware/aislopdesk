@@ -7,33 +7,34 @@
 // store's `didSet` apply-paths do the rest (terminal live-reload, env overlay + sidecar, theme repoint,
 // keybinding republish).
 //
-// LAYOUT (otty fidelity): otty renders Settings as a TWO-COLUMN window — a left NAVIGATOR column with a
-// rounded SEARCH PILL pinned at the top and a vertical icon+label section list, and a content column on the
-// right (`docs/otty-clone/screenshots/{all-settings,launch-option,editor-settings,cursor-style}.png`). This
-// view reproduces that with a flat two-column `HStack` (NOT a macOS `TabView` top tab strip): a fixed-width
-// `Otty.Surface.sidebar` navigator (`settingsSidebarWidth`) holding `SettingsSidebarSearchField` + the
+// LAYOUT: Settings is a TWO-COLUMN window — a left NAVIGATOR column with a rounded SEARCH PILL pinned at the
+// top and a vertical icon+label section list, and a content column on the right
+// (`docs/ui-shell/screenshots/{all-settings,launch-option,editor-settings,cursor-style}.png`). This view
+// reproduces that with a flat two-column `HStack` (NOT a macOS `TabView` top tab strip): a fixed-width
+// `Slate.Surface.sidebar` navigator (`settingsSidebarWidth`) holding `SettingsSidebarSearchField` + the
 // `SettingsSidebarRow` list, a hairline divider, and the selected section's `Form` on the right. The sidebar
 // search pill (which SECTION ROWS show) is DISTINCT from the Advanced → All-Settings content search (which
-// config KEYS show) — otty surfaces both, and so do we.
+// config KEYS show) — both searches are surfaced side by side.
 //
-// E7 reorg: the old 5-tab strip (General / Terminal / Video / Keybindings / Advanced) is reshaped into
-// otty's 9 sections (`SettingsSection`): General / Shell / Controls / Editor / Agents / Appearance /
-// Recipes / Key Bindings / Advanced. Groups relocate to their otty home proven by the screenshots: terminal
+// E7 reorg: the old 5-tab strip (General / Terminal / Video / Keybindings / Advanced) is reshaped into a
+// 9-section taxonomy (`SettingsSection`): General / Shell / Controls / Editor / Agents / Appearance /
+// Recipes / Key Bindings / Advanced. Groups relocate to the section proven by the screenshots: terminal
 // FONT (family + size) + the CURSOR group (style + blink) → **Appearance** (`font-setting.png` /
 // `cursor-style.png` both show them under Appearance); SCROLLBACK → **Controls** (`spec/terminal-features__
 // scroll.md`: Settings → Controls → Scroll); theme → Appearance; agent host flags → Agents; the Close
 // Confirmation pickers (Closing Tab / Closing Window) → **General** (`launch-option.png` shows them on the
-// General page). otty's **Editor** section is the built-in FILE-editor's settings (Soft Wrap / Line Numbers /
-// Tab Size — `editor-settings.png`) and **Recipes** is a saved-command library (`all-settings.png`), neither
-// of which aislopdesk has an equivalent for, so both stay RESERVED/empty (deferral placeholders, kept 1:1 in
-// the navigator, not terminal-render prefs). The 5 orphan toggles + the Controls/Scroll/Copy toggles are
-// surfaced via `@Default(.key)`; the Video HOST flags (QP/FEC/pacer/sharpen) have no otty section, so they
-// fold into Advanced as a "Video (host)" sub-section (real functionality — not dropped).
+// General page). The **Editor** section is reserved for the built-in FILE-editor's settings (Soft Wrap /
+// Line Numbers / Tab Size — `editor-settings.png`) and **Recipes** is a saved-command library
+// (`all-settings.png`), neither of which aislopdesk has an equivalent for, so both stay RESERVED/empty
+// (deferral placeholders, kept 1:1 in the navigator, not terminal-render prefs). The 5 orphan toggles + the
+// Controls/Scroll/Copy toggles are surfaced via `@Default(.key)`; the Video HOST flags (QP/FEC/pacer/sharpen)
+// have no dedicated section, so they fold into Advanced as a "Video (host)" sub-section (real functionality
+// — not dropped).
 //
 // SURFACING: the main window is `.hiddenTitleBar` and `OverlayCoordinator` is NOT yet mounted, so this
 // rides a STOCK SwiftUI `Settings` scene (`AislopdeskSettingsScene`) — ⌘, opens a separate, system-chromed
-// window that does not clash with otty's hover-reveal titlebar. When the coordinator lands, the same view
-// tree can be relocated into an in-window otty panel via `settingsVisible`. `SettingsView` itself stays
+// window that does not clash with the workspace's own hover-reveal titlebar. When the coordinator lands, the
+// same view tree can be relocated into an in-window panel via `settingsVisible`. `SettingsView` itself stays
 // cross-platform so the iOS settings sheet (WI-5) can host the same section structs.
 //
 // DEFERRED vs LIVE-APPLY: each section is tagged with an `ApplyTiming` chip (`.live` applies immediately;
@@ -41,7 +42,7 @@
 // connection). Terminal + appearance + keybindings + the fire-time toggles are live; the video/agent HOST
 // flags are reconnect-only; SYMMETRIC keys (FEC) additionally carry a "set on both ends" warning.
 //
-// Otty.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
+// Slate.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
 import AislopdeskCLICore
@@ -59,7 +60,7 @@ import UIKit
 
 // MARK: - Settings scene (stock SwiftUI, ⌘,)
 
-/// The stock `Settings` scene wrapper, wired in `AislopdeskClientApp`. Stock (not an otty in-window panel)
+/// The stock `Settings` scene wrapper, wired in `AislopdeskClientApp`. Stock (not an in-window panel)
 /// because the main window hides its titlebar and the overlay host is not yet mounted (see file header).
 /// macOS-only: the `Settings` scene is unavailable on iOS (the iOS settings surface lands as an in-app
 /// sheet later); `SettingsView` itself stays cross-platform so iOS can host it once that lands.
@@ -91,21 +92,21 @@ public struct AislopdeskSettingsScene: Scene {
             SettingsView(store: store)
                 .workspaceStore(workspaceStore)
                 .agentHooksController(agentHooks)
-                .tint(Otty.State.accent)
-                .preferredColorScheme(Otty.colorScheme)
+                .tint(Slate.State.accent)
+                .preferredColorScheme(Slate.colorScheme)
         }
     }
 }
 #endif
 
-// MARK: - Settings taxonomy (the 9 otty sections — one source for the macOS navigator + the iOS list)
+// MARK: - Settings taxonomy (the 9 sections — one source for the macOS navigator + the iOS list)
 
-/// The otty settings taxonomy — 9 sections, each rendered as an icon+label row in the macOS two-column
-/// navigator (and, once WI-5 lands, a navigation row in the iOS sheet). The title + otty sidebar
+/// The settings taxonomy — 9 sections, each rendered as an icon+label row in the macOS two-column
+/// navigator (and, once WI-5 lands, a navigation row in the iOS sheet). The title + sidebar
 /// `systemImage` live here as the ONE source so the macOS navigator and the (future) iOS list never drift;
 /// `SettingsSectionTaxonomyTests` pins
-/// the set + order against an accidental drop/reorder/icon-swap. Order + glyphs mirror otty's sidebar
-/// (`docs/otty-clone/screenshots/all-settings.png`): General, Shell, Controls, Editor, Agents, Appearance,
+/// the set + order against an accidental drop/reorder/icon-swap. Order + glyphs mirror the sidebar shown in
+/// (`docs/ui-shell/screenshots/all-settings.png`): General, Shell, Controls, Editor, Agents, Appearance,
 /// Recipes, Key Bindings, Advanced.
 enum SettingsSection: String, CaseIterable, Identifiable {
     case general
@@ -135,10 +136,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The otty sidebar glyph for the section (SF Symbol name), matched to otty's sidebar as closely as SF
-    /// Symbols allow: General = `exclamationmark.circle`, Controls = `cursorarrow` (the pointer/cursor glyph
-    /// otty shows beside "Controls" in `all-settings.png` — input/scroll/pointer settings), Agents =
-    /// `powerplug`, Recipes = `book`, Key Bindings = `bolt` (lightning).
+    /// The sidebar glyph for the section (SF Symbol name), chosen to read clearly at a glance: General =
+    /// `exclamationmark.circle`, Controls = `cursorarrow` (the pointer/cursor glyph shown beside "Controls"
+    /// in `all-settings.png` — input/scroll/pointer settings), Agents = `powerplug`, Recipes = `book`, Key
+    /// Bindings = `bolt` (lightning).
     var systemImage: String {
         switch self {
         case .general: "exclamationmark.circle"
@@ -191,30 +192,30 @@ enum ApplyTiming {
     }
 }
 
-/// A small inline timing chip (symbol + label). The tint reads the `@MainActor` `Otty.Status` tokens in
+/// A small inline timing chip (symbol + label). The tint reads the `@MainActor` `Slate.Status` tokens in
 /// the view body (not on the nonisolated enum).
 private struct TimingChip: View {
     let timing: ApplyTiming
     var body: some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             Image(systemName: timing.symbol)
             Text(timing.label)
         }
-        .font(.system(size: Otty.Typeface.small))
+        .font(.system(size: Slate.Typeface.small))
         .foregroundStyle(tint)
     }
 
     private var tint: Color {
         switch timing {
-        case .live: Otty.Status.ok
-        case .reconnect: Otty.Status.warn
+        case .live: Slate.Status.ok
+        case .reconnect: Slate.Status.warn
         }
     }
 }
 
 // MARK: - The two-column Settings view
 
-/// The Settings body: a flat two-column layout (otty fidelity) — a left navigator (search pill + icon+label
+/// The Settings body: a flat two-column layout — a left navigator (search pill + icon+label
 /// section rows) and the selected section's content on the right. The section set + order + icons are driven
 /// from `SettingsSection` so the navigator can never drift from the pinned taxonomy.
 struct SettingsView: View {
@@ -226,8 +227,8 @@ struct SettingsView: View {
 
     /// The SIDEBAR search pill query — narrows which SECTION ROWS show in the left navigator. This is a
     /// DISTINCT control from the Advanced → All-Settings content search (`AllSettingsListView`, which narrows
-    /// the config-KEY list): otty shows both (the navigator pill top-left + the All-Settings field top-right),
-    /// and so do we. A plain case-insensitive substring match over the section titles.
+    /// the config-KEY list): both are shown at once (the navigator pill top-left + the All-Settings field
+    /// top-right). A plain case-insensitive substring match over the section titles.
     @State private var sidebarQuery: String = ""
 
     var body: some View {
@@ -236,7 +237,7 @@ struct SettingsView: View {
         // already-native `Form`-based section content as the detail — instead of the bespoke two-column
         // `HStack` + custom `SettingsSidebarRow` buttons. The window appearance is pinned to the active theme
         // (light/dark) so the native controls render consistently with the workspace (the scene also applies
-        // `.preferredColorScheme(Otty.colorScheme)`).
+        // `.preferredColorScheme(Slate.colorScheme)`).
         NavigationSplitView {
             List(selection: selectionBinding) {
                 ForEach(filteredSections) { section in
@@ -245,7 +246,7 @@ struct SettingsView: View {
                 }
             }
             .navigationSplitViewColumnWidth(
-                min: 200, ideal: Otty.Metric.settingsSidebarWidth, max: 320,
+                min: 200, ideal: Slate.Metric.settingsSidebarWidth, max: 320,
             )
             .searchable(text: $sidebarQuery, placement: .sidebar, prompt: "Search")
             // A Settings window has a FIXED navigator (like macOS System Settings) — drop the toolbar
@@ -260,7 +261,7 @@ struct SettingsView: View {
         #if os(macOS)
             // Pin the Settings NSWindow to the theme appearance (macOS only — iOS has no NSWindow; its settings
             // surface is the separate `SettingsSheet`, which adopts `.preferredColorScheme` directly).
-            .background { SettingsWindowAppearancePinner(isLight: Otty.theme.isLight) }
+            .background { SettingsWindowAppearancePinner(isLight: Slate.theme.isLight) }
         #endif
     }
 
@@ -288,11 +289,11 @@ struct SettingsView: View {
 // MARK: - Settings window appearance pin
 
 #if os(macOS)
-/// Pins the Settings `NSWindow`'s appearance to the active Otty theme (light/dark), so the native settings
+/// Pins the Settings `NSWindow`'s appearance to the active Slate theme (light/dark), so the native settings
 /// chrome + any AppKit-hosted control renders consistently with the workspace — not the OS default. `isLight`
-/// is passed IN (read from `Otty.theme.isLight` in `SettingsView.body`), so a LIVE theme switch re-renders the
+/// is passed IN (read from `Slate.theme.isLight` in `SettingsView.body`), so a LIVE theme switch re-renders the
 /// view → re-runs `updateNSView` → re-pins, with NO `NotificationCenter` observer to leak. The scene's
-/// `.preferredColorScheme(Otty.colorScheme)` covers the pure-SwiftUI side; this covers the window itself.
+/// `.preferredColorScheme(Slate.colorScheme)` covers the pure-SwiftUI side; this covers the window itself.
 private struct SettingsWindowAppearancePinner: NSViewRepresentable {
     let isLight: Bool
     func makeNSView(context _: Context) -> NSView { NSView() }
@@ -357,18 +358,18 @@ enum GeneralSettingsLayout {
     }
 }
 
-/// General: On-Launch behaviour (O1), the tab/window close-confirmation policies (otty puts the Close
-/// Confirmation group on the General page — `launch-option.png`), privacy (redact secrets), and the default
+/// General: On-Launch behaviour (O1), the tab/window close-confirmation policies (the Close Confirmation
+/// group lives on the General page — `launch-option.png`), privacy (redact secrets), and the default
 /// pane kind. All fire-time `Defaults.Keys` (bound via `@Default(.key)`) — applied LIVE. NOTE: the
-/// NOTIFICATION group is NOT here — otty homes it under **Shell** (`notification-setting.png` shows the
+/// NOTIFICATION group is NOT here — it lives under **Shell** instead (`notification-setting.png` shows the
 /// NOTIFICATION + TAB BADGE groups on the Shell page), so it lives in `ShellSettingsTab`.
 ///
-/// INTENTIONAL OMISSIONS (pinned, not a regression): otty's General page (`launch-option.png`) also carries an
-/// UPDATE group (Auto Update), a Language picker, and a "Quit When All Windows Closed" row. aislopdesk drops
+/// INTENTIONAL OMISSIONS (pinned, not a regression): a General page could plausibly carry an UPDATE group
+/// (Auto Update), a Language picker, and a "Quit When All Windows Closed" row. aislopdesk drops
 /// all three on purpose — Auto-Update and Language are N/A for a single-user remote-coding tool that is not a
 /// self-updating, localized consumer app (no in-app updater, English-only UI), and the quit-policy row has no
 /// backing behaviour here. Conversely, the **Privacy & New Panes** group (Redact secrets / Default pane kind)
-/// is aislopdesk-SPECIFIC — it has no otty counterpart and is deliberately added, not a stray.
+/// is aislopdesk-SPECIFIC — deliberately added, not a stray.
 private struct GeneralSettingsTab: View {
     /// The fire-time keys are NOT in the typed models, so bind the global `Defaults.Keys` directly through
     /// the type-safe `@Default(.key)` wrapper (the default lives in the key declaration, not here). General
@@ -387,7 +388,7 @@ private struct GeneralSettingsTab: View {
 
     var body: some View {
         Form {
-            ottyFormSection(GeneralSettingsLayout.general) {
+            slateFormSection(GeneralSettingsLayout.general) {
                 Picker("On Launch", selection: $onLaunch) {
                     Text("Restore Last Session").tag(OnLaunchBehavior.restoreLastSession)
                     Text("New Window").tag(OnLaunchBehavior.newWindow)
@@ -395,13 +396,13 @@ private struct GeneralSettingsTab: View {
                 timingFooter(.live)
             }
 
-            ottyFormSection(GeneralSettingsLayout.closeConfirmation) {
+            slateFormSection(GeneralSettingsLayout.closeConfirmation) {
                 Picker("Closing Tab", selection: $closeConfirmTab) { closeConfirmOptions }
                 Picker("Closing Window", selection: $closeConfirmWindow) { closeConfirmOptions }
                 timingFooter(.live)
             }
 
-            ottyFormSection(GeneralSettingsLayout.privacyAndNewPanes) {
+            slateFormSection(GeneralSettingsLayout.privacyAndNewPanes) {
                 Toggle("Redact likely secrets from titles", isOn: $redactSecrets)
                 Picker("Default pane kind", selection: $defaultPaneKind) {
                     Text("Terminal").tag(PaneKind.terminal)
@@ -428,7 +429,7 @@ private struct GeneralSettingsTab: View {
 
     // MARK: - OS Integration (E20 M1 — macOS-only, reachable post-first-launch)
 
-    /// otty Settings → General → OS Integration (`first-launch-default-terminal.png` /
+    /// Settings → General → OS Integration (`first-launch-default-terminal.png` /
     /// `getting-started__first-launch.md §2`). REUSES the first-launch sheet's rows so the behaviour lives in
     /// one place (`DefaultTerminalIntegration`): a Default-Terminal status row (Set / "Default"), the
     /// Finder-Integration + Full-Disk-Access System-Settings deep-links, and the honestly-DISABLED "Default
@@ -436,13 +437,13 @@ private struct GeneralSettingsTab: View {
     /// exclusion §4 / no dead button). macOS-only; iOS never compiles this.
     #if os(macOS)
     private var osIntegrationSection: some View {
-        ottyFormSection(GeneralSettingsLayout.osIntegration) {
+        slateFormSection(GeneralSettingsLayout.osIntegration) {
             osIntegrationRow(
                 "Default Terminal",
                 "Handle `ssh://` links and shell scripts opened from Finder or `open`.",
             ) {
                 if isDefaultTerminal {
-                    Label("Default", systemImage: "checkmark").foregroundStyle(Otty.Status.ok)
+                    Label("Default", systemImage: "checkmark").foregroundStyle(Slate.Status.ok)
                 } else {
                     Button("Set as Default Terminal") {
                         Task {
@@ -459,7 +460,7 @@ private struct GeneralSettingsTab: View {
                     + "editor — an editor on the remote host needs a host-side agent, so this is unavailable "
                     + "in the remote model.",
             ) {
-                Text("Unavailable").foregroundStyle(Otty.Text.tertiary)
+                Text("Unavailable").foregroundStyle(Slate.Text.tertiary)
             }
             osIntegrationRow(
                 "Finder Integration",
@@ -481,7 +482,7 @@ private struct GeneralSettingsTab: View {
         .onAppear { isDefaultTerminal = DefaultTerminalIntegration.isDefaultTerminal() }
     }
 
-    /// otty's OS-integration row: a bold title + gray subtext leading, the action control trailing.
+    /// The OS-integration row layout: a bold title + gray subtext leading, the action control trailing.
     private func osIntegrationRow(
         _ title: String,
         _ subtitle: String,
@@ -490,11 +491,11 @@ private struct GeneralSettingsTab: View {
         LabeledContent {
             trailing()
         } label: {
-            VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+            VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                 Text(title)
                 Text(subtitle)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -504,19 +505,19 @@ private struct GeneralSettingsTab: View {
 
 // MARK: - Shell section
 
-/// Shell: the full otty NOTIFICATION group + the SOUND + CODE AGENT groups (E14/K9-K11) and the
+/// Shell: the full NOTIFICATION group + the SOUND + CODE AGENT groups (E14/K9-K11) and the
 /// window/tab/split working-directory policy. `notification-setting.png` (Shell row highlighted) homes the
 /// NOTIFICATION group under the Shell section, so the toggles live here (NOT on General): the System
 /// Permission status row at the top, the master "Allow App Notifications", the per-event toggles, the
 /// Notify-While-Foreground tri-state picker, and the macOS-only Bounce Dock Icon — all backed by the pure
-/// `NotificationPolicy` engine (WI-4). The Working Directory group is also Shell's by otty's own docs
-/// (`spec/user-interface__window-tab-split.md` lines 66 + 282: "Settings → Shell → Working Directory",
+/// `NotificationPolicy` engine (WI-4). The Working Directory group is also Shell's, per
+/// `spec/user-interface__window-tab-split.md` lines 66 + 282: "Settings → Shell → Working Directory",
 /// `open-option.png`). NOT here: the New Tab Position picker → **Appearance** (`tab-setting.png` shows it in a
 /// TABS group on the Appearance page); the close-confirmation policies → **General** (`launch-option.png`);
 /// the title + OSC-52 privilege gates → **Advanced** (`terminal-features__notifications.md`). Each reads a
 /// fire-time `Defaults.Key` consumed at the new-tab / notification fire-site, so they apply LIVE.
 private struct ShellSettingsTab: View {
-    // NOTIFICATION group (notification-setting.png). The full otty panel — the master + per-event toggles +
+    // NOTIFICATION group (notification-setting.png). The full panel — the master + per-event toggles +
     // the Notify-While-Foreground tri-state picker — is now backed by the pure `NotificationPolicy` engine
     // (E14/K9, WI-4), so the rows are real behaviour, not deferred stubs.
     @Default(.oscNotifications) private var oscNotifications
@@ -542,7 +543,7 @@ private struct ShellSettingsTab: View {
     @Default(.workingDirectoryNewWindow) private var workingDirNewWindow
     @Default(.workingDirectoryNewTab) private var workingDirNewTab
     @Default(.workingDirectoryNewSplit) private var workingDirNewSplit
-    // E20 WI-9: the otty "Aislopdesk CLI" card (Install CLI / Omit Prefix / Allow Overwrite). macOS-only — the
+    // E20 WI-9: the "Aislopdesk CLI" card (Install CLI / Omit Prefix / Allow Overwrite). macOS-only — the
     // `/usr/local/bin` symlink + admin escalation are `#if os(macOS)`; iOS omits the section (no dead toggle).
     #if os(macOS)
     @State private var cliInstaller = CLIInstaller()
@@ -563,21 +564,21 @@ private struct ShellSettingsTab: View {
             soundSection
             codeAgentSection
 
-            // Working Directory's Shell home is confirmed by otty's docs (NOT unconfirmed-by-screenshot):
+            // Working Directory's Shell home is confirmed by the spec docs (NOT unconfirmed-by-screenshot):
             // `spec/user-interface__window-tab-split.md` ("Settings → Shell → Working Directory" + the
             // `open-option.png` reference) places this group on the Shell page.
-            ottyFormSection("Working Directory") {
+            slateFormSection("Working Directory") {
                 Picker("New window", selection: workingDirBinding($workingDirNewWindow)) { workingDirOptions }
                 Picker("New tab", selection: workingDirBinding($workingDirNewTab)) { workingDirOptions }
                 Picker("New split", selection: workingDirBinding($workingDirNewSplit)) { workingDirOptions }
                 timingFooter(.live)
             }
 
-            // AISLOPDESK CLI (E20 WI-9 — otty Settings → Shell → CLI card). macOS-only: the `/usr/local/bin`
+            // AISLOPDESK CLI (E20 WI-9 — Settings → Shell → CLI card). macOS-only: the `/usr/local/bin`
             // symlink + admin escalation are `#if os(macOS)`, so iOS omits the section rather than ship a dead
             // toggle. Shares `CLIInstallCardBody` with the first-launch Install-CLI step (one source).
             #if os(macOS)
-            ottyFormSection("Aislopdesk CLI") {
+            slateFormSection("Aislopdesk CLI") {
                 CLIInstallCardBody(installer: cliInstaller)
                 timingFooter(.live)
             }
@@ -589,12 +590,12 @@ private struct ShellSettingsTab: View {
         #endif
     }
 
-    /// The full otty NOTIFICATION group (notification-setting.png): the System Permission status row at the
+    /// The full NOTIFICATION group (notification-setting.png): the System Permission status row at the
     /// TOP, then the master "Allow App Notifications" + the per-event toggles + the Notify-While-Foreground
     /// tri-state picker + Bounce Dock Icon (macOS-only — no Dock on iOS). Extracted so the `Form` closure
     /// stays under the `closure_body_length` ceiling.
     private var notificationSection: some View {
-        ottyFormSection("Notification") {
+        slateFormSection("Notification") {
             NotificationPermissionRow()
             toggleRow(
                 "Allow App Notifications",
@@ -644,13 +645,13 @@ private struct ShellSettingsTab: View {
         }
     }
 
-    /// The otty TAB BADGE group (Shell — progress-state.md lines 32-35, rendered directly under NOTIFICATION in
+    /// The TAB BADGE group (Shell — progress-state.md lines 32-35, rendered directly under NOTIFICATION in
     /// notification-setting.png): the three COMMAND-driven sidebar-badge toggles. DISTINCT from the Agents-tab
     /// "Agent Behaviour" badge gates, so command vs agent badges are controlled independently. "When Command
     /// Awaits Input" gates a plain-command awaiting-input hand; the host detector that DRIVES that badge is a
     /// deferred ceiling (DECISIONS.md), so the toggle ships ahead of the signal it will gate.
     private var tabBadgeSection: some View {
-        ottyFormSection("Tab Badge") {
+        slateFormSection("Tab Badge") {
             toggleRow(
                 "When Command Finishes",
                 "Badge the tab when a command exits successfully.",
@@ -670,9 +671,9 @@ private struct ShellSettingsTab: View {
         }
     }
 
-    /// The otty SOUND group (Shell): the BEL → system-beep gate + the error-exit beep (E14/K10).
+    /// The SOUND group (Shell): the BEL → system-beep gate + the error-exit beep (E14/K10).
     private var soundSection: some View {
-        ottyFormSection("Sound") {
+        slateFormSection("Sound") {
             toggleRow(
                 "Sound — Shell Controlled",
                 "Let shell apps ring the terminal bell (BEL) as the system alert sound.",
@@ -687,9 +688,9 @@ private struct ShellSettingsTab: View {
         }
     }
 
-    /// The otty CODE AGENT group (Claude-only — E14 scope exclusion). IPC-driven, no shell integration needed.
+    /// The CODE AGENT group (Claude-only — E14 scope exclusion). IPC-driven, no shell integration needed.
     private var codeAgentSection: some View {
-        ottyFormSection("Code Agent") {
+        slateFormSection("Code Agent") {
             toggleRow(
                 "Notify When Task Completes",
                 "Notify when a coding agent finishes a task and goes idle.",
@@ -704,19 +705,19 @@ private struct ShellSettingsTab: View {
         }
     }
 
-    /// A toggle row with otty's bold-label-over-gray-subtext layout (the switch trailing).
+    /// A toggle row with a bold-label-over-gray-subtext layout (the switch trailing).
     private func toggleRow(_ title: String, _ subtitle: String? = nil, isOn binding: Binding<Bool>) -> some View {
         Toggle(isOn: binding) { rowLabel(title, subtitle) }
     }
 
-    /// otty's row label: a bold title with an optional gray subtext beneath.
+    /// The row label layout: a bold title with an optional gray subtext beneath.
     private func rowLabel(_ title: String, _ subtitle: String?) -> some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Text(title)
             if let subtitle, !subtitle.isEmpty {
                 Text(subtitle)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -739,7 +740,7 @@ private struct ShellSettingsTab: View {
 
 // MARK: - System Permission status row (top of the Notification group)
 
-/// The otty System Permission status row (`terminal-features__notifications.md`, shown at the TOP of the
+/// The System Permission status row (`terminal-features__notifications.md`, shown at the TOP of the
 /// Notification group): a coloured dot (green = allowed, amber = will-prompt / unknown, red = blocked) plus
 /// an **Open System Settings** deep-link. The dot DECISION is the pure, headless-pinned
 /// ``PermissionStatus/dot(forAuthorization:)``; this view only queries
@@ -758,15 +759,15 @@ private struct NotificationPermissionRow: View {
             Button("Open System Settings", action: openSystemSettings)
                 .controlSize(.small)
         } label: {
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 Circle()
                     .fill(dotColor)
                     .frame(width: 8, height: 8)
-                VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                     Text("System Permission")
                     Text(dotSubtitle)
-                        .font(.system(size: Otty.Typeface.footnote))
-                        .foregroundStyle(Otty.Text.secondary)
+                        .font(.system(size: Slate.Typeface.footnote))
+                        .foregroundStyle(Slate.Text.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -776,9 +777,9 @@ private struct NotificationPermissionRow: View {
 
     private var dotColor: Color {
         switch dot {
-        case .green: Otty.Status.ok
-        case .amber: Otty.Status.warn
-        case .red: Otty.Status.err
+        case .green: Slate.Status.ok
+        case .amber: Slate.Status.warn
+        case .red: Slate.Status.err
         }
     }
 
@@ -815,19 +816,19 @@ private struct NotificationPermissionRow: View {
 
 // MARK: - Controls section
 
-/// Controls: the otty Controls fire-time toggles + multi-state pickers (E8 owns the BEHAVIOUR; E7 declared +
-/// persisted them). The groups mirror otty's own section headers from the `spec/terminal-features__
+/// Controls: the Controls fire-time toggles + multi-state pickers (E8 owns the BEHAVIOUR; E7 declared +
+/// persisted them). The groups mirror the section headers from the `spec/terminal-features__
 /// {selection,copy-and-paste,scroll,cursor-and-mouse}.md` pages and `mouse-option.png`: **Selection**,
-/// **Copy & Paste**, **Scroll** (incl. the SCROLLBACK depth — otty's `Settings → Controls → Scroll` home),
+/// **Copy & Paste**, **Scroll** (incl. the SCROLLBACK depth — the `Settings → Controls → Scroll` home),
 /// **Mouse**, **Keyboard** (Undo at Prompt), and the aislopdesk-specific **System** dialog-panes toggle.
 /// All LIVE — every `Defaults` control row re-applies the libghostty config through `refreshTerminalControls()`
 /// on change (the `refreshing(_:)` wrapper), and the scrollback stepper rebuilds via the `terminal` model's
-/// own `didSet`. NOTE: the cursor (color / opacity / style / blink / animation) is NOT here — otty puts the
-/// whole Cursor group under **Appearance** (`cursor-style.png`), hosted by `CursorPreviewView`.
+/// own `didSet`. NOTE: the cursor (color / opacity / style / blink / animation) is NOT here — the
+/// whole Cursor group lives under **Appearance** (`cursor-style.png`), hosted by `CursorPreviewView`.
 private struct ControlsSettingsTab: View {
     @Bindable var store: PreferencesStore
 
-    // Selection (otty Settings → Controls → Selection).
+    // Selection (Settings → Controls → Selection).
     @Default(.shiftArrowSelect) private var shiftArrowSelect
     @Default(.clearSelectionOnTyping) private var clearSelectionOnTyping
     @Default(.clearSelectionOnCopy) private var clearSelectionOnCopy
@@ -843,7 +844,7 @@ private struct ControlsSettingsTab: View {
     @Default(.scrollPastFirstLine) private var scrollPastFirstLine
     @Default(.smoothScroll) private var smoothScroll
     @Default(.scrollMultiplier) private var scrollMultiplier
-    // Mouse (otty `mouse-option.png` order).
+    // Mouse (`mouse-option.png` order).
     @Default(.focusFollowsMouse) private var focusFollowsMouse
     @Default(.rightClickAction) private var rightClickAction
     @Default(.mouseHideWhileTyping) private var mouseHideWhileTyping
@@ -854,7 +855,7 @@ private struct ControlsSettingsTab: View {
     @Default(.undoAtPrompt) private var undoAtPrompt
     @Default(.optionAsAlt) private var optionAsAlt
     @Default(.systemDialogPanes) private var systemDialogPanes
-    // Links (otty Settings → Controls → Open With / Link Schemes, E10 WI-3). Client-side link interaction —
+    // Links (Settings → Controls → Open With / Link Schemes, E10 WI-3). Client-side link interaction —
     // NOT libghostty config, so these bind DIRECTLY (no `refreshing(_:)` terminal-config rebuild).
     @Default(.linkDetection) private var linkDetection
     @Default(.linkCmdClick) private var linkCmdClick
@@ -870,7 +871,7 @@ private struct ControlsSettingsTab: View {
 
     var body: some View {
         Form {
-            ottyFormSection("Selection") {
+            slateFormSection("Selection") {
                 toggleRow(
                     "Shift+Arrow Select",
                     "Use Shift+arrows to drive a native selection instead of forwarding the arrow escapes.",
@@ -895,7 +896,7 @@ private struct ControlsSettingsTab: View {
                 timingFooter(.live)
             }
 
-            ottyFormSection("Copy & Paste") {
+            slateFormSection("Copy & Paste") {
                 toggleRow(
                     "Copy on Select",
                     "Copy the selection to the pasteboard as soon as it is made.",
@@ -927,7 +928,7 @@ private struct ControlsSettingsTab: View {
 
             linkSchemesSection
 
-            ottyFormSection("Keyboard") {
+            slateFormSection("Keyboard") {
                 toggleRow(
                     "Undo at Prompt",
                     "Press Cmd-Z at the shell prompt to emit the readline undo sequence.",
@@ -950,7 +951,7 @@ private struct ControlsSettingsTab: View {
             // Secure Input (E17 ES-E17-4 / WI-7) — macOS-only (process-global `EnableSecureEventInput`). The
             // whole Section is `#if os(macOS)`, so the iOS sheet hides it; the `SettingsKey` keys still compile.
             #if os(macOS)
-            ottyFormSection("Secure Input") {
+            slateFormSection("Secure Input") {
                 toggleRow(
                     "Auto Secure Input",
                     "Automatically engage macOS Secure Keyboard Entry when the remote shell shows a hidden "
@@ -966,7 +967,7 @@ private struct ControlsSettingsTab: View {
             }
             #endif
 
-            ottyFormSection("System") {
+            slateFormSection("System") {
                 Toggle("Auto-spawn panes for system password dialogs", isOn: $systemDialogPanes)
                 timingFooter(.live)
             }
@@ -974,10 +975,10 @@ private struct ControlsSettingsTab: View {
         .formStyle(.grouped)
     }
 
-    /// otty Settings → Controls → Scroll. Extracted from `body` so the `Form` closure stays under the
+    /// Settings → Controls → Scroll. Extracted from `body` so the `Form` closure stays under the
     /// `closure_body_length` ceiling; the rows are unchanged.
     private var scrollSection: some View {
-        ottyFormSection("Scroll") {
+        slateFormSection("Scroll") {
             toggleRow(
                 "Scroll to Bottom on Output",
                 "Snap the viewport to the bottom when new output arrives.",
@@ -1012,10 +1013,10 @@ private struct ControlsSettingsTab: View {
                 isOn: $smoothScroll,
             )
             LabeledContent("Scroll multiplier") {
-                HStack(spacing: Otty.Metric.space2) {
+                HStack(spacing: Slate.Metric.space2) {
                     Slider(value: refreshing($scrollMultiplier), in: 0.25...5, step: 0.25)
                     Text(String(format: "%.2f×", scrollMultiplier))
-                        .foregroundStyle(Otty.Text.secondary)
+                        .foregroundStyle(Slate.Text.secondary)
                         .monospacedDigit()
                 }
             }
@@ -1027,10 +1028,10 @@ private struct ControlsSettingsTab: View {
         }
     }
 
-    /// otty `mouse-option.png` order. Extracted from `body` so the `Form` closure stays under the
+    /// `mouse-option.png` order. Extracted from `body` so the `Form` closure stays under the
     /// `closure_body_length` ceiling; the rows are unchanged.
     private var mouseSection: some View {
-        ottyFormSection("Mouse") {
+        slateFormSection("Mouse") {
             toggleRow(
                 "Mouse Over to Focus",
                 "Focus the pane under the mouse cursor automatically.",
@@ -1052,10 +1053,10 @@ private struct ControlsSettingsTab: View {
                 "Hide the mouse cursor while the keyboard is in use.",
                 isOn: $mouseHideWhileTyping,
             )
-            // otty surfaces this as a simple ON/OFF switch (`spec/cursor-and-mouse`), not a 4-way picker:
+            // This surfaces as a simple ON/OFF switch (`spec/cursor-and-mouse`), not a 4-way picker:
             // ON ⇒ ⇧ extends the selection (`MouseShiftCapture.enabled`, the default), OFF ⇒ ⇧ is forwarded
             // to the program (`.disabled`). The leaf enum keeps `.always`/`.never` for the power-user token
-            // mapping, but the otty-faithful UI exposes only the binary the spec shows. The getter projects
+            // mapping, but the UI exposes only the binary the spec shows. The getter projects
             // through `extendsSelection` (NOT a bare `== .enabled`) so a value persisted by the removed
             // 4-way picker reads sanely: `.always` → ON, `.never` → OFF.
             toggleRow(
@@ -1082,16 +1083,16 @@ private struct ControlsSettingsTab: View {
 
     // MARK: - E10 Links (Open With + Link Schemes)
 
-    /// otty Settings → Controls → Open With (E10 WI-3). The link-interaction knobs are CLIENT-side (not
+    /// Settings → Controls → Open With (E10 WI-3). The link-interaction knobs are CLIENT-side (not
     /// libghostty config), so they bind DIRECTLY — no `refreshing(_:)` terminal-config rebuild.
     ///
-    /// HONESTY CEILING (docs/DECISIONS.md): otty's per-target "Open Files / Folders With → Otty" surrogates
-    /// need a LOCAL file / folder pane, which aislopdesk cannot offer for a REMOTE host (the files live on the
-    /// host; there is no file-transfer sub-protocol). So instead of shipping dead Browser / Otty / Finder
-    /// target pickers, the actionable otty config keys (`link-cmd-click` / `link-cmd-shift-click`) are
+    /// HONESTY CEILING (docs/DECISIONS.md): a per-target "Open Files / Folders With → [app]" surrogate
+    /// needs a LOCAL file / folder pane, which aislopdesk cannot offer for a REMOTE host (the files live on the
+    /// host; there is no file-transfer sub-protocol). So instead of shipping dead Browser / Finder
+    /// target pickers, the actionable config keys (`link-cmd-click` / `link-cmd-shift-click`) are
     /// surfaced and the reduced target set is documented as a footnote, not a control.
     private var openWithSection: some View {
-        ottyFormSection("Open With") {
+        slateFormSection("Open With") {
             Toggle(isOn: $linkDetection) {
                 rowLabel(
                     "Detect Links & Paths",
@@ -1117,20 +1118,20 @@ private struct ControlsSettingsTab: View {
                 Text("Open with System Default").tag(LinkCmdShiftClick.openSystemDefault)
             }
             Text(
-                "Files and folders live on the remote host, so otty's per-target “Open in Otty” file / folder "
+                "Files and folders live on the remote host, so per-target “Open in…” file / folder "
                     + "panes are not available here — paths reveal or open on the host and URLs open in your "
                     + "client browser.",
             )
-            .font(.system(size: Otty.Typeface.footnote))
-            .foregroundStyle(Otty.Text.secondary)
+            .font(.system(size: Slate.Typeface.footnote))
+            .foregroundStyle(Slate.Text.secondary)
             timingFooter(.live)
         }
     }
 
-    /// otty Settings → Controls → Link Schemes (E10 WI-3). The custom-scheme list is editable only when the
+    /// Settings → Controls → Link Schemes (E10 WI-3). The custom-scheme list is editable only when the
     /// mode is Custom; `http(s)` / `file` / `mailto` are always detected regardless of this mode.
     private var linkSchemesSection: some View {
-        ottyFormSection("Link Schemes") {
+        slateFormSection("Link Schemes") {
             linkPickerRow(
                 "Auto-Detect Link Schemes",
                 "Which URL schemes get underlined on Cmd-hover and made clickable. All detects any "
@@ -1142,14 +1143,14 @@ private struct ControlsSettingsTab: View {
                 Text("Custom").tag(AutoDetectLinkSchemes.custom)
             }
             if autoDetectLinkSchemes == .custom {
-                VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                     rowLabel(
                         "Custom Link Schemes",
                         "Comma-separated extra schemes to additionally detect (e.g. codex, ssh, vscode).",
                     )
                     TextField("codex, ssh, vscode", text: customSchemesText)
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(size: Otty.Typeface.body, design: .monospaced))
+                        .font(.system(size: Slate.Typeface.body, design: .monospaced))
                 }
             }
             timingFooter(.live)
@@ -1202,7 +1203,7 @@ private struct ControlsSettingsTab: View {
         )
     }
 
-    /// A toggle row with otty's bold-label-over-gray-subtext layout (the switch trailing).
+    /// A toggle row with a bold-label-over-gray-subtext layout (the switch trailing).
     private func toggleRow(_ title: String, _ subtitle: String? = nil, isOn binding: Binding<Bool>) -> some View {
         Toggle(isOn: refreshing(binding)) { rowLabel(title, subtitle) }
     }
@@ -1222,14 +1223,14 @@ private struct ControlsSettingsTab: View {
         }
     }
 
-    /// otty's row label: a bold title with an optional gray subtext beneath.
+    /// The row label layout: a bold title with an optional gray subtext beneath.
     private func rowLabel(_ title: String, _ subtitle: String?) -> some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Text(title)
             if let subtitle, !subtitle.isEmpty {
                 Text(subtitle)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -1238,29 +1239,29 @@ private struct ControlsSettingsTab: View {
 
 // MARK: - Editor section (RESERVED — deferred)
 
-/// Editor is RESERVED/empty by design. In otty the Editor section configures the built-in FILE-editor (Soft
-/// Wrap / Show Line Numbers / Show Whitespace / Tab Size / Scroll Past Last Line / Default-to-Preview — see
-/// `docs/otty-clone/screenshots/editor-settings.png`). aislopdesk has no built-in file editor, so there are
-/// NO settings to surface here. Deliberately we do NOT backfill it with terminal-render prefs — those have
-/// otty homes elsewhere (FONT + CURSOR → Appearance `font-setting.png`/`cursor-style.png`; SCROLLBACK →
-/// Controls `spec/terminal-features__scroll.md`). The section is kept in the taxonomy (pinned by
-/// `SettingsSectionTaxonomyTests`) as a placeholder so the navigator stays 1:1 with otty's; it fills in if/
-/// when a file-pane editor lands (otty-clone backlog).
+/// Editor is RESERVED/empty by design. The Editor section is meant to eventually configure a built-in
+/// FILE-editor (Soft Wrap / Show Line Numbers / Show Whitespace / Tab Size / Scroll Past Last Line /
+/// Default-to-Preview — see `docs/ui-shell/screenshots/editor-settings.png`). aislopdesk has no built-in file
+/// editor, so there are NO settings to surface here. Deliberately we do NOT backfill it with terminal-render
+/// prefs — those live elsewhere (FONT + CURSOR → Appearance `font-setting.png`/`cursor-style.png`; SCROLLBACK
+/// → Controls `spec/terminal-features__scroll.md`). The section is kept in the taxonomy (pinned by
+/// `SettingsSectionTaxonomyTests`) as a placeholder so the navigator stays complete; it fills in if/
+/// when a file-pane editor lands (see `docs/ui-shell` backlog).
 private struct EditorSettingsTab: View {
     var body: some View {
         Form {
-            ottyFormSection("Editor") {
+            slateFormSection("Editor") {
                 LabeledContent("File editor") {
                     Text("Not available")
-                        .foregroundStyle(Otty.Text.tertiary)
+                        .foregroundStyle(Slate.Text.tertiary)
                 }
                 Text(
                     "Editor settings (Soft Wrap, Line Numbers, Tab Size, …) configure a built-in file editor, "
                         + "which aislopdesk does not have yet. Terminal font, cursor, and scrollback live under "
                         + "Appearance and Controls.",
                 )
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
             }
         }
         .formStyle(.grouped)
@@ -1269,14 +1270,14 @@ private struct EditorSettingsTab: View {
 
 // MARK: - Recipes section (snippet library + Command Replay — E16 WI-7)
 
-/// Recipes is the otty saved-command / snippet library (`all-settings.png` shows the section, book glyph,
+/// Recipes is the saved-command / snippet library (`all-settings.png` shows the section, book glyph,
 /// between Appearance and Key Bindings). E16 WI-7 populates it with the two surfaces aislopdesk backs today:
 ///
 /// - **Snippets** — the persisted ``Snippet`` list (Name + Alias), each row with a pencil-edit + trash, and
 ///   an **Add Text Snippet** button that opens the ``SnippetEditorSheet`` (`textsnippet-setting.png`). CRUD
 ///   routes to the live ``WorkspaceStore`` (`addSnippet`/`updateSnippet`/`deleteSnippet`) injected via the
 ///   `\.workspaceStore` environment slot (the same seam the Advanced → Workspace rows use).
-/// - **Command Replay** — the two otty replay-mode pickers (Saved Recipes default Auto / Recipe Files default
+/// - **Command Replay** — the two replay-mode pickers (Saved Recipes default Auto / Recipe Files default
 ///   Ask Once) bound to the fire-time `Defaults.Keys` (`@Default(.replayModeSaved)` / `.replayModeFiles`).
 ///   Ask-Once / Manually surface the in-pane ``RecipeReplayHUD`` to run / step the queue.
 ///
@@ -1286,7 +1287,7 @@ private struct EditorSettingsTab: View {
 /// alias then Tab/Space at an OSC-133;A shell prompt expands it in place (``SnippetAliasExpander``, wired by
 /// `WorkspaceStore.wireSnippetExpander`). The toggle drives real behaviour, so it is not a lying control.
 ///
-/// The RECIPE library list itself (saved `.ottyrecipe` files) is store-glue (E16 WI-8/WI-10) and lands with
+/// The RECIPE library list itself (saved `.aislopdeskrecipe` files) is store-glue (E16 WI-8/WI-10) and lands with
 /// the save/open flows; this tab owns the snippet editor + the replay/expand SETTINGS. Cross-platform — the
 /// iOS settings sheet (WI-10) hosts the same struct. Pinned in the taxonomy by `SettingsSectionTaxonomyTests`.
 private struct RecipesSettingsTab: View {
@@ -1326,7 +1327,7 @@ private struct RecipesSettingsTab: View {
     // MARK: Snippets list + Add
 
     private var snippetsSection: some View {
-        ottyFormSection("Snippets") {
+        slateFormSection("Snippets") {
             if let store = workspaceStore {
                 let snippets = store.snippets
                 if snippets.isEmpty {
@@ -1334,8 +1335,8 @@ private struct RecipesSettingsTab: View {
                         "No snippets yet. Add a text snippet to run it from the command palette, or expand it "
                             + "by alias at the shell prompt.",
                     )
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                 } else {
                     ForEach(snippets) { snippet in
                         snippetRow(snippet, store: store)
@@ -1346,39 +1347,39 @@ private struct RecipesSettingsTab: View {
                 }
             } else {
                 Text("Snippets are unavailable in this context.")
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.tertiary)
             }
         }
     }
 
-    /// One snippet row: Name (+ monospaced Alias subtext), a pencil-edit, and a trash-delete (otty's row
+    /// One snippet row: Name (+ monospaced Alias subtext), a pencil-edit, and a trash-delete (the row
     /// chrome from `textsnippet-setting.png`'s list behind the sheet).
     private func snippetRow(_ snippet: Snippet, store: WorkspaceStore) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
-            VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space2) {
+            VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                 Text(WorkspaceStore.snippetName(snippet.name))
-                    .font(.system(size: Otty.Typeface.body))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.body))
+                    .foregroundStyle(Slate.Text.primary)
                 if !snippet.alias.isEmpty {
                     Text(snippet.alias)
-                        .font(.system(size: Otty.Typeface.footnote).monospaced())
-                        .foregroundStyle(Otty.Text.secondary)
+                        .font(.system(size: Slate.Typeface.footnote).monospaced())
+                        .foregroundStyle(Slate.Text.secondary)
                 }
             }
             Spacer(minLength: 0)
             Button { editing = SnippetEditTarget(snippet) } label: {
                 Image(systemSymbol: .pencil)
-                    .font(.system(size: Otty.Metric.iconSize))
-                    .foregroundStyle(Otty.Text.icon)
+                    .font(.system(size: Slate.Metric.iconSize))
+                    .foregroundStyle(Slate.Text.icon)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Edit snippet")
             Button { store.deleteSnippet(snippet.id) } label: {
                 Image(systemSymbol: .trash)
-                    .font(.system(size: Otty.Metric.iconSize))
-                    .foregroundStyle(Otty.Text.icon)
+                    .font(.system(size: Slate.Metric.iconSize))
+                    .foregroundStyle(Slate.Text.icon)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -1389,7 +1390,7 @@ private struct RecipesSettingsTab: View {
     // MARK: Command Replay + at-prompt auto-expand
 
     private var commandReplaySection: some View {
-        ottyFormSection("Command Replay") {
+        slateFormSection("Command Replay") {
             Picker("Saved Recipes", selection: $replayModeSaved) {
                 ForEach(RecipeReplayMode.allCases, id: \.self) { mode in
                     Text(mode.displayName).tag(mode)
@@ -1405,8 +1406,8 @@ private struct RecipesSettingsTab: View {
                     + "then runs the queue when you confirm in the pane; Manually runs one at a time; Skip opens "
                     + "the layout only.",
             )
-            .font(.system(size: Otty.Typeface.footnote))
-            .foregroundStyle(Otty.Text.secondary)
+            .font(.system(size: Slate.Typeface.footnote))
+            .foregroundStyle(Slate.Text.secondary)
 
             // LIVE toggle (E16 ES-E16-4): at-prompt alias auto-expansion. Default OFF (opt-in) — when on, the
             // pure `SnippetAliasExpander` (wired per terminal pane) watches the in-progress prompt line and, on
@@ -1418,8 +1419,8 @@ private struct RecipesSettingsTab: View {
                     + "it. With this on, typing an alias then Tab or Space at the shell prompt expands it in "
                     + "place (needs shell integration for the prompt mark).",
             )
-            .font(.system(size: Otty.Typeface.footnote))
-            .foregroundStyle(Otty.Text.secondary)
+            .font(.system(size: Slate.Typeface.footnote))
+            .foregroundStyle(Slate.Text.secondary)
 
             timingFooter(.live)
         }
@@ -1459,11 +1460,11 @@ private struct SnippetEditTarget: Identifiable {
 
 // MARK: - Appearance section
 
-/// Appearance: the otty TABS group (the New Tab Position picker — `tab-setting.png` shows it in a TABS group
+/// Appearance: the TABS group (the New Tab Position picker — `tab-setting.png` shows it in a TABS group
 /// on the Appearance page, NOT Shell), the theme picker (via `AppearancePreferences` → `ThemeStore`), the
 /// density tier, the terminal FONT (family + size) and the CURSOR group (style + blink) — font/cursor
-/// relocated here from the old Editor/Controls tabs to match otty's screenshots (`font-setting.png` shows
-/// Font Family under Appearance; `cursor-style.png` shows the Cursor group under Appearance) — plus the
+/// relocated here from the old Editor/Controls tabs to match the reference screenshots (`font-setting.png`
+/// shows Font Family under Appearance; `cursor-style.png` shows the Cursor group under Appearance) — plus the
 /// chrome toggles (command dividers, status bar). All LIVE (theme repoints every token; font/cursor rebuild
 /// the libghostty config string and bump `TerminalConfigBroadcaster`; the New Tab Position + chrome toggles
 /// are read at fire-time / on the next render).
@@ -1471,12 +1472,12 @@ private struct AppearanceSettingsTab: View {
     @Bindable var store: PreferencesStore
 
     @Default(.newTabPosition) private var newTabPosition
-    // E19/A18 vertical-sidebar auto-hide (otty `auto-hide-tabs-panel`) — cross-platform (the sidebar is on
+    // E19/A18 vertical-sidebar auto-hide (`auto-hide-tabs-panel`) — cross-platform (the sidebar is on
     // both macOS + iPad). The decision is the pure `SidebarAutoHidePolicy`; WI-7 drives `chrome.sidebarCollapsed`.
     @Default(.autoHideTabsPanel) private var autoHideTabsPanel
     @Default(.showBlockDividers) private var showBlockDividers
     #if os(macOS)
-    // E19/A29 window-size (otty `window-size`) — macOS-only: the initial dimensions are an `NSWindow`
+    // E19/A29 window-size (`window-size`) — macOS-only: the initial dimensions are an `NSWindow`
     // concept (iOS has no resizable window), so the keys are bound only where the `Window` section renders.
     @Default(.windowSize) private var windowSize
     @Default(.windowCols) private var windowCols
@@ -1489,22 +1490,21 @@ private struct AppearanceSettingsTab: View {
 
     var body: some View {
         Form {
-            // PRODUCT DECISION (pinned, NOT a regression): otty's Appearance page (`tab-setting.png`) opens
-            // with a LAYOUT selector — Vertical Tabs / Tabs Top / Tabs Bottom. aislopdesk is VERTICAL-TABS-ONLY
-            // by deliberate product decision: the horizontal tab bar is dropped from this clone, so there is no
+            // PRODUCT DECISION (pinned, NOT a regression): an Appearance page could plausibly open with a
+            // LAYOUT selector — Vertical Tabs / Tabs Top / Tabs Bottom. aislopdesk is VERTICAL-TABS-ONLY
+            // by deliberate product decision: there is no horizontal tab bar, so there is no
             // layout selector to surface and a future reviewer must NOT read the missing horizontal-layout
-            // option as a gap to backfill. otty's `tab-setting.png` also carries an "Auto Hide Tabs Panel" row
-            // (sidebar-layout-only) and a WINDOW group with a "Window Size" picker; both are now SURFACED below
-            // and BACKED — the Auto Hide picker drives `SidebarAutoHidePolicy` (E19/A18, WI-2/WI-7) and the
-            // Window Size picker + steppers feed `WindowSizeMath` through the macOS `NSWindow` glue (E19/A29,
-            // WI-1/WI-4); neither is dead UI.
-            ottyFormSection("Tabs") {
+            // option as a gap to backfill. An "Auto Hide Tabs Panel" row (sidebar-layout-only) and a WINDOW
+            // group with a "Window Size" picker are both SURFACED below and BACKED — the Auto Hide picker
+            // drives `SidebarAutoHidePolicy` (E19/A18, WI-2/WI-7) and the Window Size picker + steppers feed
+            // `WindowSizeMath` through the macOS `NSWindow` glue (E19/A29, WI-1/WI-4); neither is dead UI.
+            slateFormSection("Tabs") {
                 Picker("New tab position", selection: $newTabPosition) {
                     Text("Automatic").tag(NewTabPosition.auto)
                     Text("End").tag(NewTabPosition.end)
                     Text("After Current Tab").tag(NewTabPosition.afterCurrent)
                 }
-                // AUTO HIDE TABS PANEL (E19/A18 — otty `auto-hide-tabs-panel`, `tab-setting.png`): when to show
+                // AUTO HIDE TABS PANEL (E19/A18 — `auto-hide-tabs-panel`, `tab-setting.png`): when to show
                 // the vertical tabs panel. `.auto` collapses the sidebar when the active session has a single tab
                 // (WI-7 reads `SidebarAutoHidePolicy`); `.default`/`.always` never auto-hide. Cross-platform.
                 pickerRow(
@@ -1519,19 +1519,19 @@ private struct AppearanceSettingsTab: View {
                 timingFooter(.live)
             }
 
-            // WINDOW (E19/A29 — otty `window-size`, `tab-setting.png`). macOS-only: the initial dimensions are
+            // WINDOW (E19/A29 — `window-size`, `tab-setting.png`). macOS-only: the initial dimensions are
             // an `NSWindow` concept, so iOS (no resizable window) omits the section rather than ship a dead
             // toggle. Extracted to a computed property so the `Form` closure stays under `closure_body_length`.
             #if os(macOS)
             windowSection
             #endif
 
-            // THEME (E15 WI-6): the picker lists every built-in PLUS the scanned custom `.ottytheme`s
+            // THEME (E15 WI-6): the picker lists every built-in PLUS the scanned custom `.aislopdesktheme`s
             // (`ThemeCatalog.shared.customThemes`); picking a built-in writes `theme`/`themeDark` (clearing the
             // slot's custom slug), picking a custom writes `customLightSlug`/`customDarkSlug` so the slot points
             // at the scanned document. With "Use separated theme for dark mode" ON the OS appearance selects the
             // slot, so a Dark Theme picker appears below the toggle (`dark-mode-theme.png`).
-            ottyFormSection("Theme") {
+            slateFormSection("Theme") {
                 Picker("Theme", selection: themeSelectionBinding(forDarkSlot: false)) {
                     themeOptions
                 }
@@ -1545,7 +1545,7 @@ private struct AppearanceSettingsTab: View {
                 }
             }
 
-            // THEME EDITOR (E15 WI-7): otty's swatch grid (fg/bg + 16 ANSI dots) + chrome-region groups (Tabbar
+            // THEME EDITOR (E15 WI-7): a swatch grid (fg/bg + 16 ANSI dots) + chrome-region groups (Tabbar
             // OMITTED — vertical-tabs-only) + Duplicate / Edit Selected Theme / Open Themes Folder + the Import
             // Theme… dropdown, bound to the active `ThemeStore` theme. macOS hosts the editable ColorPickers +
             // filesystem actions; iOS shows the read-only swatch display (see `ThemeEditorView`).
@@ -1566,28 +1566,28 @@ private struct AppearanceSettingsTab: View {
             }
 
             if store.appearance.useSeparateDarkTheme ?? false {
-                ottyFormSection("Dark Theme") {
+                slateFormSection("Dark Theme") {
                     Picker("Dark Theme", selection: themeSelectionBinding(forDarkSlot: true)) {
                         themeOptions
                     }
                 }
             }
 
-            // FONT (E15 WI-8): otty's Font-Family scope tabs (Computed / Global / Light Theme / Dark Theme /
+            // FONT (E15 WI-8): the Font-Family scope tabs (Computed / Global / Light Theme / Dark Theme /
             // Fallback) + the "Aa" specimen combobox + Auto-match + per-face families + size + line-height +
             // ligatures + the bold/italic/underline/blink/blending controls (with deferred-apply notes), bound
             // to `store.terminal` and `store.appearance.themeFonts`. Replaces the old family-TextField +
             // size-Stepper Section (`font-setting.png` / `font-setting-bold.png`). See `FontSettingsView`.
             FontSettingsView(store: store)
 
-            // otty homes the FULL Cursor group (live preview + color / text-under / opacity / style / blink /
-            // animation) under Appearance (`cursor-style.png`). macOS hosts the rich `CursorPreviewView` (its
+            // The FULL Cursor group (live preview + color / text-under / opacity / style / blink /
+            // animation) lives under Appearance (`cursor-style.png`). macOS hosts the rich `CursorPreviewView` (its
             // color wells + preview caret are AppKit); the compact iOS sheet keeps the cross-platform Style +
             // Blink controls (`CursorPreviewView` is `#if os(macOS)`).
             #if os(macOS)
             CursorPreviewView(store: store)
             #else
-            ottyFormSection("Cursor") {
+            slateFormSection("Cursor") {
                 Picker("Style", selection: $store.terminal.cursorStyle) {
                     ForEach(TerminalPreferences.CursorStyle.allCases, id: \.self) { style in
                         Text(style.displayName).tag(style)
@@ -1601,16 +1601,16 @@ private struct AppearanceSettingsTab: View {
             }
             #endif
 
-            ottyFormSection("Chrome") {
+            slateFormSection("Chrome") {
                 Toggle("Show command dividers", isOn: $showBlockDividers)
             }
 
-            // DOCK ICON (E14/K5/K8 — M2): otty homes these under **Appearance** (Visual spec,
+            // DOCK ICON (E14/K5/K8 — M2): these live under **Appearance** (Visual spec,
             // terminal-features__progress-state.md). macOS-only (there is no Dock on iOS — the whole group is
             // `#if os(macOS)`, absent on iOS). Both toggles actuate ``DockProgressController`` via the pure
             // ``DockTintPolicy`` (read fire-time through `WorkspaceStore.dockTileModel`), so neither is dead UI.
             #if os(macOS)
-            ottyFormSection("Dock Icon") {
+            slateFormSection("Dock Icon") {
                 Toggle("Animate Icon on Progress", isOn: $dockIconAnimateProgress)
                 Toggle("Red Icon on Error", isOn: $dockIconErrorBadge)
             }
@@ -1701,14 +1701,14 @@ private struct AppearanceSettingsTab: View {
 
     // MARK: - E19/A29 Window section (macOS-only)
 
-    /// otty's WINDOW group (`tab-setting.png`): the `window-size` policy picker + the mode-specific steppers.
-    /// `.remember` restores the autosaved frame (the otty default); `.grid` sizes to `window-cols × window-rows`;
+    /// The WINDOW group (`tab-setting.png`): the `window-size` policy picker + the mode-specific steppers.
+    /// `.remember` restores the autosaved frame (the default); `.grid` sizes to `window-cols × window-rows`;
     /// `.frame` to `window-width-px × window-height-px`. The raw values are clamped by `WindowSizeMath` and
     /// applied ONCE per window open by the introspect glue (WI-4), so a later manual resize is never fought —
     /// the footer note says so. macOS-only (no resizable window on iOS).
     #if os(macOS)
     private var windowSection: some View {
-        ottyFormSection("Window") {
+        slateFormSection("Window") {
             pickerRow(
                 "Window Size",
                 "How new windows decide their initial dimensions.",
@@ -1729,15 +1729,15 @@ private struct AppearanceSettingsTab: View {
                 Stepper("Height: \(windowHeightPx) px", value: $windowHeightPx, in: 64...16384, step: 50)
             }
             Text("Applied to the next window opened.")
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
         }
     }
     #endif
 
     // MARK: - Row helpers
 
-    /// A dropdown row (bold title + optional gray subtext leading, a `.menu` picker trailing) — the otty
+    /// A dropdown row (bold title + optional gray subtext leading, a `.menu` picker trailing) — the
     /// label-with-subtitle picker used by Auto Hide Tabs Panel + Window Size. Binds DIRECTLY (these are plain
     /// `Defaults`, not libghostty config — no terminal-config rebuild), mirroring `ControlsSettingsTab.pickerRow`.
     private func pickerRow(
@@ -1754,14 +1754,14 @@ private struct AppearanceSettingsTab: View {
         }
     }
 
-    /// otty's row label: a bold title with an optional gray subtext beneath.
+    /// The row label layout: a bold title with an optional gray subtext beneath.
     private func rowLabel(_ title: String, _ subtitle: String?) -> some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Text(title)
             if let subtitle, !subtitle.isEmpty {
                 Text(subtitle)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -1794,7 +1794,7 @@ private struct AgentsSettingsTab: View {
     @Default(.autoSwitchLayouts) private var autoSwitchLayouts
     @Default(.recordClipboardHistory) private var recordClipboardHistory
 
-    // E13 WI-3: the otty "Agent Behaviour" toggles. badge×3 + notify×2 are fire-time `Defaults.Keys` (apply
+    // E13 WI-3: the "Agent Behaviour" toggles. badge×3 + notify×2 are fire-time `Defaults.Keys` (apply
     // live); prevent-sleep / resume-on-recovery ride the `AgentPreferences` sidecar (`$store.agent`, reconnect).
     @Default(.agentBadgeWhileProcessing) private var agentBadgeWhileProcessing
     @Default(.agentBadgeWhenComplete) private var agentBadgeWhenComplete
@@ -1802,7 +1802,7 @@ private struct AgentsSettingsTab: View {
     @Default(.agentNotifyTaskComplete) private var agentNotifyTaskComplete
     @Default(.agentNotifyAwaitInput) private var agentNotifyAwaitInput
 
-    /// The Agent-Behaviour section is greyed out until at least one integration is installed (otty parity) —
+    /// The Agent-Behaviour section is greyed out until at least one integration is installed —
     /// read off the install-card controller's state. `nil`/disconnected ⇒ not installed ⇒ greyed.
     private var behaviorEnabled: Bool { AgentSettingsCard.behaviourEnabled(agentHooks) }
 
@@ -1810,7 +1810,7 @@ private struct AgentsSettingsTab: View {
         Form {
             claudeCodeSection
 
-            ottyFormSection("Agent detection (host)") {
+            slateFormSection("Agent detection (host)") {
                 optionalBoolToggle("Foreground-process watch", $store.agent.agentDetect)
                 optionalBoolToggle("Claude Code hooks", $store.agent.agentHooks)
                 timingFooter(.reconnect)
@@ -1819,7 +1819,7 @@ private struct AgentsSettingsTab: View {
             agentBehaviorSection
             agentBehaviorHostSection
 
-            ottyFormSection("Behaviour") {
+            slateFormSection("Behaviour") {
                 Toggle("Auto-switch layouts on trigger app", isOn: $autoSwitchLayouts)
                 Toggle("Record clipboard history", isOn: $recordClipboardHistory)
                 timingFooter(.live)
@@ -1833,11 +1833,11 @@ private struct AgentsSettingsTab: View {
 
     // MARK: Agent Behaviour (E13 WI-3 — badge×3 + notify×2, greyed until an integration is installed)
 
-    /// The otty "Agent Behaviour" badge/notify toggles (apply LIVE). Greyed out until at least one
+    /// The "Agent Behaviour" badge/notify toggles (apply LIVE). Greyed out until at least one
     /// integration is installed (``behaviorEnabled``); Claude-only. The badge toggles drive the GLOBAL
     /// ``AgentBadgeGates`` default the sidebar applies (a per-pane override lives on the tab context-menu).
     private var agentBehaviorSection: some View {
-        ottyFormSection("Agent Behaviour") {
+        slateFormSection("Agent Behaviour") {
             Toggle("Badge While Processing", isOn: $agentBadgeWhileProcessing)
             Toggle("Badge When Task Completes", isOn: $agentBadgeWhenComplete)
             Toggle("Badge When Awaiting Input", isOn: $agentBadgeWhenAwaitingInput)
@@ -1845,8 +1845,8 @@ private struct AgentsSettingsTab: View {
             Toggle("Notify When Awaiting Input", isOn: $agentNotifyAwaitInput)
             if !behaviorEnabled {
                 Text("Install an integration above to configure agent behaviour.")
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.tertiary)
             }
             timingFooter(.live)
         }
@@ -1856,7 +1856,7 @@ private struct AgentsSettingsTab: View {
     /// The host-side Agent-Behaviour flags (apply on RECONNECT) — Prevent Sleep + Resume on Recovery, riding
     /// the ``AgentPreferences`` sidecar (`$store.agent`). Greyed alongside the live section; Claude-only.
     private var agentBehaviorHostSection: some View {
-        ottyFormSection("Agent Behaviour (host)") {
+        slateFormSection("Agent Behaviour (host)") {
             optionalBoolToggle("Prevent Sleep While Processing", $store.agent.preventSleep)
             optionalBoolToggle("Resume on Recovery", $store.agent.resumeOnRecovery)
             timingFooter(.reconnect)
@@ -1873,7 +1873,7 @@ private struct AgentsSettingsTab: View {
     @ViewBuilder
     private var claudeCodeSection: some View {
         let state = AgentSettingsCard.installState(agentHooks)
-        ottyFormSection("Claude Code") {
+        slateFormSection("Claude Code") {
             LabeledContent {
                 installButtons(state)
             } label: {
@@ -1887,16 +1887,16 @@ private struct AgentsSettingsTab: View {
 
             if state == .disconnected || state == .unknown {
                 Text("Connect a session to manage hooks")
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.tertiary)
             }
 
             // Install/uninstall write the host file LIVE, but Claude only re-reads its settings.json on the
             // next launch — so this is an agent-restart caveat, not a host-reconnect-gated sidecar flag (hence
             // a plain caption, not the `.reconnect` "Applies on reconnect" chip, which would mislead).
             Text("Hooks take effect after the agent restarts.")
-                .font(.system(size: Otty.Typeface.small))
-                .foregroundStyle(Otty.Text.tertiary)
+                .font(.system(size: Slate.Typeface.small))
+                .foregroundStyle(Slate.Text.tertiary)
         }
     }
 
@@ -1904,7 +1904,7 @@ private struct AgentsSettingsTab: View {
     /// flight a small spinner replaces the buttons; while disconnected/unknown the Install button shows
     /// disabled (honest — never a dead-looking enabled button with no backing pane).
     private func installButtons(_ state: AgentHooksController.InstallState) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             switch state {
             case .installed:
                 Button("Installed") {}.disabled(true)
@@ -1928,26 +1928,26 @@ private struct AgentsSettingsTab: View {
         switch state {
         case .installed:
             Label("Installed", systemImage: "checkmark")
-                .foregroundStyle(Otty.Status.ok)
+                .foregroundStyle(Slate.Status.ok)
         case .notInstalled:
-            Text("Not Installed").foregroundStyle(Otty.Text.secondary)
+            Text("Not Installed").foregroundStyle(Slate.Text.secondary)
         case .working:
-            Text("Working…").foregroundStyle(Otty.Text.secondary)
+            Text("Working…").foregroundStyle(Slate.Text.secondary)
         case .disconnected,
              .unknown:
-            Text("—").foregroundStyle(Otty.Text.tertiary)
+            Text("—").foregroundStyle(Slate.Text.tertiary)
         }
     }
 
-    /// otty's row label: a bold title with an optional gray subtext beneath (mirrors the Appearance tab's
+    /// The row label layout: a bold title with an optional gray subtext beneath (mirrors the Appearance tab's
     /// `rowLabel`, kept local so the Agents card composes without widening that struct's visibility).
     private func rowLabel(_ title: String, _ subtitle: String?) -> some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Text(title)
             if let subtitle, !subtitle.isEmpty {
                 Text(subtitle)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -2010,8 +2010,8 @@ private struct KeybindingsSettingsTab: View {
 
 /// The power-user raw `AISLOPDESK_*` override box, folded LAST into the env overlay (so a typed raw key
 /// beats the matching typed pref). A precedence note makes clear a REAL process env var still wins over the
-/// whole overlay. The Video HOST flags (QP/FEC/pacer/sharpen) have no otty section, so they fold in here as
-/// a "Video (host)" sub-section — real functionality, reconnect-tagged + symmetric-FEC-warned.
+/// whole overlay. The Video HOST flags (QP/FEC/pacer/sharpen) have no dedicated section, so they fold in here
+/// as a "Video (host)" sub-section — real functionality, reconnect-tagged + symmetric-FEC-warned.
 private struct AdvancedSettingsTab: View {
     @Bindable var store: PreferencesStore
     /// The shared navigator selection — threaded into the All-Settings list so a ✎ jump can repoint it.
@@ -2039,22 +2039,22 @@ private struct AdvancedSettingsTab: View {
             // iOS settings sheet (WI-5) omits them; the cross-platform All-Settings list + Workspace transfer
             // below still reach iOS.
             #if os(macOS)
-            ottyFormSection("Raw overrides") {
+            slateFormSection("Raw overrides") {
                 Text(
                     "One AISLOPDESK_KEY=value per line. Folded last, so a key here overrides the matching typed setting.",
                 )
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
                 TextEditor(text: $text)
-                    .font(.system(size: Otty.Typeface.footnote, design: .monospaced))
+                    .font(.system(size: Slate.Typeface.footnote, design: .monospaced))
                     .frame(minHeight: 120)
                     .onChange(of: text) { _, new in commit(new) }
-                HStack(spacing: Otty.Metric.space1) {
+                HStack(spacing: Slate.Metric.space1) {
                     Image(systemSymbol: .infoCircle)
                     Text("A real environment variable set on the process still wins over any value here.")
                 }
-                .font(.system(size: Otty.Typeface.small))
-                .foregroundStyle(Otty.Text.tertiary)
+                .font(.system(size: Slate.Typeface.small))
+                .foregroundStyle(Slate.Text.tertiary)
             }
 
             VideoHostSettingsView(store: store)
@@ -2082,12 +2082,12 @@ private struct AdvancedSettingsTab: View {
 
     // MARK: - Privileges (E14/K11-K12 — title gates + OSC-52 master + read/write tri-state)
 
-    /// otty's privilege surface (Settings → Advanced, `terminal-features__notifications.md`): the title gates
+    /// The privilege surface (Settings → Advanced, `terminal-features__notifications.md`): the title gates
     /// + the OSC-52 master switch + the read/write tri-state pickers. The pickers are DISABLED while the
     /// master is off (the whole OSC-52 path resolves to Deny then). Title Report is a documented ceiling — it
     /// persists/surfaces but does not yet actuate (the libghostty fork owns XTWINOPS; see docs/DECISIONS.md).
     private var privilegesSection: some View {
-        ottyFormSection("Privileges") {
+        slateFormSection("Privileges") {
             Toggle(isOn: $titleShellControlled) {
                 privilegeLabel(
                     "Title — Shell Controlled",
@@ -2137,13 +2137,13 @@ private struct AdvancedSettingsTab: View {
         .disabled(!clipboardShellControlled)
     }
 
-    /// otty's row label: a bold title with a gray subtext beneath.
+    /// The row label layout: a bold title with a gray subtext beneath.
     private func privilegeLabel(_ title: String, _ subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Text(title)
             Text(subtitle)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -2168,9 +2168,9 @@ private struct AdvancedSettingsTab: View {
         #endif
     }
 
-    // MARK: - Config File (otty settings-import-export parity)
+    // MARK: - Config File (settings import/export)
 
-    /// otty Settings → Advanced → CONFIG FILE group: the resolved config path + "Open Config File" +
+    /// Settings → Advanced → CONFIG FILE group: the resolved config path + "Open Config File" +
     /// "Reload Config". macOS-only — the config file lives in the user's `~/.config` directory tree,
     /// which is inaccessible on iOS (no user-visible filesystem). "Open Config File" creates the parent
     /// directory and the file (if absent) then opens it in the default text editor so the user lands in
@@ -2178,17 +2178,17 @@ private struct AdvancedSettingsTab: View {
     /// palette's "Reload Config" row: `reapplyLiveSettings()` + the config-reload broadcast.
     #if os(macOS)
     private var configFileSection: some View {
-        ottyFormSection("Config File") {
+        slateFormSection("Config File") {
             LabeledContent("Config path") {
                 // `resolvePath(override:nil)` respects `AISLOPDESK_CONFIG_FILE` env override so the
                 // displayed path always matches the file the app actually honours (not just the XDG default).
                 Text(CLIConfig.resolvePath(override: nil))
-                    .font(.system(size: Otty.Typeface.footnote, design: .monospaced))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote, design: .monospaced))
+                    .foregroundStyle(Slate.Text.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            HStack(spacing: Otty.Metric.space3) {
+            HStack(spacing: Slate.Metric.space3) {
                 Button("Open Config File") {
                     let path = CLIConfig.resolvePath(override: nil)
                     let url = URL(fileURLWithPath: path)
@@ -2242,7 +2242,7 @@ private struct AdvancedSettingsTab: View {
 
 // MARK: - Video (host) sub-section — folded into Advanced
 
-/// The Video / FEC / pacer host flags, folded into Advanced (otty has no Video section). These are read by
+/// The Video / FEC / pacer host flags, folded into Advanced (there is no dedicated Video section). These are read by
 /// the HOST daemon at launch and shipped via the `video-prefs.json` sidecar, so they are labelled "applies
 /// on reconnect"; the SYMMETRIC FEC keys add a "set on both ends" warning. The client-side `sharpen` is the
 /// one live field. Body returns a `Group` of `Section`s so the host `Form` (Advanced) renders them inline.
@@ -2251,25 +2251,25 @@ private struct VideoHostSettingsView: View {
 
     var body: some View {
         Group {
-            ottyFormSection("Video · Quality (host)") {
+            slateFormSection("Video · Quality (host)") {
                 optionalIntStepper("Sharp QP", $store.video.qpSharp, range: 1...51, default: 26)
                 optionalIntStepper("Coarse QP", $store.video.qpCoarse, range: 1...51, default: 40)
                 timingFooter(.reconnect)
             }
 
-            ottyFormSection("Video · Forward Error Correction (symmetric)") {
+            slateFormSection("Video · Forward Error Correction (symmetric)") {
                 optionalIntStepper("Parity (m)", $store.video.fecM, range: 1...8, default: 1)
                 optionalIntStepper("Group size (k)", $store.video.fecK, range: 1...32, default: 8)
-                HStack(spacing: Otty.Metric.space1) {
+                HStack(spacing: Slate.Metric.space1) {
                     Image(systemSymbol: .exclamationmarkTriangleFill)
                     Text("FEC must be set IDENTICALLY on both ends or the host and client disagree.")
                 }
-                .font(.system(size: Otty.Typeface.small))
-                .foregroundStyle(Otty.Status.warn)
+                .font(.system(size: Slate.Typeface.small))
+                .foregroundStyle(Slate.Status.warn)
                 timingFooter(.reconnect)
             }
 
-            ottyFormSection("Video · Pacer (host)") {
+            slateFormSection("Video · Pacer (host)") {
                 Picker("Mode", selection: pacerBinding) {
                     Text("Default (deadline)").tag(VideoPreferences.Pacer?.none)
                     Text("Deadline").tag(Optional(VideoPreferences.Pacer.deadline))
@@ -2278,7 +2278,7 @@ private struct VideoHostSettingsView: View {
                 timingFooter(.reconnect)
             }
 
-            ottyFormSection("Video · Client render") {
+            slateFormSection("Video · Client render") {
                 optionalDoubleSlider("Sharpen", $store.video.sharpen, range: 0...2, default: 0)
                 timingFooter(.live)
             }
@@ -2302,10 +2302,10 @@ private struct VideoHostSettingsView: View {
             if let value = binding.wrappedValue {
                 Stepper("\(value)", value: nonOptional(binding, default: def), in: range)
                     .labelsHidden()
-                Text("\(value)").foregroundStyle(Otty.Text.secondary)
+                Text("\(value)").foregroundStyle(Slate.Text.secondary)
             } else {
-                Text("default").foregroundStyle(Otty.Text.tertiary)
-                    .font(.system(size: Otty.Typeface.footnote))
+                Text("default").foregroundStyle(Slate.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
             }
         }
     }
@@ -2313,7 +2313,7 @@ private struct VideoHostSettingsView: View {
     private func optionalDoubleSlider(
         _ title: String, _ binding: Binding<Double?>, range: ClosedRange<Double>, default def: Double,
     ) -> some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Toggle(isOn: setBinding(binding, default: def)) { Text(title) }
                 .toggleStyle(.switch)
             if binding.wrappedValue != nil {

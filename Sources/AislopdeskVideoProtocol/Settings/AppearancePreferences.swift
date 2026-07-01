@@ -1,6 +1,6 @@
 import Foundation
 
-/// CLIENT-chrome appearance prefs (WS-D, D2) — the otty theme + density tier the GUI client renders.
+/// CLIENT-chrome appearance prefs (WS-D, D2) — the theme + density tier the GUI client renders.
 ///
 /// CRITICAL invariant (golden-safety): unlike ``VideoPreferences`` / ``AgentPreferences``, appearance is
 /// PURE client chrome. It is NEVER routed through ``EnvBridge/toEnv(_:)``, never folded into
@@ -20,9 +20,9 @@ import Foundation
 /// built-in, which still follows the OS by construction). With it ON the OS appearance selects the slot
 /// (light → light slot, dark → dark slot), re-resolved LIVE by ``ThemeStore``'s OS-appearance observer. A
 /// non-empty per-slot `custom…Slug` overrides that slot's built-in ``ThemeChoice`` (the slot then points at a
-/// scanned `.ottytheme`). The pure picker is ``ThemeResolution/activeRef(appearance:osIsDark:)``.
+/// scanned `.aislopdesktheme`). The pure picker is ``ThemeResolution/activeRef(appearance:osIsDark:)``.
 public struct AppearancePreferences: Codable, Sendable, Equatable {
-    /// The active otty theme (the LIGHT / single / primary slot). `nil` ⇒ unset ⇒ keep the compile-time
+    /// The active theme (the LIGHT / single / primary slot). `nil` ⇒ unset ⇒ keep the compile-time
     /// default (Monokai Pro Classic).
     public var theme: ThemeChoice?
     /// The density tier rawValue (mirrors ``SettingsKey/density``). `nil` ⇒ unset ⇒ leave the key untouched.
@@ -64,7 +64,7 @@ public struct AppearancePreferences: Codable, Sendable, Equatable {
     }
 }
 
-/// The user-selectable otty theme. `.system` follows the OS appearance (→ Monokai Pro Classic dark /
+/// The user-selectable theme. `.system` follows the OS appearance (→ Monokai Pro Classic dark /
 /// Monokai Pro Light); the Monokai Pro filters and the legacy `.paper` / `.dark` pin a fixed theme. A
 /// `String`-raw `Codable` enum so a stale / unknown persisted value decode-fails the whole
 /// ``AppearancePreferences`` blob to its all-`nil` default (validate-then-default, no migration). A `nil`
@@ -78,16 +78,16 @@ public enum ThemeChoice: String, Codable, Sendable, Equatable, CaseIterable {
     case monokaiProMachine
     case monokaiProRistretto
     case monokaiProSpectrum
-    // Legacy otty palettes — still selectable.
+    // Legacy palettes — still selectable.
     case paper
     case dark
 }
 
 public extension ThemeChoice {
-    /// The stable ``OttyTheme`` `id` this choice pins to, or `nil` for ``system`` (which FOLLOWS the OS — the
+    /// The stable ``SlateTheme`` `id` this choice pins to, or `nil` for ``system`` (which FOLLOWS the OS — the
     /// resolver substitutes the dark/light default per `osIsDark`). Used by ``ThemeResolution`` to produce a
-    /// ``ThemeRef`` WITHOUT importing the SwiftUI `OttyTheme` (the leaf can't see ClientUI). The id strings
-    /// MIRROR `OttyTheme.id`; the end-to-end `ThemeStoreTests` round-trip (ref → `OttyTheme`) pins them so a
+    /// ``ThemeRef`` WITHOUT importing the SwiftUI `SlateTheme` (the leaf can't see ClientUI). The id strings
+    /// MIRROR `SlateTheme.id`; the end-to-end `ThemeStoreTests` round-trip (ref → `SlateTheme`) pins them so a
     /// drift between the two halves is caught.
     var builtinID: String? {
         switch self {

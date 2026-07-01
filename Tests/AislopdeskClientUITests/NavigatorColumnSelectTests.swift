@@ -103,7 +103,7 @@ final class NavigatorColumnSelectTests: XCTestCase {
         // The badge must be gone — `clearAgentBadge` settles `.done` → `.idle`.
         XCTAssertEqual(
             store.agentStatus(for: pane), .idle,
-            "selecting a tab row auto-clears the agent badge (otty: 'Badge auto-clears on tab focus')",
+            "selecting a tab row auto-clears the agent badge (badge auto-clears on tab focus)",
         )
     }
 
@@ -113,7 +113,7 @@ final class NavigatorColumnSelectTests: XCTestCase {
     /// tabs via ⌘1–⌘9 (which routes `selectTabNumber → selectTab` WITHOUT going through
     /// `NavigatorColumn.selectRow`) left the `.done` badge intact — failing the `.idle` assertion below.
     /// With the fix `selectTab` itself clears badges so keyboard-driven tab switches are equivalent to
-    /// sidebar-click tab switches (otty: badge auto-clears whenever the tab gains focus).
+    /// sidebar-click tab switches: the badge auto-clears whenever the tab gains focus.
     func testKeyboardTabSwitchClearsBadge() throws {
         let store = makeStore()
 

@@ -25,7 +25,7 @@ final class TerminalConfigBuilderTests: XCTestCase {
         XCTAssertEqual(map["font-size"], "13") // integral → no decimal
         XCTAssertEqual(map["font-style"], "regular")
         XCTAssertEqual(map["theme"], "Aislopdesk Dark")
-        XCTAssertEqual(map["background"], "FCFBF9") // otty Paper — overrides the (unbundled) named theme
+        XCTAssertEqual(map["background"], "FCFBF9") // default light background — overrides the (unbundled) named theme
         XCTAssertEqual(map["foreground"], "37352F")
         XCTAssertEqual(map["cursor-style"], "block")
         // The default cursor blink is the TRI-STATE `.default` (defer to DEC mode 12), which SKIPS the
@@ -70,7 +70,7 @@ final class TerminalConfigBuilderTests: XCTestCase {
         }
     }
 
-    /// otty's four cursor styles round-trip through `cursor-style`, including the native libghostty
+    /// The four cursor styles round-trip through `cursor-style`, including the native libghostty
     /// `block_hollow` (`terminal/cursor.zig`). FAILS before the fix: the enum lacked `blockHollow`.
     func testBlockHollowCursorStyleEmitsNativeToken() {
         let map = parse(TerminalConfigBuilder.string(for: TerminalPreferences(cursorStyle: .blockHollow)))
@@ -115,7 +115,7 @@ final class TerminalConfigBuilderTests: XCTestCase {
     }
 
     func testThemeBackgroundForegroundOverrideWins() {
-        // The theme-driven override REPLACES the pref's own bg/fg — the otty flat-design seam that pins the
+        // The theme-driven override REPLACES the pref's own bg/fg — the flat-design seam that pins the
         // terminal cells to the active chrome palette.
         let overridden = parse(TerminalConfigBuilder.string(
             for: TerminalPreferences(background: "FCFBF9", foreground: "37352F"),
@@ -288,7 +288,7 @@ final class TerminalConfigBuilderTests: XCTestCase {
         XCTAssertFalse(config.contains("font-family"), "an empty primary suppresses the whole font-family chain")
     }
 
-    /// The explicit per-face families surface ONLY when Auto-match is OFF (otty shows them only then).
+    /// The explicit per-face families surface ONLY when Auto-match is OFF.
     func testPerFaceFamiliesEmitOnlyWhenAutoMatchOff() {
         // Auto-match ON (default): the per-face families are NOT emitted even when set.
         let on = parse(TerminalConfigBuilder.string(for: TerminalPreferences(

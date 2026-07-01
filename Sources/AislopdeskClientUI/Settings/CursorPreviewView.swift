@@ -1,6 +1,6 @@
-// CursorPreviewView — the otty Appearance → Cursor section (E8 WI-3).
+// CursorPreviewView — the Appearance → Cursor section (E8 WI-3).
 //
-// Faithful clone of `docs/otty-clone/screenshots/cursor-style.png`: a "CURSOR" section that opens with a
+// Follows the design spec `docs/ui-shell/screenshots/cursor-style.png`: a "CURSOR" section that opens with a
 // one-line description + a LIVE PREVIEW card (the `john@doe-pc$ git commit -m "│"` mock that re-renders the
 // caret as the user tunes it), then the cursor-color / text-color-under-cursor color wells, the opacity
 // slider, and the Style / Blink / Animation dropdowns. Every control binds `store.terminal` (a
@@ -11,7 +11,7 @@
 //
 // macOS-only: `ColorPicker` + the `NSColor` hex glue are AppKit. The Appearance tab keeps a simpler
 // Style/Blink section on iOS (see `AppearanceSettingsTab`). The pure hex helper (`CursorColorHex`) is
-// cross-platform + headlessly testable (`CursorColorHexTests`). Otty.* tokens only (no raw font/radius
+// cross-platform + headlessly testable (`CursorColorHexTests`). Slate.* tokens only (no raw font/radius
 // literals — `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
@@ -27,7 +27,7 @@ import SwiftUI
 /// `ColorPicker` lives in the macOS-only `Color` extension below and is code-reviewed, not unit-tested.
 enum CursorColorHex {
     /// Parse a 6-hex RGB string (no leading `#`) into 0…255 channels. Returns `nil` for an empty string
-    /// (otty's "Default" = follow the theme), the wrong length, or any non-hex character — the caller then
+    /// (an empty string means "Default" = follow the theme), the wrong length, or any non-hex character — the caller then
     /// falls back to the effective default colour. Case-insensitive.
     static func rgb(_ hex: String) -> (r: Int, g: Int, b: Int)? {
         let trimmed = hex.trimmingCharacters(in: .whitespaces)
@@ -88,10 +88,10 @@ struct CursorPreviewView: View {
     @State private var blinkVisible = true
 
     var body: some View {
-        ottyFormSection("Cursor") {
+        slateFormSection("Cursor") {
             Text("Live preview of your cursor color, style, opacity and blink behavior.")
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
 
             previewCard
 
@@ -107,9 +107,9 @@ struct CursorPreviewView: View {
             )
 
             LabeledContent("Cursor opacity") {
-                HStack(spacing: Otty.Metric.space2) {
+                HStack(spacing: Slate.Metric.space2) {
                     Text(String(format: "%.2f", store.terminal.cursorOpacity))
-                        .foregroundStyle(Otty.Text.secondary)
+                        .foregroundStyle(Slate.Text.secondary)
                         .monospacedDigit()
                     Slider(value: $store.terminal.cursorOpacity, in: 0...1)
                 }
@@ -130,11 +130,11 @@ struct CursorPreviewView: View {
                 .labelsHidden()
                 .fixedSize()
             } label: {
-                VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                     Text("Cursor blink style")
                     Text("The `Default` option defers to DEC mode 12 to determine blinking state.")
-                        .font(.system(size: Otty.Typeface.footnote))
-                        .foregroundStyle(Otty.Text.secondary)
+                        .font(.system(size: Slate.Typeface.footnote))
+                        .foregroundStyle(Slate.Text.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -147,13 +147,13 @@ struct CursorPreviewView: View {
                 .labelsHidden()
                 .fixedSize()
             } label: {
-                VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                     Text("Cursor Animation")
                     Text("Smooth would glide the caret on same-row moves and overshoot on click/focus — "
                         + "preference saved, but deferred: the renderer exposes no cursor-animation hook, so "
                         + "the caret does not yet animate.")
-                        .font(.system(size: Otty.Typeface.footnote))
-                        .foregroundStyle(Otty.Text.secondary)
+                        .font(.system(size: Slate.Typeface.footnote))
+                        .foregroundStyle(Slate.Text.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -163,29 +163,29 @@ struct CursorPreviewView: View {
     // MARK: Live preview
 
     /// The `john@doe-pc$ git commit -m "│"` mock — a monospaced prompt line with the live caret between the
-    /// quotes, on the inset element surface (the otty preview card). Per `cursor-style.png`'s visual spec the
+    /// quotes, on the inset element surface (the preview card). Per `cursor-style.png`'s visual spec the
     /// prompt colours are `john` in green, `@doe-pc` in muted blue-gray (the host run, distinct from the user),
-    /// and `$ git commit -m "` in the default foreground — so the host part maps to the blue `Otty.Status.info`
+    /// and `$ git commit -m "` in the default foreground — so the host part maps to the blue `Slate.Status.info`
     /// token (the closest theme-aware blue-gray), NOT the same green as `john`.
     private var previewCard: some View {
         HStack(spacing: 0) {
-            Text("john").foregroundStyle(Otty.Status.ok)
-            Text("@doe-pc").foregroundStyle(Otty.Status.info)
-            Text("$ git commit -m \"").foregroundStyle(Otty.Text.primary)
+            Text("john").foregroundStyle(Slate.Status.ok)
+            Text("@doe-pc").foregroundStyle(Slate.Status.info)
+            Text("$ git commit -m \"").foregroundStyle(Slate.Text.primary)
             cursorGlyph
-            Text("\"").foregroundStyle(Otty.Text.primary)
+            Text("\"").foregroundStyle(Slate.Text.primary)
         }
-        .font(.system(size: Otty.Typeface.body, design: .monospaced))
-        .padding(.vertical, Otty.Metric.space2)
-        .padding(.horizontal, Otty.Metric.space3)
+        .font(.system(size: Slate.Typeface.body, design: .monospaced))
+        .padding(.vertical, Slate.Metric.space2)
+        .padding(.horizontal, Slate.Metric.space3)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusCard, style: .continuous)
-                .fill(Otty.Surface.element),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusCard, style: .continuous)
+                .fill(Slate.Surface.element),
         )
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusCard, style: .continuous)
-                .strokeBorder(Otty.Line.subtle, lineWidth: 1),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusCard, style: .continuous)
+                .strokeBorder(Slate.Line.subtle, lineWidth: 1),
         )
     }
 
@@ -218,15 +218,15 @@ struct CursorPreviewView: View {
     /// The approximate monospace cell for the preview font (advance ≈ 0.62 em, line height ≈ 1.3 em). A
     /// preview-only estimate — the real surface metrics come from libghostty.
     private var previewCellSize: (width: CGFloat, height: CGFloat) {
-        let em = Otty.Typeface.body
+        let em = Slate.Typeface.body
         return (width: em * 0.62, height: em * 1.3)
     }
 
-    /// The effective caret colour: the pinned `cursorColor`, else the foreground (otty's "Default").
+    /// The effective caret colour: the pinned `cursorColor`, else the foreground ("Default").
     private var cursorPreviewColor: Color {
         Color(cursorHex: store.terminal.cursorColor)
             ?? Color(cursorHex: store.terminal.foreground)
-            ?? Otty.Text.primary
+            ?? Slate.Text.primary
     }
 
     /// Whether the cosmetic preview caret blinks: `.on` (and `.default`, which defers to DEC mode 12 — the
@@ -254,7 +254,7 @@ struct CursorPreviewView: View {
         Binding(
             get: {
                 let hex = store.terminal[keyPath: keyPath]
-                return Color(cursorHex: hex) ?? Color(cursorHex: fallbackHex) ?? Otty.Text.primary
+                return Color(cursorHex: hex) ?? Color(cursorHex: fallbackHex) ?? Slate.Text.primary
             },
             set: { store.terminal[keyPath: keyPath] = $0.cursorHexString },
         )

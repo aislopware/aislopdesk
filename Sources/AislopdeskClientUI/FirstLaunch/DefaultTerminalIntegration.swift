@@ -1,6 +1,6 @@
 // E20 WI-9 (ES-E20-4) — the macOS "Set as Default Terminal" integration (LOCAL OS handler only).
 //
-// otty's first-launch step 2 (`spec/getting-started__first-launch.md` §2) has two integration points:
+// First-launch step 2 (`spec/getting-started__first-launch.md` §2) has two integration points:
 //   1. The SYSTEM default — register the app as the OS handler for terminal URL schemes (`ssh://`, `man://`,
 //      `telnet://`) and shell-script content types (`.command`/`.sh`/`.tool`). This IS implementable on the
 //      LOCAL client Mac and lives here (the modern non-deprecated `NSWorkspace.setDefaultApplication` API).
@@ -19,7 +19,7 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
-/// LOCAL "Set as Default Terminal" actions (otty step 2 system-default). `@MainActor` because it reads
+/// LOCAL "Set as Default Terminal" actions (first-launch step 2 system-default). `@MainActor` because it reads
 /// `Bundle.main` + drives `NSWorkspace`; the registrations are best-effort and independent.
 @preconcurrency
 @MainActor
@@ -66,15 +66,15 @@ public enum DefaultTerminalIntegration {
         return handler.standardizedFileURL.path == Bundle.main.bundleURL.standardizedFileURL.path
     }
 
-    // MARK: - System Settings deep-links (otty "Open System Settings" buttons)
+    // MARK: - System Settings deep-links (the "Open System Settings" buttons)
 
-    /// Open System Settings → Keyboard → Keyboard Shortcuts → Services (otty Finder Integration row — where
+    /// Open System Settings → Keyboard → Keyboard Shortcuts → Services (the Finder Integration row — where
     /// the "Open in Aislopdesk" Services item is enabled / rebound). Best-effort deep-link.
     public static func openFinderServicesSettings() {
         open("x-apple.systempreferences:com.apple.preference.keyboard?Shortcuts")
     }
 
-    /// Open System Settings → Privacy & Security → Full Disk Access (otty Full Disk Access row).
+    /// Open System Settings → Privacy & Security → Full Disk Access (the Full Disk Access row).
     public static func openFullDiskAccessSettings() {
         open("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
     }

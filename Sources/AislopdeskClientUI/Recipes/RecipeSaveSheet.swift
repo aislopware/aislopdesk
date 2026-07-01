@@ -1,5 +1,5 @@
 // RecipeSaveSheet — the ⌘S "Save Recipe" modal (E16 WI-10, spec `customization__custom-commands.md` §Save
-// Layout / §Custom Commands). A self-contained otty-card sheet that snapshots the live tree to a `.ottyrecipe`
+// Layout / §Custom Commands). A self-contained card sheet that snapshots the live tree to a `.aislopdeskrecipe`
 // via the store's `saveRecipe(scope:content:name:portable:commands:)` glue (WI-8). It owns only its form state;
 // the tree snapshot + file IO + self-saved-trust recording all live in `WorkspaceStore+Recipes`.
 //
@@ -11,7 +11,7 @@
 //     double-click-to-edit text (spec §Custom Commands), Save enabled only when ≥ 1 is ticked.
 // Footer: a plain Cancel + a solid-accent Save. Cross-platform (macOS ⌘S + iOS File-menu equivalent).
 //
-// Otty.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
+// Slate.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -39,7 +39,7 @@ struct RecipeSaveSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space4) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space4) {
             header
             nameField
             scopePicker
@@ -51,14 +51,14 @@ struct RecipeSaveSheet: View {
             }
             footer
         }
-        .padding(Otty.Metric.space4)
+        .padding(Slate.Metric.space4)
         #if os(macOS)
             .frame(width: 520)
         #else
             .frame(maxWidth: 520)
         #endif
-            .background(Otty.Surface.card)
-            .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard))
+            .background(Slate.Surface.card)
+            .clipShape(RoundedRectangle(cornerRadius: Slate.Metric.radiusCard))
             .onAppear(perform: loadCommands)
             .onChange(of: scope) { _, newScope in if newScope == .commands { loadCommands() } }
     }
@@ -68,8 +68,8 @@ struct RecipeSaveSheet: View {
     private var header: some View {
         HStack {
             Text("Save Recipe")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
             Spacer(minLength: 0)
             closeButton
         }
@@ -78,8 +78,8 @@ struct RecipeSaveSheet: View {
     private var closeButton: some View {
         Button { dismiss() } label: {
             Image(systemName: "xmark")
-                .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                .foregroundStyle(Otty.Text.tertiary)
+                .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                .foregroundStyle(Slate.Text.tertiary)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -89,14 +89,14 @@ struct RecipeSaveSheet: View {
     // MARK: Name
 
     private var nameField: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             label("Name")
             TextField("Recipe name", text: $name)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent)
-                .padding(Otty.Metric.space2)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.primary)
+                .tint(Slate.State.accent)
+                .padding(Slate.Metric.space2)
                 .background(plate)
         }
     }
@@ -104,7 +104,7 @@ struct RecipeSaveSheet: View {
     // MARK: Scope
 
     private var scopePicker: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             label("Scope")
             Picker("Scope", selection: $scope) {
                 Text("Current Tab").tag(RecipeScope.tab)
@@ -119,7 +119,7 @@ struct RecipeSaveSheet: View {
     // MARK: Content (tab / window scope)
 
     private var contentSection: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space2) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space2) {
             label("Content")
             contentRow(.layoutOnly, "Layout Only", "Save the tabs, splits, and working directories.")
             contentRow(.includeCommands, "Include Commands", "Also capture recent commands to replay on open.")
@@ -147,36 +147,36 @@ struct RecipeSaveSheet: View {
 
     private var portableToggle: some View {
         Toggle(isOn: $portable) {
-            VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+            VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                 Text("Make paths portable")
-                    .font(.system(size: Otty.Typeface.base, weight: .medium))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.base, weight: .medium))
+                    .foregroundStyle(Slate.Text.primary)
                 Text("Replace your home and current folder with template variables so the recipe travels.")
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.tertiary)
             }
         }
-        .tint(Otty.State.accent)
+        .tint(Slate.State.accent)
     }
 
     // MARK: Commands (commands scope)
 
     private var commandsSection: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space2) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space2) {
             HStack {
                 label("Commands")
                 Spacer(minLength: 0)
                 if !commandRows.isEmpty {
                     Button(allTicked ? "Deselect All" : "Select All") { toggleAll() }
                         .buttonStyle(.plain)
-                        .font(.system(size: Otty.Typeface.footnote))
-                        .foregroundStyle(Otty.State.accent)
+                        .font(.system(size: Slate.Typeface.footnote))
+                        .foregroundStyle(Slate.State.accent)
                 }
             }
             if commandRows.isEmpty {
                 Text("No recent commands. Run a command (with shell integration) to capture it here.")
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
             } else {
                 ForEach($commandRows) { $row in
                     commandRow($row)
@@ -187,11 +187,11 @@ struct RecipeSaveSheet: View {
 
     private func commandRow(_ row: Binding<CommandRow>) -> some View {
         let id = row.wrappedValue.id
-        return HStack(spacing: Otty.Metric.space2) {
+        return HStack(spacing: Slate.Metric.space2) {
             Button { row.wrappedValue.ticked.toggle() } label: {
                 Image(systemName: row.wrappedValue.ticked ? "checkmark.square.fill" : "square")
-                    .font(.system(size: Otty.Metric.iconSize))
-                    .foregroundStyle(row.wrappedValue.ticked ? Otty.State.accent : Otty.Text.icon)
+                    .font(.system(size: Slate.Metric.iconSize))
+                    .foregroundStyle(row.wrappedValue.ticked ? Slate.State.accent : Slate.Text.icon)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -201,21 +201,21 @@ struct RecipeSaveSheet: View {
             if editingRowID == id {
                 TextField("", text: row.text)
                     .textFieldStyle(.plain)
-                    .font(.system(size: Otty.Typeface.body).monospaced())
-                    .foregroundStyle(Otty.Text.primary)
-                    .tint(Otty.State.accent)
+                    .font(.system(size: Slate.Typeface.body).monospaced())
+                    .foregroundStyle(Slate.Text.primary)
+                    .tint(Slate.State.accent)
                     .focused($focusedRowID, equals: id)
                     .onSubmit { editingRowID = nil }
-                    .padding(Otty.Metric.space1)
+                    .padding(Slate.Metric.space1)
                     .background(plate)
             } else {
                 Text(row.wrappedValue.text.isEmpty ? " " : row.wrappedValue.text)
-                    .font(.system(size: Otty.Typeface.body).monospaced())
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.body).monospaced())
+                    .foregroundStyle(Slate.Text.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(Otty.Metric.space1)
+                    .padding(Slate.Metric.space1)
                     .contentShape(Rectangle())
                     .onTapGesture(count: 2) {
                         editingRowID = id
@@ -234,14 +234,14 @@ struct RecipeSaveSheet: View {
     // MARK: Footer
 
     private var footer: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Spacer(minLength: 0)
             Button("Cancel") { dismiss() }
                 .buttonStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
-                .padding(.horizontal, Otty.Metric.space3)
-                .padding(.vertical, Otty.Metric.space1)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
+                .padding(.horizontal, Slate.Metric.space3)
+                .padding(.vertical, Slate.Metric.space1)
             saveButton
         }
     }
@@ -249,13 +249,13 @@ struct RecipeSaveSheet: View {
     private var saveButton: some View {
         Button(action: save) {
             Text("Save")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Surface.card)
-                .padding(.horizontal, Otty.Metric.space3)
-                .padding(.vertical, Otty.Metric.space1)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Surface.card)
+                .padding(.horizontal, Slate.Metric.space3)
+                .padding(.vertical, Slate.Metric.space1)
                 .background(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                        .fill(saveDisabled ? Otty.State.accentMuted : Otty.State.accent),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                        .fill(saveDisabled ? Slate.State.accentMuted : Slate.State.accent),
                 )
         }
         .buttonStyle(.plain)
@@ -266,33 +266,33 @@ struct RecipeSaveSheet: View {
 
     private func label(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: Otty.Typeface.base, weight: .medium))
-            .foregroundStyle(Otty.Text.primary)
+            .font(.system(size: Slate.Typeface.base, weight: .medium))
+            .foregroundStyle(Slate.Text.primary)
     }
 
     private var plate: some View {
-        RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-            .fill(Otty.Surface.element)
+        RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+            .fill(Slate.Surface.element)
             .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                    .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                    .strokeBorder(Slate.Line.subtle, lineWidth: Slate.Metric.hairline),
             )
     }
 
     /// A radio-style option row: a filled/empty circle + a title + a subtitle. A disabled row renders tertiary
     /// (the honest "greyed option" — never a tappable dead control).
     private func radioRow(title: String, subtitle: String, selected: Bool, enabled: Bool) -> some View {
-        HStack(alignment: .top, spacing: Otty.Metric.space2) {
+        HStack(alignment: .top, spacing: Slate.Metric.space2) {
             Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                .font(.system(size: Otty.Metric.iconSize))
-                .foregroundStyle(enabled ? (selected ? Otty.State.accent : Otty.Text.icon) : Otty.Text.tertiary)
-            VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                .font(.system(size: Slate.Metric.iconSize))
+                .foregroundStyle(enabled ? (selected ? Slate.State.accent : Slate.Text.icon) : Slate.Text.tertiary)
+            VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                 Text(title)
-                    .font(.system(size: Otty.Typeface.body))
-                    .foregroundStyle(enabled ? Otty.Text.primary : Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.body))
+                    .foregroundStyle(enabled ? Slate.Text.primary : Slate.Text.tertiary)
                 Text(subtitle)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.tertiary)
             }
             Spacer(minLength: 0)
         }

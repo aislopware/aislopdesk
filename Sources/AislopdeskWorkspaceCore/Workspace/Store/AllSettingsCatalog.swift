@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - AllSettingsCatalog (headless source for the Advanced "All Settings" list — E7 WI-3)
 
-/// The pure, headless catalog the Advanced → **All Settings** list iterates (otty's
+/// The pure, headless catalog the Advanced → **All Settings** list iterates (see
 /// `customization__advanced-settings.md`). It enumerates every client-side configuration key aislopdesk
 /// understands — the orphan + new fire-time `SettingsKey` toggles, the Shell/General pickers, and the
 /// typed-model render fields (font / cursor / theme) that have a richer dedicated tab — together with the
@@ -20,7 +20,7 @@ import Foundation
 public enum AllSettingsCatalog {
     /// One row in the All Settings list.
     public struct SettingEntry: Equatable, Identifiable, Sendable {
-        /// How the row is edited — the otty distinction between an inline-editable expert key and a key with
+        /// How the row is edited — the distinction between an inline-editable expert key and a key with
         /// a richer dedicated tab control.
         public enum Bucket: Equatable, Sendable {
             /// No richer tab UI (or a simple flag) — render an INLINE control (toggle / stepper / picker)
@@ -39,7 +39,7 @@ public enum AllSettingsCatalog {
         }
 
         /// The monospace config key shown in the row (an aislopdesk ``SettingsKey`` constant, or an
-        /// otty-style render-pref name like `font-family` for a typed-model field).
+        /// config-style render-pref name like `font-family` for a typed-model field).
         public let key: String
         /// The human-readable label (search-matched).
         public let label: String
@@ -441,7 +441,7 @@ public enum AllSettingsCatalog {
             keywords: "option alt meta esc keyboard macos key word jump emacs vim readline accented",
         ),
 
-        // E10 (Path/link detection — otty Settings → Controls → Open With / Link Schemes). Declared here so
+        // E10 (Path/link detection — Settings → Controls → Open With / Link Schemes). Declared here so
         // the Advanced "All Settings" list is complete; E10 WI-5/6/8/9 own the behaviour.
         SettingEntry(
             key: SettingsKey.linkDetection,
@@ -562,7 +562,7 @@ public enum AllSettingsCatalog {
 
         // MARK: Appearance (New Tab Position + chrome orphan toggles)
 
-        // otty homes New Tab Position under **Appearance** in a TABS group (`tab-setting.png`), NOT Shell.
+        // New Tab Position lives under **Appearance** in a TABS group (`tab-setting.png`), NOT Shell.
         SettingEntry(
             key: SettingsKey.newTabPositionKey,
             label: "New Tab Position",
@@ -579,7 +579,7 @@ public enum AllSettingsCatalog {
             bucket: .advancedOnly,
             keywords: "block divider command header terminal sticky shell",
         ),
-        // otty homes the DOCK ICON group under **Appearance** (terminal-features__progress-state.md). macOS-only
+        // The DOCK ICON group lives under **Appearance** (terminal-features__progress-state.md). macOS-only
         // NSDockTile behaviour (inert on iOS); the live toggles live under Appearance → Dock Icon, so the
         // searchable All Settings rows JUMP there (M2 — `hasDedicatedTab` → `appearance`) rather than rendering
         // a duplicate inline control. The keys round-trip on both platforms.
@@ -623,10 +623,10 @@ public enum AllSettingsCatalog {
 
         // MARK: Typed render fields with a richer dedicated tab (jump-to-tab)
 
-        // otty homes (proven by the screenshots): FONT FAMILY + the CURSOR group live under **Appearance**
-        // (`docs/otty-clone/screenshots/font-setting.png`, `cursor-style.png`); SCROLLBACK lives under
-        // **Controls → Scroll** (`spec/terminal-features__scroll.md`). otty's Editor section is the built-in
-        // file-editor's settings, which aislopdesk has no equivalent for, so nothing routes there.
+        // FONT FAMILY + the CURSOR group live under **Appearance**
+        // (`docs/ui-shell/screenshots/font-setting.png`, `cursor-style.png`); SCROLLBACK lives under
+        // **Controls → Scroll** (`spec/terminal-features__scroll.md`). There is no Editor section — aislopdesk
+        // has no built-in file editor, so nothing routes there.
         SettingEntry(
             key: "font-family",
             label: "Font Family",
@@ -735,8 +735,7 @@ public enum AllSettingsCatalog {
     ]
 
     /// Filter the catalog by a search query, matching (case-insensitively) against the key, label,
-    /// description, and keywords — the faithful clone of otty's "matching against key name, label,
-    /// description, and keywords" (a substring filter, not fuzzy; the spec narrows on `cursor` / `scrollback`
+    /// description, and keywords (a substring filter, not fuzzy; the spec narrows on `cursor` / `scrollback`
     /// / `blink`). An empty / whitespace query returns ALL entries (order-preserving); a no-match query
     /// returns `[]`.
     public static func filter(_ query: String) -> [SettingEntry] {

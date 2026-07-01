@@ -1,7 +1,7 @@
-// NavigatorColumn — the left sidebar navigator (otty port). macOS renders otty's flat "TABS" panel: a warm
-// `Otty.Surface.sidebar` background (NOT the native `.sidebar` vibrancy/inset-grouped selection — the host
+// NavigatorColumn — the left sidebar navigator. macOS renders a flat "TABS" panel: a warm
+// `Slate.Surface.sidebar` background (NOT the native `.sidebar` vibrancy/inset-grouped selection — the host
 // split item is a PLAIN item now), a "TABS" header with the sort hamburger, a flat search field, and the
-// active session's tabs rendered as `OttyTabRow`s — grouped into `OttySectionHeader` sections when the
+// active session's tabs rendered as `SlateTabRow`s — grouped into `SlateSectionHeader` sections when the
 // hamburger's Group-By is set (E6 WI-5). The top 40pt is reserved for the traffic lights under the hidden
 // titlebar.
 //
@@ -17,8 +17,9 @@
 //     is a flat-list affordance, so the drag source/target are OFF whenever a grouping is active.
 //
 // iOS: a `List(selection:)` so NavigationSplitView pushes to the content column on a compact iPhone (a custom
-// button list does not drive column navigation). otty-styled but keeps the system list's navigation wiring;
-// it gains the same search field, grouped `Section`s, badge + `⌘N`, and drag reorder under `#if os(iOS)`.
+// button list does not drive column navigation). Themed to match the macOS chrome but keeps the system list's
+// navigation wiring; it gains the same search field, grouped `Section`s, badge + `⌘N`, and drag reorder
+// under `#if os(iOS)`.
 
 #if canImport(SwiftUI)
 import AislopdeskVideoProtocol // AgentPreferences — the `preventSleep` flag the tab context menu toggles (B4)
@@ -31,8 +32,9 @@ struct NavigatorColumn: View {
     let store: WorkspaceStore
 
     /// The live ``PreferencesStore`` — threaded in so the tab context menu can surface the host-LOCAL
-    /// **Prevent Sleep While Processing** flag (Batch 4 catalog-completeness; otty `open-code-agent-history.png`
-    /// shows it on the tab menu). The macOS sidebar is hosted in a SEPARATE `NSHostingController` that does not
+    /// **Prevent Sleep While Processing** flag (Batch 4 catalog-completeness;
+    /// `docs/ui-shell/screenshots/open-code-agent-history.png` shows it on the tab menu). The macOS sidebar
+    /// is hosted in a SEPARATE `NSHostingController` that does not
     /// inherit the WindowGroup environment, so the split-view host passes it explicitly (`nil` on a preview /
     /// pre-injection ⇒ the Prevent-Sleep row is simply hidden, never a dead control). On iOS the column inherits
     /// the value via the `NavigationSplitView`, but it is still passed explicitly for parity.
@@ -174,24 +176,24 @@ struct NavigatorColumn: View {
     }
 
     #if os(macOS)
-    /// otty's flat macOS search field: a filled, hairline-bordered plate with a leading magnifier and a
+    /// The flat macOS search field: a filled, hairline-bordered plate with a leading magnifier and a
     /// trailing clear `×` (only when non-empty). Binds the view-local `query`. (iOS uses the system
     /// `.searchable` instead, so this custom field is macOS-only.)
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemSymbol: .magnifyingglass)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.icon)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.icon)
             TextField("Search tabs", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent) // the active caret is the accent colour (otty parity)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.primary)
+                .tint(Slate.State.accent) // the active caret is the accent colour
             if !query.isEmpty {
                 Button { query = "" } label: {
                     Image(systemSymbol: .xmarkCircleFill)
-                        .font(.system(size: Otty.Typeface.footnote))
-                        .foregroundStyle(Otty.Text.icon)
+                        .font(.system(size: Slate.Typeface.footnote))
+                        .foregroundStyle(Slate.Text.icon)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
@@ -199,14 +201,14 @@ struct NavigatorColumn: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(Otty.Surface.card, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall))
+        .background(Slate.Surface.card, in: RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall))
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
-                .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
+                .strokeBorder(Slate.Line.subtle, lineWidth: Slate.Metric.hairline),
         )
     }
 
-    /// macOS: otty's flat "TABS" panel — name rows + white-card active, hamburger sort, search field, grouped
+    /// macOS: the flat "TABS" panel — name rows + white-card active, hamburger sort, search field, grouped
     /// sections. Paints its own warm background (the host `NSSplitViewItem` is a plain item, so there is no
     /// native vibrancy/rounding).
     private var macSidebar: some View {
@@ -219,11 +221,11 @@ struct NavigatorColumn: View {
             SessionSwitcherView(store: store)
             HStack(spacing: 0) {
                 Text("TABS")
-                    .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
+                    .font(.system(size: Slate.Typeface.footnote, weight: .semibold))
                     .tracking(0.6)
-                    .foregroundStyle(Otty.State.header)
+                    .foregroundStyle(Slate.State.header)
                 Spacer(minLength: 0)
-                OttySortMenuButton(store: store)
+                SlateSortMenuButton(store: store)
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 6)
@@ -241,7 +243,7 @@ struct NavigatorColumn: View {
                     } else {
                         ForEach(sections) { section in
                             if let header = section.header {
-                                OttySectionHeader(header)
+                                SlateSectionHeader(header)
                             }
                             ForEach(section.rows) { row in
                                 macRow(row)
@@ -251,7 +253,7 @@ struct NavigatorColumn: View {
                 }
                 .padding(.horizontal, 8)
             }
-            .scrollIndicators(.hidden) // otty's invisible scrollbars
+            .scrollIndicators(.hidden) // scrollbars stay invisible for the flat sidebar look
             .frame(maxHeight: .infinity) // the tab list fills the slack so the connection card pins to the bottom
 
             // Connection STATUS LINE: a borderless, FULL-BLEED whisper status bar pinned at the bottom of the
@@ -269,16 +271,16 @@ struct NavigatorColumn: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Otty.Surface.sidebar)
+        .background(Slate.Surface.sidebar)
     }
 
-    /// One macOS tab row: the full otty chrome (badge / `⌘N` / cwd subtitle / process label) plus the
+    /// One macOS tab row: the full chrome (badge / `⌘N` / cwd subtitle / process label) plus the
     /// drag-reorder source + drop target. The drop routes `reorderable` → `handleTabDrop` →
     /// ``WorkspaceStore/moveTabRendered(from:to:)`` (the WYSIWYG, rendered-position entry the row uses); the
     /// non-rendered ``WorkspaceStore/moveTab(from:to:)`` is only exercised by tests now.
     private func macRow(_ row: RailRow) -> some View {
         reorderable(
-            OttyTabRow(
+            SlateTabRow(
                 title: row.title.isEmpty ? defaultTitle(for: row.kind) : row.title,
                 active: row.id == selectedPane,
                 number: row.tabNumber,
@@ -296,13 +298,13 @@ struct NavigatorColumn: View {
 
     private func emptyLabel(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: Otty.Typeface.body))
-            .foregroundStyle(Otty.Text.secondary)
+            .font(.system(size: Slate.Typeface.body))
+            .foregroundStyle(Slate.Text.secondary)
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
     }
     #else
-    /// iOS: a system `List(selection:)` so NavigationSplitView pushes to content on compact; otty-styled. Gains
+    /// iOS: a system `List(selection:)` so NavigationSplitView pushes to content on compact; themed to match. Gains
     /// the system `.searchable` field (keeps the `List` as the column root so the navigation push is unchanged),
     /// grouped `Section`s, badge + `⌘N`, and drag reorder (E6 WI-5).
     private var iosSidebar: some View {
@@ -319,10 +321,10 @@ struct NavigatorColumn: View {
             SessionSwitcherView(store: store)
             if allRows.isEmpty {
                 Label("No tabs open", systemSymbol: .squareSplit2x1)
-                    .foregroundStyle(Otty.Text.secondary)
+                    .foregroundStyle(Slate.Text.secondary)
             } else if sections.isEmpty {
                 Label("No matches", systemSymbol: .magnifyingglass)
-                    .foregroundStyle(Otty.Text.secondary)
+                    .foregroundStyle(Slate.Text.secondary)
             } else {
                 ForEach(sections) { section in
                     Section(section.header ?? "Tabs") {
@@ -335,8 +337,8 @@ struct NavigatorColumn: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        .background(Otty.Surface.sidebar)
-        .tint(Otty.State.accent)
+        .background(Slate.Surface.sidebar)
+        .tint(Slate.State.accent)
         .searchable(text: $query, prompt: "Search tabs")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -359,17 +361,17 @@ struct NavigatorColumn: View {
                 Spacer(minLength: 6)
                 if row.readOnly {
                     Image(systemSymbol: .lockFill)
-                        .font(.system(size: Otty.Typeface.small, weight: .semibold))
-                        .foregroundStyle(Otty.Text.secondary)
+                        .font(.system(size: Slate.Typeface.small, weight: .semibold))
+                        .foregroundStyle(Slate.Text.secondary)
                         .accessibilityLabel("Read only")
                 }
                 if let badge = row.badge {
                     TabBadgeView(kind: badge)
                 }
-                if let shortcut = OttyTabRow.shortcutBadge(for: row.tabNumber) {
+                if let shortcut = SlateTabRow.shortcutBadge(for: row.tabNumber) {
                     Text(shortcut)
-                        .font(.system(size: Otty.Typeface.small, design: .monospaced))
-                        .foregroundStyle(Otty.Text.secondary)
+                        .font(.system(size: Slate.Typeface.small, design: .monospaced))
+                        .foregroundStyle(Slate.Text.secondary)
                 }
             }
             .tag(row.id),
@@ -381,15 +383,17 @@ struct NavigatorColumn: View {
 
     // MARK: - Tab context menu (E13 WI-3 — Clear Badge + per-pane badge overrides + notify toggles)
 
-    /// The right-click / long-press menu for a sidebar row (`open-code-agent-history.png`): the otty
-    /// Agent-Behaviour toggles surfaced on the tab. "Clear Badge" acknowledges the pane's completion/attention;
+    /// The right-click / long-press menu for a sidebar row (`docs/ui-shell/screenshots/open-code-agent-history.png`):
+    /// the Agent-Behaviour toggles surfaced on the tab. "Clear Badge" acknowledges the pane's completion/attention;
     /// the three BADGE items are PER-PANE override toggles (seeded from the pane's CURRENT effective gates, so
     /// the first flip preserves the other two — an absent override follows the global Settings → Agents
-    /// default); the two NOTIFY items toggle the GLOBAL fire-time keys (no per-pane notify in otty). Claude-only.
+    /// default); the two NOTIFY items toggle the GLOBAL fire-time keys (notify preferences are global, not
+    /// per-pane). Claude-only.
     /// **Prevent Sleep While Processing** (Batch 4) is a host-LOCAL `AgentPreferences` flag living in
     /// `PreferencesStore` (it rides the sidecar → applies on reconnect; default-OFF). It is surfaced here only
     /// when the store is threaded in (the split-view host now does), bound to the SAME global `agent.preventSleep`
-    /// Settings → Agent Behaviour edits — otty's tab menu lists it (`open-code-agent-history.png`). A `nil` store
+    /// Settings → Agent Behaviour edits — the tab menu lists it too (see
+    /// `docs/ui-shell/screenshots/open-code-agent-history.png`). A `nil` store
     /// (preview / pre-injection) simply hides the row.
     @ViewBuilder
     private func rowContextMenu(_ row: RailRow) -> some View {
@@ -415,7 +419,7 @@ struct NavigatorColumn: View {
             get: { Defaults[.agentNotifyAwaitInput] },
             set: { Defaults[.agentNotifyAwaitInput] = $0 },
         ))
-        // Prevent Sleep While Processing (E13 ES-E13-3; otty tab menu) — the host-LOCAL system-sleep assertion
+        // Prevent Sleep While Processing (E13 ES-E13-3) — the host-LOCAL system-sleep assertion
         // gate. Bound to the GLOBAL `agent.preventSleep` flag (the SAME Settings → Agent Behaviour edits), shown
         // only when the live store is threaded in. `?? false` mirrors the daemon default-OFF (`nil` ⇒ unset).
         if let preferences {
@@ -434,7 +438,7 @@ struct NavigatorColumn: View {
 
     /// The full tab-row SELECT path, exposed as a static testable helper (mirrors ``owningTabIndex(of:in:)``):
     /// switch to the owning tab (float-aware, stamps recency), focus the pane, then AUTO-CLEAR every agent
-    /// badge on the newly-focused tab (otty: "Badge auto-clears on tab focus"). All three steps go through
+    /// badge on the newly-focused tab (badge auto-clears on tab focus). All three steps go through
     /// the store. Static so ``NavigatorColumnSelectTests`` exercises this logic headlessly without a live view.
     @MainActor
     static func selectRow(_ paneID: PaneID, in store: WorkspaceStore) {
@@ -445,8 +449,8 @@ struct NavigatorColumn: View {
             store.selectTab(index)
         }
         store.focusPaneTree(paneID)
-        // Auto-clear the agent badge for every pane in the now-focused tab (otty: "Badge auto-clears on
-        // tab focus"). Runs AFTER focusPaneTree so the active tab is already the focused one.
+        // Auto-clear the agent badge for every pane in the now-focused tab (badge auto-clears on
+        // tab focus). Runs AFTER focusPaneTree so the active tab is already the focused one.
         if let tab = store.tree.activeSession?.activeTab {
             for id in tab.allPaneIDs() {
                 store.clearAgentBadge(id)
@@ -470,7 +474,7 @@ struct NavigatorColumn: View {
         PaneChooserRegistry.option(for: kind).title
     }
 
-    /// Type-safe SF Symbol for a pane kind (iOS rows only; macOS otty rows are name-only). Reads the
+    /// Type-safe SF Symbol for a pane kind (iOS rows only; macOS rows are name-only). Reads the
     /// symbol *name* from the shared ``PaneChooserRegistry`` and wraps it in a type-safe `SFSymbol`.
     private static func symbol(for kind: PaneKind) -> SFSymbol {
         SFSymbol(rawValue: PaneChooserRegistry.option(for: kind).symbol)
@@ -479,8 +483,8 @@ struct NavigatorColumn: View {
 
 /// A rail row wrapped with the manual drag-reorder source + drop target AND the E18 WI-7 insertion-line
 /// indicator. It owns the per-row `isTargeted` hover flag — a `@ViewBuilder` helper can't hold `@State`, so
-/// the targeting highlight lives here — and paints otty's "thin insertion-line indicator [for] the landing
-/// position between tabs" as a 2pt accent rule on the row's TOP edge while a tab-reorder drag hovers it. The
+/// the targeting highlight lives here — and paints a thin insertion-line indicator for the landing
+/// position between tabs as a 2pt accent rule on the row's TOP edge while a tab-reorder drag hovers it. The
 /// drag payload, drop handler and reorder gate are passed in UNCHANGED from ``NavigatorColumn`` (the by-uuid
 /// payload, ``NavigatorColumn``'s `handleTabDrop`, and the grouping/search gate are untouched) — this view
 /// only adds the targeting highlight via the pure ``TabReorderInsertionLine`` placement model.
@@ -514,7 +518,7 @@ private struct ReorderableRow<Content: View>: View {
             .dropDestination(for: String.self) { items, _ in onDrop(items) } isTargeted: { isTargeted = $0 }
             .overlay(alignment: .top) {
                 Rectangle()
-                    .fill(Otty.State.accent)
+                    .fill(Slate.State.accent)
                     .frame(height: TabReorderInsertionLine.thickness)
                     .opacity(showsInsertionLine ? 1 : 0)
                     .animation(.easeOut(duration: 0.12), value: showsInsertionLine)

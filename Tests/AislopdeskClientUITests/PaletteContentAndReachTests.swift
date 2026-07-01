@@ -87,7 +87,7 @@ final class PaletteContentAndReachTests: XCTestCase {
     // MARK: - Finding 2: the curated catalog surfaces the previously-missing spec verbs
 
     /// The catalog now ENUMERATES the spec-named verbs that were unreachable (Reopen Closed Pane, Sync Input
-    /// to All Panes, New Session, Close Window, Font Size ±/Reset, Open Composer), each under its otty
+    /// to All Panes, New Session, Close Window, Font Size ±/Reset, Open Composer), each under its own
     /// category. REVERT-TO-CONFIRM-FAIL: dropping any row makes its `catalog.first` nil → the `XCTUnwrap` trips.
     func testCatalogSurfacesPreviouslyMissingVerbs() throws {
         let expected: [(id: String, title: String, category: PaletteCategory)] = [
@@ -103,7 +103,7 @@ final class PaletteContentAndReachTests: XCTestCase {
         for (id, title, category) in expected {
             let item = try row(id)
             XCTAssertEqual(item.title, title, "the '\(id)' row's title")
-            XCTAssertEqual(item.category, category, "the '\(id)' row's otty category")
+            XCTAssertEqual(item.category, category, "the '\(id)' row's category")
             XCTAssertEqual(item.filter, .actions, "the '\(id)' row is a verb (Actions filter)")
         }
     }
@@ -233,7 +233,7 @@ final class PaletteContentAndReachTests: XCTestCase {
 
     // MARK: - Batch 4 (catalog completeness): theme/config verbs, layout presets, the rest of the Agents menu
 
-    /// The Theme / Config verbs (otty palette "Theme: Switch Theme / Open Theme File" + "Settings: Reload
+    /// The Theme / Config verbs ("Theme: Switch Theme / Open Theme File" + "Settings: Reload
     /// Config") are now in the catalog under SETTINGS, each routing its coordinator action. REVERT-TO-CONFIRM-
     /// FAIL: they were absent (the palette had Open Settings only), so `catalog.first` is nil → `XCTUnwrap` trips.
     func testThemeAndConfigVerbsAreInTheCatalog() throws {

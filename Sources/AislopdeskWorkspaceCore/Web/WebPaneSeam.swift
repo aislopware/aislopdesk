@@ -3,7 +3,7 @@ import Foundation
 import SwiftUI
 
 /// The **seam** between the cross-platform SwiftUI client and a LOCAL built-in web-browser pane
-/// (`PaneKind.web`, E18; otty `spec/user-interface__files-and-links.md` › Web Browser Pane).
+/// (`PaneKind.web`, E18; `docs/ui-shell/spec/user-interface__files-and-links.md` › Web Browser Pane).
 ///
 /// Exactly like ``VideoWindowFactory`` for the remote-GUI pixels, the cross-platform library cannot
 /// reference a `WKWebView` directly — that would pull `WebKit` into the headless `swift build`, and a
@@ -16,7 +16,7 @@ import SwiftUI
 /// Unlike the video seam this pane is **fully local**: it rides no remote stream, opens no UDP, and has no
 /// PTY funnel. The factory's production view builds a `WKWebView` with a **non-persistent** website data
 /// store (D9 — no on-disk cookies/cache, nothing bleeds across panes or survives a restart) and
-/// `mediaTypesRequiringUserActionForPlayback = .all` (no autoplay), per the otty spec.
+/// `mediaTypesRequiringUserActionForPlayback = .all` (no autoplay), per the pane's design spec.
 ///
 /// Wiring (app target, once at launch — `Apps/Shared/WebPaneView.swift` + `AppMain`):
 /// ```swift
@@ -85,7 +85,7 @@ public struct WebNavigationGate: Equatable {
     }
 }
 
-/// The IN-channel to the live web view — the additive control sink the otty browser chrome's
+/// The IN-channel to the live web view — the additive control sink the browser chrome's
 /// Back / Forward / hard-Reload need (the proven ``RemotePaneContext/onKeyInjectorReady`` hand-back
 /// pattern). The production `WKWebView` view publishes one of these through
 /// ``WebPaneContext/onControllerReady`` once it exists (and `nil` on teardown); the cross-platform leaf
@@ -174,8 +174,8 @@ public struct WebPaneContext {
     /// Called when the live web view commits a navigation to `url` — the leaf forwards it to
     /// `store.setPaneWebURL(url.absoluteString, for: paneID)` (dirty-guarded write-back).
     public var onNavigated: (URL) -> Void
-    /// Called when the page's `<title>` changes — the leaf can promote it into the pane title (otty titles
-    /// a web pane after the loaded page). `nil`-safe: a default no-op leaves the title untouched.
+    /// Called when the page's `<title>` changes — the leaf can promote it into the pane title (a web pane
+    /// is titled after the loaded page). `nil`-safe: a default no-op leaves the title untouched.
     public var onTitle: (String) -> Void
     /// The live web view publishes its ``WebPaneController`` here once it exists (and `nil` on teardown), so
     /// the chrome's Back / Forward / hard-Reload can drive the page — the additive IN-channel mirroring

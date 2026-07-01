@@ -21,7 +21,7 @@ struct SplitContainer: View {
     /// EAGER/STATIC render path for headless ImageRenderer snapshots.
     var staticMirror: Bool = false
 
-    /// Live pane-move drag (otty grab-handle). View-local: the store is untouched until release, so the
+    /// Live pane-move drag (grab-handle). View-local: the store is untouched until release, so the
     /// terminal-grid / remote-window redraw fires once on commit, not per drag frame.
     @State private var move: PaneMoveDrag?
 
@@ -69,14 +69,14 @@ struct SplitContainer: View {
                     )
                     .id(entry.id) // identity hazard: never reuse a surface across panes
                 }
-                // Dividers + the otty grab-handles / live drag overlay sit ABOVE the tiled panes (z 0) but
+                // Dividers + the grab-handles / live drag overlay sit ABOVE the tiled panes (z 0) but
                 // BELOW the floating cards (`floatZBase`). With one mixed `ForEach` above, declaration order no
                 // longer keeps floats on top, so these layers carry an explicit z-index band.
                 ForEach(layout.dividers, id: \.key) { handle in
                     dividerView(handle)
                 }
                 .zIndex(Self.dividerZ)
-                // otty grab-handles + the live drag overlay (extracted to keep this ZStack type-checkable).
+                // Grab-handles + the live drag overlay (extracted to keep this ZStack type-checkable).
                 moveLayer(leaves: layout.leaves, frames: frames, container: bounds)
                     .zIndex(Self.moveZ)
             }
@@ -131,7 +131,7 @@ struct SplitContainer: View {
         .position(x: handle.rect.midX, y: handle.rect.midY)
     }
 
-    /// The otty move affordance: a top grab handle per leaf (≥2 leaves only) plus the live drag overlay.
+    /// The pane move affordance: a top grab handle per leaf (≥2 leaves only) plus the live drag overlay.
     /// Skipped entirely on the static snapshot path.
     @ViewBuilder
     private func moveLayer(
@@ -153,7 +153,7 @@ struct SplitContainer: View {
                 .allowsHitTesting(false)
                 // Quick opacity snap between zones (paired with the per-zone `.id` cross-fade in the
                 // overlay) — NOT the 0.20s slab frame-morph, which swept a big rectangle edge-to-edge.
-                .animation(Otty.Anim.smallFade, value: move.zone)
+                .animation(Slate.Anim.smallFade, value: move.zone)
             }
         }
     }

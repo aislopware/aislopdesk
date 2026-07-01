@@ -1,18 +1,18 @@
-// SettingsSectionTaxonomyTests (E7 WI-2) — the anti-drift pin for the otty 9-section Settings taxonomy.
+// SettingsSectionTaxonomyTests (E7 WI-2) — the anti-drift pin for the 9-section Settings taxonomy.
 //
 // The macOS tab strip and the (future) iOS settings sheet both drive their sections from `SettingsSection`
 // (`Settings/SettingsView.swift`), so a single source can't render an out-of-order / missing / re-iconed
-// section. This pins the set + order + titles + otty sidebar glyphs against an INDEPENDENT expectation
+// section. This pins the set + order + titles + sidebar glyphs against an INDEPENDENT expectation
 // table (not the enum's own derivation), so dropping, reordering, renaming, or re-iconing a section fails
 // the build — exactly as `SettingsKeyTests.testSettingsKeyStringsAreStable` pins the key strings.
 //
 // SECTION-CONTENT GAPS ARE INTENTIONAL (the per-section bodies are `private` to `SettingsView.swift`, so the
 // gaps are pinned by the doc-comment notes on each tab struct rather than by an assertion here — recorded for
 // a reviewer auditing this anti-drift file): Editor + Recipes stay RESERVED/empty (no file-editor / recipe
-// library); Shell → NOTIFICATIONS surfaces only the two rows backed by real behaviour (the rest of otty's
-// NOTIFICATION + TAB BADGE groups deferred-until-backed); General OMITS otty's Auto-Update / Language /
-// "Quit When All Windows Closed" (N/A for a single-user remote tool) and ADDS the aislopdesk-specific Privacy
-// & New Panes group; Appearance → TABS is VERTICAL-TABS-ONLY by product decision (otty's horizontal
+// library); Shell → NOTIFICATIONS surfaces only the two rows backed by real behaviour (the rest of the
+// NOTIFICATION + TAB BADGE groups deferred-until-backed); General has no Auto-Update / Language /
+// "Quit When All Windows Closed" controls (N/A for a single-user remote tool) and ADDS the aislopdesk-specific
+// Privacy & New Panes group; Appearance → TABS is VERTICAL-TABS-ONLY by product decision (a horizontal
 // Tabs Top / Tabs Bottom LAYOUT selector is dropped, not missing) with Auto-Hide-Tabs-Panel + Window-Size
 // deferred. None of these are regressions; see the matching struct doc-comments in `SettingsView.swift`.
 
@@ -21,10 +21,10 @@ import XCTest
 @testable import AislopdeskClientUI
 
 final class SettingsSectionTaxonomyTests: XCTestCase {
-    /// The otty taxonomy, frozen: ordered (rawValue, title, systemImage). Edited only with an intentional
+    /// The Settings taxonomy, frozen: ordered (rawValue, title, systemImage). Edited only with an intentional
     /// taxonomy change (and a matching screenshot/spec update).
     ///
-    /// 5th-ROW LABEL NOTE: otty ships BOTH "Agents" and "Integrations" for this row across builds —
+    /// 5th-ROW LABEL NOTE: the reference screenshots disagree on this row's label across revisions —
     /// `all-settings.png` and `notification-setting.png` label it **Agents**, while `tab-setting.png` /
     /// `launch-option.png` label it **Integrations**. aislopdesk pins to all-settings.png's **"Agents"**; a
     /// future reviewer comparing against a build that shows "Integrations" should NOT treat that as a

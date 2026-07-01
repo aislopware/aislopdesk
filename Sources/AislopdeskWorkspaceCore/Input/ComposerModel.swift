@@ -1,7 +1,7 @@
 import AislopdeskClaudeCode
 import Foundation
 
-/// Per-pane composer view-model (otty "Composer", `⌘⇧E`) — the `@MainActor @Observable`
+/// Per-pane composer view-model (the Composer, `⌘⇧E`) — the `@MainActor @Observable`
 /// shell that owns the draft, the visibility/pin/float chrome flags, and a
 /// ``AislopdeskClaudeCode/PromptQueueModel`` (the `⌘⇧M` Prompt Queue, E12 WI-1).
 ///
@@ -23,7 +23,7 @@ import Foundation
 ///
 /// ## Two-signal turn-finished mapping (`notePromptIdle()`)
 ///
-/// otty has ONE "next idle prompt" dispatch trigger. aislopdesk has no single equivalent
+/// There is no single "next idle prompt" dispatch trigger
 /// because Claude Code runs in the **alt-screen** (it emits no OSC-133 prompt marks) while a
 /// normal shell does, so the trigger is the **union of two faithful signals**, resolved
 /// per-pane, both funnelling into ``notePromptIdle()`` → one ``PromptQueueModel/dispatchNext()``
@@ -31,7 +31,7 @@ import Foundation
 ///
 /// 1. **Normal terminal pane** → the client `modeTracker` emits OSC-133 `;A` (`.promptStart`)
 ///    when the shell is back at an idle prompt (`TerminalViewModel.onPromptIdle`). This is the
-///    literal otty trigger.
+///    primary dispatch trigger.
 /// 2. **Agent (alt-screen) pane** → `claudeStatus` transitions to `.done` (host-detected via the
 ///    Stop hook, wired through `LivePaneSession.feedAgentSignal`). `.done` is the IMMEDIATE
 ///    turn-finished edge (it then decays to `.idle` ~8s later); dispatching on `.done` — NOT on the
@@ -60,7 +60,7 @@ public final class ComposerModel {
     /// Pinned — promotes the composer to a window-level mount so it rides along across tab
     /// switches (E12 WI-6). Mutated ONLY through ``togglePin()`` / ``setPinned(_:)`` so a flip can
     /// notify ``onPinnedChange`` (the owner persists the pin keyed by the pane's stable `PaneID`,
-    /// the otty "pinned state is persisted as a user preference" rule — see `LivePaneSession.adopt`).
+    /// the "pinned state is persisted as a user preference" rule — see `LivePaneSession.adopt`).
     public private(set) var isPinned: Bool = false
 
     /// Fired when ``isPinned`` actually changes (not on a no-op set), so the owning
@@ -69,7 +69,7 @@ public final class ComposerModel {
     @ObservationIgnored public var onPinnedChange: ((Bool) -> Void)?
 
     /// Fired when the composer is pinned ON (a real `false→true` edge ONLY), so the owner can enforce
-    /// otty's SINGLE window-level pin: the store clears every OTHER pane's pin so there is exactly one
+    /// a SINGLE window-level pin: the store clears every OTHER pane's pin so there is exactly one
     /// globally-pinned composer ("rides along regardless of which tab is active"). Distinct from
     /// ``onPinnedChange`` (which also fires on unpin, for persistence) precisely so the exclusivity sweep
     /// runs only on a pin-ON edge and never recurses when it unpins the siblings. Wired by the store at
@@ -80,7 +80,7 @@ public final class ComposerModel {
     /// (iOS) detached from the pane bottom (E12 WI-6). Plain view state; toggled by the float
     /// button. The SAME model backs the float, so `⌘↩` still injects into the origin pane.
     /// Sending (``sendDraft()``) or cancelling (``cancel()``) docks the float back (clears this)
-    /// — the otty "sending or closing the float docks it back into the pane" rule; pinning is
+    /// — the "sending or closing the float docks it back into the pane" rule; pinning is
     /// independent (a pinned composer stays pinned across a cancel).
     public var isFloating: Bool = false
 
@@ -134,7 +134,7 @@ public final class ComposerModel {
     /// Sets the pin, notifying ``onPinnedChange`` only on a REAL change. Used by ``togglePin()``, by the iOS
     /// sheet-dismiss dock-back, and by ``LivePaneSession``'s persisted-pin restore (which wires
     /// ``onPinnedChange`` AFTER calling this, so restoring the pin never re-persists it). A pin-ON edge also
-    /// fires ``onPinnedExclusive`` so the owner can clear any other pane's pin (otty's single window-level
+    /// fires ``onPinnedExclusive`` so the owner can clear any other pane's pin (a single window-level
     /// pin); a pin-OFF edge does not, so the owner's sibling-clearing sweep can never recurse.
     public func setPinned(_ pinned: Bool) {
         guard isPinned != pinned else { return }
@@ -180,7 +180,7 @@ public final class ComposerModel {
     /// path. It then clears the draft and hides. A blank / whitespace-only / bare-newline draft
     /// is a no-op (nothing is sent and the draft is left untouched). With no sink wired (a
     /// headless/preview model — see ``send``) the draft is preserved. On a real send it also docks a floating composer back (clears
-    /// ``isFloating``) — the otty "sending docks the float back into the pane" rule; ``isPinned``
+    /// ``isFloating``) — the "sending docks the float back into the pane" rule; ``isPinned``
     /// is unaffected.
     public func sendDraft() {
         guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }

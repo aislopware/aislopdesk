@@ -1,16 +1,16 @@
 import Foundation
 
-// MARK: - CloseConfirmationPolicy (otty close-confirmation policy)
+// MARK: - CloseConfirmationPolicy (close-confirmation policy)
 
-/// When a tab / pane / window close must be GATED behind a confirmation prompt — the faithful clone of
-/// otty's close-confirmation config (`spec/user-interface__window-tab-split.md`; otty values
+/// When a tab / pane / window close must be GATED behind a confirmation prompt
+/// (`docs/ui-shell/spec/user-interface__window-tab-split.md`; the raw values are
 /// `process` / `always` / `multiple_tabs`).
 ///
 /// - ``process``: confirm only when a child PROCESS is still running in the closing unit (the long-standing
 ///   aislopdesk busy-shell guard — ``PaneSessionHandle/isShellBusy``). The default, byte-identical to the
 ///   pre-E3 behaviour (a close parked behind a confirmation iff a command was mid-flight).
 /// - ``always``: confirm on every close.
-/// - ``multipleTabs``: confirm only when the unit being closed holds more than one tab (otty `multiple_tabs`
+/// - ``multipleTabs``: confirm only when the unit being closed holds more than one tab (`multiple_tabs`
 ///   — closing a window with several tabs would lose them, so it asks; a single-tab window closes silently).
 ///
 /// PURE: the decision is the static ``shouldConfirm(_:isBusy:tabCount:)`` truth table, unit-tested apart
@@ -20,11 +20,11 @@ import Foundation
 public enum CloseConfirmationPolicy: String, Codable, Sendable, CaseIterable {
     case process
     case always
-    /// Raw value matches otty's `multiple_tabs` config string (so the persisted setting round-trips with the
-    /// otty value a future Shell-settings row writes).
+    /// Raw value is the `multiple_tabs` config string (so the persisted setting round-trips with the
+    /// value a future Shell-settings row writes).
     case multipleTabs = "multiple_tabs"
 
-    /// Decodes the stored otty close-confirmation config string. Validate-then-repair: a recognized raw value
+    /// Decodes the stored close-confirmation config string. Validate-then-repair: a recognized raw value
     /// maps to its case; anything else (a stale / hostile persisted string) repairs to ``process`` rather
     /// than trapping. A non-failable initializer that still satisfies the `RawRepresentable` requirement
     /// (so the `Defaults.PreferRawRepresentable` bridge keeps working) — it simply never returns `nil`.

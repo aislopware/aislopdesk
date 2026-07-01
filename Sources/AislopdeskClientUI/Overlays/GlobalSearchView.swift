@@ -1,9 +1,9 @@
 // GlobalSearchView — the cross-tab Global Search results surface (E5 / WI-4), opened by ⇧⌘F. A LARGE,
-// content-area-filling, NON-scrimmed card (E5 divergence #1: the closest faithful equivalent to otty's
-// dedicated results *tab*, which we do not add to avoid blast-radius across every `switch PaneKind` site).
+// content-area-filling, NON-scrimmed card (E5 divergence #1: a dedicated results *overlay* rather than a
+// results *tab*, which we do not add to avoid blast-radius across every `switch PaneKind` site).
 // Mounted by ``OverlayHostView`` over the workspace WITHOUT a ``Scrim`` so it does not dim the panes.
 //
-// Anatomy matches `screenshots/global-search.png` (`Otty.*` tokens ONLY — raw font / colour / radius literals
+// Anatomy matches `screenshots/global-search.png` (`Slate.*` tokens ONLY — raw font / colour / radius literals
 // fail `scripts/check-ds-leaks.sh`):
 //   ┌ query field [ Aa ][ .* ] ────────────────────────────────────────┐
 //   │ N results — M tabs                                               │
@@ -47,29 +47,29 @@ struct GlobalSearchView: View {
     /// the collapse intent to surviving panes and lets a vanished pane's id fall away. Default = all expanded.
     @State private var collapse = GlobalSearchCollapseState()
 
-    /// Pre-focuses the query field on appear so typing reaches it immediately (otty parity).
+    /// Pre-focuses the query field on appear so typing reaches it immediately.
     @FocusState private var queryFocused: Bool
 
     // Platform mode-pill plate size — MUST match ``TerminalFindBar``'s `plate` exactly (34 on iOS for the touch
-    // target, `Otty.Metric.plate` on macOS) so the locked invariant "the find bar and the global-search query
+    // target, `Slate.Metric.plate` on macOS) so the locked invariant "the find bar and the global-search query
     // bar render the pills IDENTICALLY" holds on BOTH platforms. Threaded into each ``FindTogglePill`` below.
     #if os(iOS)
     private let plate: CGFloat = 34
     #else
-    private let plate: CGFloat = Otty.Metric.plate
+    private let plate: CGFloat = Slate.Metric.plate
     #endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             queryBar
             Rectangle()
-                .fill(Otty.Line.divider)
-                .frame(height: Otty.Metric.hairline)
+                .fill(Slate.Line.divider)
+                .frame(height: Slate.Metric.hairline)
             summaryLine
             resultsList
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Otty.Surface.window)
+        .background(Slate.Surface.window)
         .onAppear { restoreFromStore() }
         #if os(macOS)
             .onExitCommand { coordinator.closeGlobalSearch() }
@@ -86,12 +86,12 @@ struct GlobalSearchView: View {
     private var queryBar: some View {
         // No leading magnifier — the query text is flush-left per global-search.png. No in-bar `×` either: the
         // overlay's dismiss affordance is Esc (`onExitCommand` / `.onKeyPress(.escape)` on the surface).
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             TextField("Search across all tabs…", text: queryBinding)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent) // the active caret is the accent colour (otty parity)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.primary)
+                .tint(Slate.State.accent) // the active caret is the accent colour
                 .focused($queryFocused)
                 // The query text sits inside a FILLED, hairline-bordered rounded plate (global-search.png): a
                 // `Surface.card` fill + `radiusSmall` + its own `Line.subtle` hairline, because this overlay's
@@ -102,12 +102,12 @@ struct GlobalSearchView: View {
                 // `State.selected` wash inverts contrast by theme, so the hairline delineates it regardless of
                 // direction). The two fills stay context-specific; both fields are hairline-delineated and
                 // screenshot-faithful. The `Aa` / `.*` pills stay OUTSIDE this plate (siblings in the HStack).
-                .padding(.horizontal, Otty.Metric.space2)
-                .padding(.vertical, Otty.Metric.space1)
-                .background(Otty.Surface.card, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall))
+                .padding(.horizontal, Slate.Metric.space2)
+                .padding(.vertical, Slate.Metric.space1)
+                .background(Slate.Surface.card, in: RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall))
                 .overlay(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
-                        .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
+                        .strokeBorder(Slate.Line.subtle, lineWidth: Slate.Metric.hairline),
                 )
             // The mode pills render as INDIVIDUALLY-OUTLINED chips (each its own resting plate + hairline,
             // gaps between — NO shared backing tray) per global-search.png. ``FindTogglePillTray`` is the EXACT
@@ -123,7 +123,7 @@ struct GlobalSearchView: View {
                 }
             }
         }
-        .padding(.horizontal, Otty.Metric.space4)
+        .padding(.horizontal, Slate.Metric.space4)
         .frame(height: 48)
     }
 
@@ -132,11 +132,11 @@ struct GlobalSearchView: View {
     @ViewBuilder private var summaryLine: some View {
         if let results = store.globalSearch, !query.trimmingCharacters(in: .whitespaces).isEmpty {
             Text(results.summary)
-                .font(.system(size: Otty.Typeface.footnote))
+                .font(.system(size: Slate.Typeface.footnote))
                 .monospacedDigit()
-                .foregroundStyle(Otty.Text.secondary)
-                .padding(.horizontal, Otty.Metric.space4)
-                .padding(.vertical, Otty.Metric.space2)
+                .foregroundStyle(Slate.Text.secondary)
+                .padding(.horizontal, Slate.Metric.space4)
+                .padding(.vertical, Slate.Metric.space2)
         }
     }
 
@@ -159,7 +159,7 @@ struct GlobalSearchView: View {
                     }
                 }
             }
-            .padding(.vertical, Otty.Metric.space1)
+            .padding(.vertical, Slate.Metric.space1)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -169,10 +169,10 @@ struct GlobalSearchView: View {
         Text(query.trimmingCharacters(in: .whitespaces).isEmpty
             ? "Search every tab’s scrollback."
             : "No results.")
-            .font(.system(size: Otty.Typeface.body))
-            .foregroundStyle(Otty.Text.tertiary)
+            .font(.system(size: Slate.Typeface.body))
+            .foregroundStyle(Slate.Text.tertiary)
             .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.vertical, Otty.Metric.space4)
+            .padding(.vertical, Slate.Metric.space4)
     }
 
     // MARK: - Group header (one per tab/pane)
@@ -181,17 +181,17 @@ struct GlobalSearchView: View {
         // Per `user-interface__find.md`:134-136 each tab group is COLLAPSIBLE via a leading disclosure control
         // ("checkbox-style expand/collapse control to the left of the tab/file name header") — the `▸`/`▾`
         // chevron below — followed by global-search.png's per-tab terminal glyph + the tab title. The whole
-        // header row toggles the group (otty disclosure-row idiom). (No ⌘ordinal badge: the ⌘1/⌘2/⌘3 numbers
+        // header row toggles the group (a disclosure-row idiom). (No ⌘ordinal badge: the ⌘1/⌘2/⌘3 numbers
         // in the screenshot are SIDEBAR tab numbers, not group headers.)
         let collapsed = collapse.isCollapsed(group.paneID)
-        return HStack(spacing: Otty.Metric.space2) {
+        return HStack(spacing: Slate.Metric.space2) {
             // The disclosure control: a right-chevron when collapsed, a down-chevron when expanded — the
             // checkbox-style expand/collapse affordance the spec puts to the LEFT of the header. Sized to the
             // footnote metric so it sits flush with the terminal glyph + title on the same baseline.
             Image(systemSymbol: collapsed ? .chevronRight : .chevronDown)
-                .font(.system(size: Otty.Typeface.small, weight: .semibold))
-                .foregroundStyle(Otty.Text.secondary)
-                .frame(width: Otty.Typeface.body, alignment: .center)
+                .font(.system(size: Slate.Typeface.small, weight: .semibold))
+                .foregroundStyle(Slate.Text.secondary)
+                .frame(width: Slate.Typeface.body, alignment: .center)
             // `.appleTerminal` (rawValue "apple.terminal") renders the `>_` PROMPT-BOX terminal glyph that
             // global-search.png shows — it is NOT an Apple-logo mark (verified by rendering the symbol). It is
             // the CURRENT, non-deprecated name; the bare `.terminal` case is the SAME glyph under its old name,
@@ -200,17 +200,17 @@ struct GlobalSearchView: View {
             // future "this is Apple-branded, switch to `.terminal`" flag is already-resolved — both are the `>_`
             // box; `.appleTerminal` is the non-deprecated spelling.
             Image(systemSymbol: .appleTerminal)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
             Text(group.groupTitle)
-                .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.footnote, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
                 .lineLimit(1)
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
         }
-        .padding(.horizontal, Otty.Metric.space4)
-        .padding(.top, Otty.Metric.space3)
-        .padding(.bottom, Otty.Metric.space1)
+        .padding(.horizontal, Slate.Metric.space4)
+        .padding(.top, Slate.Metric.space3)
+        .padding(.bottom, Slate.Metric.space1)
         .contentShape(Rectangle())
         .onTapGesture { collapse.toggle(group.paneID) }
         .accessibilityAddTraits(.isButton)
@@ -221,7 +221,7 @@ struct GlobalSearchView: View {
     // MARK: - Hit row (extracted so each row owns its own hover @State for the hover-reveal jump glyph)
 
     /// The excerpt (the full matched line) as an `AttributedString` with the matched run tinted amber + primary
-    /// (the otty find highlight) and the rest muted. The hit's `highlight` is a UTF-16 column range pre-clamped
+    /// (the find highlight) and the rest muted. The hit's `highlight` is a UTF-16 column range pre-clamped
     /// into the excerpt by ``GlobalSearchController``; map it back onto the string and SLICE the excerpt into
     /// before / match / after so a surrogate-straddling range degrades to a flat excerpt rather than indexing
     /// out of bounds. Built by substring concatenation (no AttributedString index conversion) so it can't trap.
@@ -240,16 +240,16 @@ struct GlobalSearchView: View {
             low <= high
         else {
             var flat = AttributedString(excerpt)
-            flat.foregroundColor = Otty.Text.secondary
+            flat.foregroundColor = Slate.Text.secondary
             return flat
         }
         var before = AttributedString(String(excerpt[excerpt.startIndex..<low]))
-        before.foregroundColor = Otty.Text.secondary
+        before.foregroundColor = Slate.Text.secondary
         var match = AttributedString(String(excerpt[low..<high]))
-        match.foregroundColor = Otty.Text.primary
-        match.backgroundColor = Otty.Status.warn.opacity(0.35)
+        match.foregroundColor = Slate.Text.primary
+        match.backgroundColor = Slate.Status.warn.opacity(0.35)
         var after = AttributedString(String(excerpt[high...]))
-        after.foregroundColor = Otty.Text.secondary
+        after.foregroundColor = Slate.Text.secondary
         return before + match + after
     }
 
@@ -295,19 +295,19 @@ private struct GlobalSearchHitRow: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Text(excerpt)
-                .font(.system(size: Otty.Typeface.body, design: .monospaced))
+                .font(.system(size: Slate.Typeface.body, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.tail)
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             // Horizontal → (global-search.png), hover-revealed: visible only on the row under the pointer.
             Image(systemSymbol: .arrowRight)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.tertiary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.tertiary)
                 .opacity(hovering ? 1 : 0)
         }
-        .padding(.horizontal, Otty.Metric.space4)
+        .padding(.horizontal, Slate.Metric.space4)
         .frame(height: 26)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())

@@ -1,13 +1,13 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E1 / WI-1 (epic E1 — "Default-keymap parity & command-routing completion"): pins the otty config
+/// E1 / WI-1 (epic E1 — "Default-keymap parity & command-routing completion"): pins the config
 /// action-name → registry-bindingID resolver — ``WorkspaceBindingRegistry/bindingID(forConfigName:arg:)``
 /// — that closes the N5 gap (named / parameterized config bindings are PARSED by ``KeybindGrammar`` but
 /// were dropped end-to-end for want of a name table).
 ///
-/// The names come from the otty config grammar (`spec/reference__keybindings.md` "Config keys" +
-/// `spec/customization__custom-keybindings.md`): `cmd+t:new_tab`, `cmd+w:close_pane`,
+/// The names come from the config grammar (`docs/ui-shell/spec/reference__keybindings.md` "Config keys" +
+/// `docs/ui-shell/spec/customization__custom-keybindings.md`): `cmd+t:new_tab`, `cmd+w:close_pane`,
 /// `cmd+shift+t:reopen_closed`, `cmd+1:goto_tab:1`, … . The resolver must:
 ///   - map every supported bare name to a REAL `binding.id` (no orphan);
 ///   - resolve `goto_tab:N` for N ∈ 1…9 to `tab.select.<n>`, and reject 0 / 10 / non-numeric / no-arg;
@@ -20,10 +20,10 @@ final class WorkspaceActionConfigNamesTests: XCTestCase {
         Set(WorkspaceBindingRegistry.allBindings.map(\.id))
     }
 
-    // MARK: - Bare-name parity: every supported otty config name resolves to a REAL binding id
+    // MARK: - Bare-name coverage: every supported config name resolves to a REAL binding id
 
-    func testEveryOttyConfigNameResolvesToARealBindingID() {
-        // (configName, arg) → expected bindingID. The bare-name surface of the otty config grammar.
+    func testEverySlateConfigNameResolvesToARealBindingID() {
+        // (configName, arg) → expected bindingID. The bare-name surface of the config grammar.
         let expected: [String: String] = [
             "new_tab": "tab.new",
             "split_right": "pane.splitRight",

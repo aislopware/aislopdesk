@@ -1,6 +1,6 @@
 import Foundation
 
-/// A theme-SLOT reference (E15) — points at either a built-in ``OttyTheme`` (by its stable id) or a scanned
+/// A theme-SLOT reference (E15) — points at either a built-in ``SlateTheme`` (by its stable id) or a scanned
 /// custom ``ThemeDocument`` (by slug). Stored on ``AppearancePreferences`` for the light / dark slots.
 ///
 /// WIRE-FORM: a SINGLE string, `"builtin:<id>"` or `"custom:<slug>"`, so it nests cleanly inside the
@@ -9,7 +9,7 @@ import Foundation
 /// the validate-then-default rule, bubbles up to fail the whole ``AppearancePreferences`` decode back to its
 /// all-`nil` default (no migration; the slot then resolves to the compile-time default theme).
 public enum ThemeRef: Codable, Sendable, Equatable {
-    /// A shipped theme, keyed by its ``OttyTheme`` `id` (e.g. `"monokai-classic"`, `"dark"`).
+    /// A shipped theme, keyed by its ``SlateTheme`` `id` (e.g. `"monokai-classic"`, `"dark"`).
     case builtin(String)
     /// A user theme scanned from the themes folder, keyed by its ``ThemeDocument`` slug.
     case custom(slug: String)

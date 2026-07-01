@@ -1,8 +1,8 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// Tests for ``DropActionResolver`` (E18 WI-1) — the full (zone × content) policy table from otty
-/// `spec/user-interface__drag-and-drop.md`, including the disabled green-half cells (file/URL on New
+/// Tests for ``DropActionResolver`` (E18 WI-1) — the full (zone × content) policy table from
+/// `docs/ui-shell/spec/user-interface__drag-and-drop.md`, including the disabled green-half cells (file/URL on New
 /// Tab). Each expected ``DropAction`` is hand-specified from the spec, independent of the resolver's
 /// own derivation (no tautology).
 final class DropActionResolverTests: XCTestCase {

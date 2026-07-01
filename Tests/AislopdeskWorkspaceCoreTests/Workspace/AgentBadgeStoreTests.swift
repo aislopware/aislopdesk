@@ -3,7 +3,7 @@ import Defaults
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E13 WI-3: the WorkspaceStore wiring behind the otty tab-context-menu badge controls — the per-pane
+/// E13 WI-3: the WorkspaceStore wiring behind the tab-context-menu badge controls — the per-pane
 /// ``AgentBadgeGates`` override (override-else-global resolution), the single-bit toggle, and "Clear Badge"
 /// (acknowledge completion/attention so the badge drops). Hang-safe: `FakePaneSession`, no surface/socket.
 @MainActor

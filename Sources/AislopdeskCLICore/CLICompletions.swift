@@ -2,7 +2,7 @@ import Foundation
 
 // `aislopdesk completions <shell>` — prints a shell completion script. PURE string generation, no
 // socket (a local op). Source-of-truth is the single `subcommands` list; every shell renderer
-// derives from it, so the Claude-only invariant (otty-clone exclusion §4: completions never list
+// derives from it, so the Claude-only invariant (E20 exclusion §4: completions never list
 // `codex`/`opencode`) holds across all shells by construction.
 
 public enum CLICompletions {
@@ -35,7 +35,7 @@ public enum CLICompletions {
 
     /// The user-facing subcommand surface offered for completion. CLAUDE-ONLY: the only per-agent
     /// forms are `watch:claude` / `state:claude`; `codex`/`opencode` are deliberately absent
-    /// (otty-clone exclusion §4 — completions/help never list non-Claude agents).
+    /// (E20 exclusion §4 — completions/help never list non-Claude agents).
     public static let subcommands: [String] = [
         "open", "view", "edit",
         "config", "font", "theme", "keybind",

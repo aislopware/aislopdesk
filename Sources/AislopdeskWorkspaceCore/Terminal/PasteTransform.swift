@@ -1,12 +1,12 @@
 import Foundation
 
-// MARK: - "Paste as…" clipboard transforms (otty parity — E8 / ES-E8-4)
+// MARK: - "Paste as…" clipboard transforms (E8 / ES-E8-4)
 
-/// PURE clipboard transforms behind otty's **Edit ▸ Paste as…** submenu. Each variant rewrites the text
+/// PURE clipboard transforms behind the **Edit ▸ Paste as…** submenu. Each variant rewrites the text
 /// (or file bytes) BEFORE it reaches the shell via the surface's `text(_:)` typing path. Cross-platform,
 /// AppKit-free, allocation-light — the testable heart of the Paste-as wiring in `GhosttyTerminalView`.
 ///
-/// Two of otty's five Paste-as variants are NOT transforms and live in the GUI/store as ROUTING, not here:
+/// Two of the five Paste-as variants are NOT transforms and live in the GUI/store as ROUTING, not here:
 /// - **Paste Selection** reads `surface.readSelection()` instead of the clipboard (a source swap).
 /// - **Paste and continue in Composer** converts the richest clipboard flavour (HTML/RTF→Markdown) and
 ///   splices it into the client Composer draft at the caret (`TerminalViewModel.onPasteToComposer`, a

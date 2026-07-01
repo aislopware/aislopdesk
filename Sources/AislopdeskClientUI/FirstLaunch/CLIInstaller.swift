@@ -1,6 +1,6 @@
 // E20 WI-9 (ES-E20-4) — the macOS "Install Aislopdesk CLI" controller.
 //
-// The otty "Install the CLI" flow (`spec/getting-started__first-launch.md` §3): symlink the bundled
+// The "Install the CLI" flow (`spec/getting-started__first-launch.md` §3): symlink the bundled
 // `aislopdesk` executable to `/usr/local/bin/aislopdesk` (a one-shot ADMIN escalation — a system privilege
 // via `osascript … with administrator privileges`, NOT app crypto, per CLAUDE.md #8 / E20 carry-over §3),
 // the **Omit Prefix** shell-function injection (the `edit`/`view`/`watch`/`jump`/`learn` bare functions —
@@ -19,7 +19,7 @@ import Defaults
 import Foundation
 import Observation
 
-/// The `@MainActor @Observable` controller behind the otty "Install CLI" card (first-launch step 3 +
+/// The `@MainActor @Observable` controller behind the "Install CLI" card (first-launch step 3 +
 /// Settings → Shell). It owns the symlink install/uninstall (admin-escalated), the installed-state probe
 /// (kept in sync with the `cliInstalled` `Defaults` flag), and the Omit-Prefix shim-file write. The view
 /// observes ``phase`` / ``errorMessage`` for the button + status chrome.
@@ -27,7 +27,8 @@ import Observation
 @MainActor
 @Observable
 public final class CLIInstaller {
-    /// Where the symlink lands. `/usr/local/bin` is the otty-faithful, PATH-by-default location.
+    /// Where the symlink lands. `/usr/local/bin` is a PATH-by-default location on macOS, so the installed
+    /// `aislopdesk` command works from any shell with no PATH edits.
     public static let symlinkPath = "/usr/local/bin/aislopdesk"
 
     /// The card's transient phase — drives the button label + spinner.
@@ -99,7 +100,7 @@ public final class CLIInstaller {
         return true
     }
 
-    /// Persist + actuate the otty "Omit Prefix" / "Allow Overwrite" toggles: write the `CLIShellShim` snippet
+    /// Persist + actuate the "Omit Prefix" / "Allow Overwrite" toggles: write the `CLIShellShim` snippet
     /// to the app-support shim file when enabled, or remove it when disabled. NO admin needed (a user-dir
     /// write). The host-side sourcing of this file into app-launched (remote) shells is the documented
     /// follow-up (E20 carry-over §1 "remote shells … host side"); the toggle + the real artifact are honest

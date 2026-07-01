@@ -466,9 +466,9 @@ final class ClientControlDispatcherTests: XCTestCase {
     // MARK: open-recipe
 
     func testOpenRecipe() {
-        let obj = run(ClientControlProtocol.Method.openRecipe, ["reference": "dev.ottyrecipe"])
+        let obj = run(ClientControlProtocol.Method.openRecipe, ["reference": "dev.aislopdeskrecipe"])
         XCTAssertTrue(isOK(obj))
-        XCTAssertEqual(backend.recordedRecipeRef, "dev.ottyrecipe")
+        XCTAssertEqual(backend.recordedRecipeRef, "dev.aislopdeskrecipe")
     }
 
     func testOpenRecipeMissingReferenceErrors() {

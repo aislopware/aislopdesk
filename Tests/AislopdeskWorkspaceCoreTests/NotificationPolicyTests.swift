@@ -21,7 +21,7 @@ final class NotificationPolicyTests: XCTestCase {
     }
 
     /// The picker label spec — notification-setting.png renders the long human form for `tabUnfocused`,
-    /// and the raw tokens round-trip as the otty config values.
+    /// and the raw tokens round-trip as the on-disk config values.
     func testNotifyWhileForegroundLabelsAndRawValues() {
         XCTAssertEqual(NotifyWhileForeground.off.displayLabel, "Off")
         XCTAssertEqual(NotifyWhileForeground.always.displayLabel, "Always")
@@ -134,7 +134,7 @@ final class NotificationPolicyTests: XCTestCase {
         }
     }
 
-    /// `.off` while frontmost suppresses — focused or not (the otty default; the system suppresses banners).
+    /// `.off` while frontmost suppresses — focused or not (the default; the system suppresses banners).
     func testForegroundOffSuppresses() {
         let s = NotificationSettings(notifyWhileForeground: .off)
         XCTAssertFalse(deliver(.explicitOSC, appActive: true, focused: true, settings: s))

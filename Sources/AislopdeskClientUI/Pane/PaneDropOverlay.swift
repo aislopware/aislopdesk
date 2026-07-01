@@ -1,5 +1,5 @@
 // PaneDropOverlay — the soft circular/elliptical drop-zone overlay drawn over a pane while an external drag
-// hovers it (E18 WI-5; otty `spec/user-interface__drag-and-drop.md`, `screenshots/drop-overlay-frame-action.png`).
+// hovers it (E18 WI-5; see `docs/ui-shell/spec/user-interface__drag-and-drop.md`, `screenshots/drop-overlay-frame-action.png`).
 //
 // PURE presentation: it draws the five labelled blobs straight from the SHARED ``PaneDropZoneLayout`` (the
 // SAME geometry the ``PaneDropReceiver`` hit-tests against — draw == hit, so the `.contentShape`-before-
@@ -10,9 +10,9 @@
 //
 // Visual DNA (from the screenshot): a central column of three circles — New Tab / Insert Path / Open
 // In-Place — over the "green / terminal half" and "blue / pane half" split, plus a tall ellipse hugging each
-// side edge (Split Left / Split Right) whose off-edge half is clipped away. The hovered zone glows the otty
+// side edge (Split Left / Split Right) whose off-edge half is clipped away. The hovered zone glows
 // status-green; the rest sit as faint washes — green for the terminal half, accent for the pane half — and a
-// disabled zone (the green New-Tab half for a file/URL) reads as a barely-there neutral. `Otty.*` tokens
+// disabled zone (the green New-Tab half for a file/URL) reads as a barely-there neutral. `Slate.*` tokens
 // only (raw colour / size literals fail `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
@@ -27,7 +27,7 @@ struct PaneDropOverlay: View {
     /// The zones the dragged content can act on — the others render muted + un-highlightable.
     let allowedZones: Set<DropZone>
 
-    /// The "green / terminal half" zones (otty's spec table left column) — tinted green even at rest; the
+    /// The "green / terminal half" zones (the drag-and-drop spec's left column) — tinted green even at rest; the
     /// remaining "blue / pane half" zones tint with the accent.
     private static let terminalHalf: Set<DropZone> = [.newTab, .insertPath]
 
@@ -42,7 +42,7 @@ struct PaneDropOverlay: View {
         // half-circle the screenshot shows hugging each edge.
         .clipShape(Rectangle())
         .allowsHitTesting(false)
-        .animation(Otty.Anim.reveal, value: activeZone)
+        .animation(Slate.Anim.reveal, value: activeZone)
     }
 
     /// One zone's blob (a soft ellipse) + its centred label.
@@ -55,13 +55,13 @@ struct PaneDropOverlay: View {
             .fill(fill(zone, active: active, allowed: allowed))
             .overlay {
                 if active {
-                    Ellipse().strokeBorder(Otty.Status.ok.opacity(0.7), lineWidth: Otty.Metric.hairline)
+                    Ellipse().strokeBorder(Slate.Status.ok.opacity(0.7), lineWidth: Slate.Metric.hairline)
                 }
             }
             .frame(width: max(shape.radiusX * 2, 0), height: max(shape.radiusY * 2, 0))
             .position(shape.center)
         Text(label(zone))
-            .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
+            .font(.system(size: Slate.Typeface.footnote, weight: .semibold))
             .foregroundStyle(labelColor(active: active, allowed: allowed))
             .position(labelCenter(zone, shape: shape))
     }
@@ -71,18 +71,18 @@ struct PaneDropOverlay: View {
     /// The blob fill: the hovered zone glows status-green; an allowed zone sits as a faint wash (green for
     /// the terminal half, accent for the pane half); a disabled zone is a barely-there neutral.
     private func fill(_ zone: DropZone, active: Bool, allowed: Bool) -> Color {
-        if active { return Otty.Status.ok.opacity(0.5) }
-        if !allowed { return Otty.State.accentMuted }
+        if active { return Slate.Status.ok.opacity(0.5) }
+        if !allowed { return Slate.State.accentMuted }
         return Self.terminalHalf.contains(zone)
-            ? Otty.Status.ok.opacity(0.14)
-            : Otty.State.accent.opacity(0.10)
+            ? Slate.Status.ok.opacity(0.14)
+            : Slate.State.accent.opacity(0.10)
     }
 
     /// The label colour tracks the zone state: bright on the active zone, secondary on an allowed one,
     /// tertiary (faded) on a disabled one.
     private func labelColor(active: Bool, allowed: Bool) -> Color {
-        if active { return Otty.Text.primary }
-        return allowed ? Otty.Text.secondary : Otty.Text.tertiary
+        if active { return Slate.Text.primary }
+        return allowed ? Slate.Text.secondary : Slate.Text.tertiary
     }
 
     /// Where the label sits: at the blob centre for the three central circles; inset from the edge for the

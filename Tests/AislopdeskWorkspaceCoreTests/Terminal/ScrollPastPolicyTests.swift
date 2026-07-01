@@ -1,7 +1,7 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E8 WI-12 (I14/I15, ES-E8-5): pins the pure ``ScrollPastPolicy`` — the testable heart of otty's
+/// E8 WI-12 (I14/I15, ES-E8-5): pins the pure ``ScrollPastPolicy`` — the testable heart of the
 /// "Scroll Past Last Line" / "Scroll Past First Line" overscroll. The GUI surface (`GhosttyTerminalView`,
 /// compile-only behind `#if canImport(CGhostty)`) only documents the deferred RENDERING ceiling (no
 /// libghostty viewport hook), so the anchor arithmetic + the alt-screen suppression gate are pinned here.
@@ -85,7 +85,7 @@ final class ScrollPastPolicyTests: XCTestCase {
         XCTAssertNotEqual(anchor, contentRows - 1, "cursor-line must NOT collapse to the last-content-row anchor")
     }
 
-    /// "Last Line With Content" must overscroll even when ALL content fits inside the viewport (the otty video:
+    /// "Last Line With Content" must overscroll even when ALL content fits inside the viewport (the design intent:
     /// only the prompt floats at the top, blank below). 5 rows in a 24-row viewport: normalMaxTop = 0, but the
     /// anchor is `contentRows − 1 == 4`. A naive `contentRows − viewportRows` clamp would yield 0 and FAIL.
     func testLastLineWithContentOverscrollsEvenWhenContentFits() {

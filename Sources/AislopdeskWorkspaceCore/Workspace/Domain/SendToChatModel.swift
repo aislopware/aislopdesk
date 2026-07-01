@@ -5,7 +5,7 @@ import Foundation
 /// The PURE display + delivery payload the E13 "Send to Chat" dialog (`⌘⌃↩`, ES-E13-5) carries: the
 /// source LOCATION (the dialog's title row — e.g. `composer.md L3` for a file pane, or the pane's display
 /// title for a terminal pane), the VERBATIM captured `quoted` text (the read-only preview box), and an
-/// optional `sourcePath` (the `…/composer.md#L3` reference line otty prepends to the delivered message for
+/// optional `sourcePath` (the `…/composer.md#L3` reference line prepended to the delivered message for
 /// a file source; `nil` for a terminal pane, which has no file path).
 ///
 /// A PURE value type (no SwiftUI / store / `AislopdeskTerminal` import) so the capture + compose are
@@ -50,7 +50,7 @@ public struct SendToChatSession: Identifiable, Equatable, Sendable {
     }
 
     /// The agent model badge shown on the right of the picker row. Claude-only, so always "Claude Code"
-    /// (the otty `OpenCode` / `GLM-5.1` multi-model badges are out of scope — see the spec mapping notes).
+    /// (multi-model badges for other agents are out of scope — see the spec mapping notes).
     public var agentLabel: String { "Claude Code" }
 }
 
@@ -82,7 +82,7 @@ public enum SendToChatModel {
     }
 
     /// Composes the VERBATIM message delivered to the agent: an optional file-reference line, then the
-    /// captured text quoted line-by-line (each line prefixed `> `, matching otty's `send-to-chat-frame-05`),
+    /// captured text quoted line-by-line (each line prefixed `> `, matching `send-to-chat-frame-05`),
     /// then — when the user typed a comment — a blank separator line and the comment. The quoted block's
     /// leading/trailing BLANK lines are dropped (CRLF normalized to LF) so a trailing newline in the
     /// captured output never leaves a dangling `> `; interior lines + content are preserved byte-for-byte.

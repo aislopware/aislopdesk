@@ -192,7 +192,7 @@ final class TerminalViewModelTests: XCTestCase {
     // MARK: E12 — OSC-133;A → onPromptIdle (the NORMAL-pane Prompt-Queue idle trigger)
 
     /// `ESC]133;A BEL` — an OSC-133 prompt-start mark on the MAIN screen (a fresh model is `.shellPrompt`).
-    /// The shell is back at an idle prompt → `onPromptIdle` fires exactly once (the literal otty "next idle
+    /// The shell is back at an idle prompt → `onPromptIdle` fires exactly once (the "next idle
     /// prompt" trigger the Prompt Queue drains on). REVERT-TO-CONFIRM-FAIL: without the `onPromptIdle?()`
     /// call in `ingestPass` the count stays 0.
     func testPromptStartOnMainScreenFiresOnPromptIdle() {

@@ -21,9 +21,9 @@ struct BlockRowView: View {
     /// The status tint: green for success, red for a failure, secondary while running.
     private var statusTint: Color {
         switch block.status {
-        case .running: Otty.Text.secondary
-        case .succeeded: Otty.Status.ok
-        case .failed: Otty.Status.err
+        case .running: Slate.Text.secondary
+        case .succeeded: Slate.Status.ok
+        case .failed: Slate.Status.err
         }
     }
 
@@ -33,7 +33,7 @@ struct BlockRowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(block.commandText.isEmpty ? "(no command)" : block.commandText)
                     .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(block.commandText.isEmpty ? Otty.Text.secondary : Otty.Text.primary)
+                    .foregroundStyle(block.commandText.isEmpty ? Slate.Text.secondary : Slate.Text.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 caption
@@ -42,7 +42,7 @@ struct BlockRowView: View {
             if isBookmarked {
                 Image(systemSymbol: .starFill)
                     .font(.caption2)
-                    .foregroundStyle(Otty.Status.warn)
+                    .foregroundStyle(Slate.Status.warn)
             }
         }
         .padding(.vertical, 2)
@@ -62,17 +62,17 @@ struct BlockRowView: View {
             }
         }
         .frame(width: 18, height: 18)
-        .font(.system(size: Otty.Typeface.body))
+        .font(.system(size: Slate.Typeface.body))
     }
 
     /// The trailing caption: status label + an optional duration, both secondary + small.
     private var caption: some View {
         HStack(spacing: 6) {
             Text(block.statusLabel)
-                .foregroundStyle(block.isFailed ? Otty.Status.err : Otty.Text.secondary)
+                .foregroundStyle(block.isFailed ? Slate.Status.err : Slate.Text.secondary)
             if let duration = block.durationLabel {
-                Text("·").foregroundStyle(Otty.Text.tertiary)
-                Text(duration).foregroundStyle(Otty.Text.secondary)
+                Text("·").foregroundStyle(Slate.Text.tertiary)
+                Text(duration).foregroundStyle(Slate.Text.secondary)
             }
         }
         .font(.caption)

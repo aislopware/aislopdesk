@@ -1,8 +1,8 @@
 import Foundation
 
-/// E1/WI-6 — the PURE, platform-neutral parser for ONE otty-style config keybinding line.
+/// E1/WI-6 — the PURE, platform-neutral parser for ONE config keybinding line.
 ///
-/// otty's `~/.config/otty/config.toml` lets a user author bindings as `keybind = <chord>:<action>`
+/// `~/.config/aislopdesk/config.toml` lets a user author bindings as `keybind = <chord>:<action>`
 /// (see `spec/customization__custom-keybindings.md`). This grammar parses the right-hand side of one
 /// such entry — the `<chord>:<action>` text — into a serialisable chord + a typed action. It owns NO
 /// state and reaches NO I/O: the dispatcher (WI-7) feeds it the user string, persists the result into
@@ -15,7 +15,7 @@ import Foundation
 /// force-unwraps and NEVER traps on hostile input, and it bounds the declared payload (rejecting a
 /// `\xNN` escape with too few hex digits) before building any byte buffer.
 ///
-/// The action grammar (faithful to otty, `spec/reference__keybindings.md`):
+/// The action grammar (`spec/reference__keybindings.md`):
 ///   - `text:<string>`  → ``ParsedBindingAction/text`` — the literal UTF-8 bytes of `<string>`.
 ///   - `csi:<payload>`  → ``ParsedBindingAction/csi`` — `ESC [` followed by `<payload>`'s bytes.
 ///   - `esc:<payload>`  → ``ParsedBindingAction/esc`` — `ESC` followed by `<payload>`'s bytes.
@@ -85,12 +85,12 @@ public enum KeybindGrammar {
     // MARK: - Chord parse
 
     /// Parse a chord string (`cmd+shift+h`, `ctrl+a`, `cmd+1`, `cmd+pageup`) into a serialisable
-    /// ``KeybindingPreferences/KeyChord``. Modifier names (otty's set): `cmd`, `ctrl`, `alt`/`opt`,
+    /// ``KeybindingPreferences/KeyChord``. Modifier names: `cmd`, `ctrl`, `alt`/`opt`,
     /// `shift`, joined by `+`; the LAST `+`-segment is the base key. Returns `nil` on an empty string,
     /// an unknown modifier, a duplicate/empty segment, a missing base key, or a multi-char base key that
     /// is not a recognised named key (so the chord can later map via `KeyChord.asRegistryChord`).
     ///
-    /// This does NOT support otty's multi-key `>` sequences (`cmd+b>cmd+v`) — those are a sequence, not a
+    /// This does NOT support multi-key `>` sequences (`cmd+b>cmd+v`) — those are a sequence, not a
     /// single chord; a `>` in the string is rejected here so a sequence isn't silently truncated.
     public static func parseChord(_ raw: String) -> KeybindingPreferences.KeyChord? {
         let text = raw.trimmingCharacters(in: .whitespaces).lowercased()
@@ -99,7 +99,7 @@ public enum KeybindGrammar {
         // Split on `+` keeping empty segments so a stray `cmd+`, `+h`, or `cmd++h` surfaces an empty
         // modifier (→ drop) rather than silently collapsing. The FINAL segment is the base key; all
         // preceding segments are modifiers. (A literal `+` base key is not expressible via this split —
-        // an acceptable gap, since otty config never binds a bare `+`.)
+        // an acceptable gap, since the config grammar never binds a bare `+`.)
         let segments = text.split(separator: "+", omittingEmptySubsequences: false).map(String.init)
         guard !segments.isEmpty else { return nil }
 
@@ -270,7 +270,7 @@ public enum KeybindGrammar {
     }
 
     /// Return the substring AFTER `prefix` if `text` starts with it, else `nil`. (Case-sensitive; the
-    /// action prefixes are lowercase by otty's grammar.)
+    /// action prefixes are lowercase by this grammar.)
     private static func stripPrefix(_ prefix: String, from text: String) -> String? {
         guard text.hasPrefix(prefix) else { return nil }
         return String(text.dropFirst(prefix.count))

@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - E8 WI-12 (I14/I15, ES-E8-5): scroll-past-last / scroll-past-first overscroll anchors
 
-/// The PURE, headless decision behind otty's **Scroll Past Last Line** (I14) and **Scroll Past First Line**
+/// The PURE, headless decision behind **Scroll Past Last Line** (I14) and **Scroll Past First Line**
 /// (I15): given the buffer geometry, the viewport size, and whether a full-screen program owns the screen,
 /// what is the overscroll ANCHOR — the top-row index the viewport may scroll to past the normal clamp?
 ///
@@ -10,16 +10,17 @@ import Foundation
 /// The terminal renders in the CLIENT's libghostty, which OWNS the viewport and exposes **no
 /// overscroll-margin / sub-row-render API** in the pinned fork (`Config.zig` has `scroll-to-bottom` but no
 /// `scroll-past-*` / `smooth-scroll`). So the *blank-overscroll RENDERING* (floating the last/first content
-/// row up/down with the terminal background filling the gap, per the otty `scroll-past-*` videos) and the
+/// row up/down with the terminal background filling the gap, per the `scroll-past-*` reference videos in
+/// `docs/ui-shell/spec/terminal-features__scroll.md`) and the
 /// *pixel-snap-on-gesture-end* cannot be actuated 1:1 — that rendering is a **deferred ceiling** recorded in
 /// `docs/DECISIONS.md`, pending a libghostty viewport hook. What lands now is the SETTINGS, the alt-screen
 /// suppression GATE, and this pure arithmetic that computes the anchor a future viewport hook would clamp to.
 /// This enum is therefore the **testable heart** of the feature; the GUI surface (`GhosttyTerminalView`,
 /// compile-only behind `#if canImport(CGhostty)`) documents the ceiling at its `scrollWheel` site.
 ///
-/// ## The gate (mirroring the otty spec)
+/// ## The gate
 /// **Scroll Past Last Line is automatically suppressed on the alternate screen** so full-screen TUIs (vim,
-/// htop, less) keep their own bottom edge intact (`spec/terminal-features__scroll.md`). Both directions take
+/// htop, less) keep their own bottom edge intact (`docs/ui-shell/spec/terminal-features__scroll.md`). Both directions take
 /// `isAlternateScreen` and return `nil` (clamp / suppressed) when set — a TUI owns the viewport, never an
 /// overscroll. `nil` is also returned for the ``ScrollPastLast/disabled`` / ``ScrollPastFirst/disabled``
 /// modes (the defaults) and for a degenerate buffer (no content / non-positive viewport), so a `nil` result
@@ -110,7 +111,7 @@ public enum ScrollPastPolicy {
         // Alt-screen suppression + a degenerate buffer / viewport → clamp normally (symmetric with the bottom).
         guard !isAlternateScreen, contentRows > 0, viewportRows > 0 else { return nil }
 
-        // Resolve "Same as Scroll Past Last Line" into the symmetric top mode (the otty mirror knob);
+        // Resolve "Same as Scroll Past Last Line" into the symmetric top mode (the mirror knob);
         // `mirroredFirst(of:)` never yields `.sameAsLast`, so `effective` is one of the concrete top modes.
         let effective = mode == .sameAsLast ? mirroredFirst(of: lastLineMode) : mode
 

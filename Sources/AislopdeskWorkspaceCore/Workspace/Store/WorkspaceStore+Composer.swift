@@ -106,7 +106,7 @@ public extension WorkspaceStore {
     // MARK: - E13 WI-5: Send to Chat (capture the active pane's quote)
 
     /// Captures the active pane's Send-to-Chat quote (ES-E13-5, `⌘⌃↩`) SYNCHRONOUSLY: the libghostty SELECTION
-    /// when one exists (the primary otty path — select text, then ⌘⌃↩). Returns `nil` — so the caller does NOT
+    /// when one exists (the primary path — select text, then ⌘⌃↩). Returns `nil` — so the caller does NOT
     /// open the dialog on this synchronous pass — when the active pane is not a terminal or has no selection.
     /// PURE-ish read (resolves through ``activeTerminalModel``); never mutates the tree.
     ///
@@ -285,7 +285,7 @@ public extension WorkspaceStore {
 
     /// The composer currently PINNED, in WHICHEVER live pane owns it — `nil` when none is pinned. The
     /// client UI mounts this at the WINDOW level (above the split / tab switcher) so a pinned composer
-    /// rides along across tab switches (the otty pin: "stays visible regardless of which tab is active"),
+    /// rides along across tab switches (a pinned composer stays visible regardless of which tab is active),
     /// instead of inside the origin pane's subtree. Resolves across ALL live sessions (not just the active
     /// one) — that is exactly what lets the pinned bar survive switching to a different tab. Reading it in a
     /// SwiftUI body registers observation on each composer's ``ComposerModel/isPinned`` so the mount tracks
@@ -312,7 +312,7 @@ public extension WorkspaceStore {
         return nil
     }
 
-    /// Enforce otty's SINGLE window-level pin: a pinned composer is a window-level singleton ("rides along
+    /// Enforce a SINGLE window-level pin: a pinned composer is a window-level singleton ("rides along
     /// regardless of which tab is active"), so pinning `pinnedID`'s composer must clear EVERY OTHER pane's
     /// pin. Without this, pinning pane A then pane B left both pinned — and ``pinnedComposer`` (first-match)
     /// surfaces only one, so the other (and its unpin toggle) became unreachable. Wired into every composer's

@@ -10,13 +10,13 @@
 // DISTINCT from Jump-To (`JumpToView`, ⌘J): Jump-To lists links + commands + actions across the whole pane;
 // the Navigator is a BLOCK/command jump WITHIN the pane. The PURE assembly + filtering live in
 // `CommandNavigatorModel` (headlessly tested, mirroring `JumpToModel`); this view snapshots nothing — it
-// reads the LIVE per-pane `TerminalBlockModel` so new commands appear as they run (otty's live index) — ranks
+// reads the LIVE per-pane `TerminalBlockModel` so new commands appear as they run (a live-updating index) — ranks
 // via the vendored `FuzzyMatcher` (injected into `CommandNavigatorModel.filtered`), and jumps via
 // `WorkspaceStore.jumpToNavigatorBlockInActivePane(index:)` (the shared `BlockJump` re-anchor engine, so the
 // delta math is never re-derived here). The navigator only ever opens over the ACTIVE pane, so the store's
 // active-pane jump always re-anchors the pane this card floats over.
 //
-// `Otty.*` tokens ONLY (raw font/colour/radius literals fail `scripts/check-ds-leaks.sh`). Cross-platform:
+// `Slate.*` tokens ONLY (raw font/colour/radius literals fail `scripts/check-ds-leaks.sh`). Cross-platform:
 // the ⌃⌘O chord is macOS-only, but the overlay + its keyboard handling compile for iOS too (the toolbar /
 // menu surfaces it there), so this whole file builds under `bash scripts/check-ios.sh`.
 
@@ -82,13 +82,13 @@ struct CommandNavigatorView: View {
             footerBar
         }
         .frame(width: panelWidth)
-        .background(Otty.Surface.card)
-        .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard))
+        .background(Slate.Surface.card)
+        .clipShape(RoundedRectangle(cornerRadius: Slate.Metric.radiusCard))
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusCard)
-                .stroke(Otty.Line.card, lineWidth: Otty.Metric.hairline),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusCard)
+                .stroke(Slate.Line.card, lineWidth: Slate.Metric.hairline),
         )
-        .shadow(color: Otty.State.shadow, radius: 30, x: 0, y: 12)
+        .shadow(color: Slate.State.shadow, radius: 30, x: 0, y: 12)
         .onChange(of: query) { _, _ in selection = 0 }
         .onChange(of: filter) { _, _ in selection = 0 }
         // Keyboard: the focused search field consumes typed text + plain ↩ (`onSubmit`); bare arrows / Esc
@@ -114,26 +114,26 @@ struct CommandNavigatorView: View {
 
     private var divider: some View {
         Rectangle()
-            .fill(Otty.Line.divider)
-            .frame(height: Otty.Metric.hairline)
+            .fill(Slate.Line.divider)
+            .frame(height: Slate.Metric.hairline)
     }
 
     // MARK: - Search bar
 
     private var searchBar: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Image(systemSymbol: .magnifyingglass)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
             TextField("Search commands…", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.primary)
-                .tint(Otty.State.accent) // the active caret is the accent colour (otty parity)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.primary)
+                .tint(Slate.State.accent) // the active caret is the accent colour
                 .focused($searchFocused)
                 .onSubmit { actSelected() } // plain ↩ jumps + closes
         }
-        .padding(.horizontal, Otty.Metric.space4)
+        .padding(.horizontal, Slate.Metric.space4)
         .frame(height: 48)
         .onAppear {
             // A `@FocusState` set in the same tick the view appears (before its backing responder exists) is
@@ -145,13 +145,13 @@ struct CommandNavigatorView: View {
     // MARK: - Filter segment (All | Failed | Bookmarked)
 
     private var filterBar: some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             ForEach(BlockNavigatorFilter.allCases, id: \.self) { segment in
                 filterPill(segment)
             }
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
         }
-        .padding(.horizontal, Otty.Metric.space3)
+        .padding(.horizontal, Slate.Metric.space3)
         .frame(height: 36)
     }
 
@@ -160,18 +160,18 @@ struct CommandNavigatorView: View {
         return Button {
             filter = segment
         } label: {
-            HStack(spacing: Otty.Metric.space1) {
+            HStack(spacing: Slate.Metric.space1) {
                 Image(systemName: segment.symbol)
-                    .font(.system(size: Otty.Typeface.small))
+                    .font(.system(size: Slate.Typeface.small))
                 Text(segment.title)
-                    .font(.system(size: Otty.Typeface.footnote, weight: active ? .semibold : .regular))
+                    .font(.system(size: Slate.Typeface.footnote, weight: active ? .semibold : .regular))
             }
-            .foregroundStyle(active ? Otty.Text.primary : Otty.Text.secondary)
-            .padding(.horizontal, Otty.Metric.space2)
+            .foregroundStyle(active ? Slate.Text.primary : Slate.Text.secondary)
+            .padding(.horizontal, Slate.Metric.space2)
             .frame(height: 24)
             .background(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
-                    .fill(active ? Otty.Surface.element : Color.clear),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
+                    .fill(active ? Slate.Surface.element : Color.clear),
             )
             .contentShape(Rectangle())
         }
@@ -193,23 +193,23 @@ struct CommandNavigatorView: View {
                         }
                     }
                 }
-                .padding(.vertical, Otty.Metric.space1)
+                .padding(.vertical, Slate.Metric.space1)
             }
             .frame(maxHeight: resultsMaxHeight)
             .onChange(of: selection) { _, _ in
                 let rows = visibleBlocks
                 guard selection >= 0, selection < rows.count else { return }
-                withAnimation(Otty.Anim.smallFade) { proxy.scrollTo(rows[selection].id, anchor: .center) }
+                withAnimation(Slate.Anim.smallFade) { proxy.scrollTo(rows[selection].id, anchor: .center) }
             }
         }
     }
 
     private var emptyState: some View {
         Text(baseBlocks.isEmpty ? emptyMessage : "No matches")
-            .font(.system(size: Otty.Typeface.body))
-            .foregroundStyle(Otty.Text.tertiary)
+            .font(.system(size: Slate.Typeface.body))
+            .foregroundStyle(Slate.Text.tertiary)
             .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.vertical, Otty.Metric.space4)
+            .padding(.vertical, Slate.Metric.space4)
     }
 
     /// The zero-state message for the empty pane, scoped to the active segment (no commands / none failed /
@@ -224,36 +224,36 @@ struct CommandNavigatorView: View {
 
     private func row(_ block: CommandBlock, index: Int) -> some View {
         let isSelected = index == selection
-        return HStack(spacing: Otty.Metric.space2) {
+        return HStack(spacing: Slate.Metric.space2) {
             gutter(for: block)
                 .frame(width: 14, alignment: .center)
             highlightedTitle(block)
-                .font(.system(size: Otty.Typeface.body))
+                .font(.system(size: Slate.Typeface.body))
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             if let duration = block.durationLabel {
                 Text(duration)
-                    .font(.system(size: Otty.Typeface.small))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.small))
+                    .foregroundStyle(Slate.Text.tertiary)
                     .monospacedDigit()
             }
             if let stamp = model.blocks.firstSeen(index: block.index) {
                 Text(OutlinePresentation.relativeTime(from: stamp, now: Date()))
-                    .font(.system(size: Otty.Typeface.small))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.small))
+                    .foregroundStyle(Slate.Text.tertiary)
                     .monospacedDigit()
             }
             starButton(block)
         }
-        .padding(.horizontal, Otty.Metric.space3)
+        .padding(.horizontal, Slate.Metric.space3)
         .frame(height: 34)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusItem)
-                .fill(isSelected ? Otty.State.selected : Color.clear),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusItem)
+                .fill(isSelected ? Slate.State.selected : Color.clear),
         )
-        .padding(.horizontal, Otty.Metric.space2)
+        .padding(.horizontal, Slate.Metric.space2)
         .contentShape(Rectangle())
         .onHover { hovering in if hovering { selection = index } }
         .onTapGesture { act(block) }
@@ -268,15 +268,15 @@ struct CommandNavigatorView: View {
         switch OutlinePresentation.gutter(for: block) {
         case .succeeded:
             Image(systemSymbol: .checkmark)
-                .font(.system(size: Otty.Typeface.small, weight: .bold))
-                .foregroundStyle(Otty.Status.ok)
+                .font(.system(size: Slate.Typeface.small, weight: .bold))
+                .foregroundStyle(Slate.Status.ok)
         case .failed:
             Image(systemSymbol: .xmark)
-                .font(.system(size: Otty.Typeface.small, weight: .bold))
-                .foregroundStyle(Otty.Status.err)
+                .font(.system(size: Slate.Typeface.small, weight: .bold))
+                .foregroundStyle(Slate.Status.err)
         case .running:
             Circle()
-                .fill(Otty.Text.tertiary)
+                .fill(Slate.Text.tertiary)
                 .frame(width: 5, height: 5)
         }
     }
@@ -290,8 +290,8 @@ struct CommandNavigatorView: View {
             model.blocks.toggleBookmark(index: block.index)
         } label: {
             Image(systemSymbol: starred ? .starFill : .star)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(starred ? Otty.Status.warn : Otty.Text.tertiary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(starred ? Slate.Status.warn : Slate.Text.tertiary)
         }
         .buttonStyle(.plain)
     }
@@ -303,19 +303,19 @@ struct CommandNavigatorView: View {
         let title = block.commandText.isEmpty ? "—" : block.commandText
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, let ranges = FuzzyMatcher.score(trimmed, title)?.ranges, !ranges.isEmpty else {
-            return Text(title).foregroundStyle(Otty.Text.primary)
+            return Text(title).foregroundStyle(Slate.Text.primary)
         }
         var segments: [Text] = []
         var cursor = title.startIndex
         for range in ranges where range.lowerBound >= cursor {
             if cursor < range.lowerBound {
-                segments.append(Text(title[cursor..<range.lowerBound]).foregroundStyle(Otty.Text.primary))
+                segments.append(Text(title[cursor..<range.lowerBound]).foregroundStyle(Slate.Text.primary))
             }
-            segments.append(Text(title[range]).foregroundStyle(Otty.State.accent).fontWeight(.semibold))
+            segments.append(Text(title[range]).foregroundStyle(Slate.State.accent).fontWeight(.semibold))
             cursor = range.upperBound
         }
         if cursor < title.endIndex {
-            segments.append(Text(title[cursor...]).foregroundStyle(Otty.Text.primary))
+            segments.append(Text(title[cursor...]).foregroundStyle(Slate.Text.primary))
         }
         return segments.reduce(Text(verbatim: "")) { $0 + $1 }
     }
@@ -323,28 +323,28 @@ struct CommandNavigatorView: View {
     // MARK: - Footer hint bar
 
     private var footerBar: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             footerHint("Navigate", glyph: "↑↓")
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             footerHint("Jump", glyph: "↩")
             footerHint("Close", glyph: "esc")
         }
-        .padding(.horizontal, Otty.Metric.space4)
+        .padding(.horizontal, Slate.Metric.space4)
         .frame(height: 34)
     }
 
     private func footerHint(_ label: String, glyph: String) -> some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             Text(label)
-                .font(.system(size: Otty.Typeface.small))
-                .foregroundStyle(Otty.Text.tertiary)
+                .font(.system(size: Slate.Typeface.small))
+                .foregroundStyle(Slate.Text.tertiary)
             Text(glyph)
-                .font(.system(size: Otty.Typeface.small, weight: .medium))
-                .foregroundStyle(Otty.Text.secondary)
-                .padding(.horizontal, Otty.Metric.space1)
+                .font(.system(size: Slate.Typeface.small, weight: .medium))
+                .foregroundStyle(Slate.Text.secondary)
+                .padding(.horizontal, Slate.Metric.space1)
                 .background(
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
-                        .fill(Otty.Surface.element),
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
+                        .fill(Slate.Surface.element),
                 )
         }
     }
@@ -353,7 +353,7 @@ struct CommandNavigatorView: View {
 
     /// The active pane's blocks for the current status segment (newest-first), BEFORE the text filter — the
     /// pure ``TerminalBlockModel/blocks(filter:)`` query. Read LIVE (no snapshot) so a command that finishes
-    /// while the navigator is open updates its gutter in place (otty's live index).
+    /// while the navigator is open updates its gutter in place.
     private var baseBlocks: [CommandBlock] {
         model.blocks.blocks(filter: filter)
     }

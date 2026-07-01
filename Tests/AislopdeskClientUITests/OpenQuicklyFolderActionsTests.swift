@@ -1,5 +1,5 @@
 // OpenQuicklyFolderActionsTests — Batch-4 item 9: the Open-Quickly Folder ⌘K action set gains "Split Right"
-// and "Split Down" (otty `open-quickly.png` Folder actions). Headless: the action TABLE is built by the pure
+// and "Split Down" alongside the existing folder actions. Headless: the action TABLE is built by the pure
 // `OpenQuicklyView.folderRowActions` static seam (no SwiftUI view instantiated, `model`/`folders` = nil), so
 // the titles are asserted without a render. Revert-to-confirm-fail: before the fix the folder action set had
 // no Split rows.

@@ -2,14 +2,14 @@ import Foundation
 
 // MARK: - E8 WI-11 (I18): undo-at-prompt key intercept
 
-/// The PURE, headless decision behind otty's **Undo at prompt** (I18): given a ⌘Z (undo) or ⌘⇧Z / ⌘Y
+/// The PURE, headless decision behind **Undo at prompt** (I18): given a ⌘Z (undo) or ⌘⇧Z / ⌘Y
 /// (redo) gesture and whether the terminal sits at an EDITABLE shell prompt, what raw bytes — if any —
 /// should the client send to the host PTY?
 ///
 /// ## Why a policy (and why redo is omitted)
 /// The terminal renders in the CLIENT's libghostty; there is no host round-trip for the keystroke decision.
-/// otty maps ⌘Z at the prompt to the **readline undo** control code — Ctrl-`_` (`0x1F`) — so the remote
-/// shell's line editor (readline / zle) rolls back the last prompt edit (`spec/terminal-features__input.md`:
+/// aislopdesk maps ⌘Z at the prompt to the **readline undo** control code — Ctrl-`_` (`0x1F`) — so the remote
+/// shell's line editor (readline / zle) rolls back the last prompt edit (`docs/ui-shell/spec/terminal-features__input.md`:
 /// "aislopdesk can intercept `⌘Z`/`⌘⇧Z` and emit the corresponding readline undo sequences (`⌃_` for undo)").
 /// There is **no portable readline *redo*** sequence (GNU readline binds `C-_`/`C-x C-u` to undo but exposes
 /// no inverse), so ⌘⇧Z / ⌘Y is a **documented omit**: the policy recognises the redo intent and returns `nil`
@@ -17,9 +17,9 @@ import Foundation
 /// the feature; the GUI surface (`GhosttyTerminalView`, compile-only behind `#if canImport(CGhostty)`) is the
 /// thin actuator that maps the NSEvent → these flags and sends the returned bytes.
 ///
-/// ## The gate (mirroring the otty spec + the safe default)
+/// ## The gate (see `docs/ui-shell/spec/terminal-features__input.md` + the safe default)
 /// Undo "applies to the current prompt line; it is unavailable inside full-screen programs (vim, less,
-/// editors) which manage their own undo history" (`spec/terminal-features__input.md`). So the single gate is
+/// editors) which manage their own undo history" (`docs/ui-shell/spec/terminal-features__input.md`). So the single gate is
 /// the **prompt zone**: only when the terminal is at an editable shell prompt (the GUI derives this exactly
 /// like ``BackspaceSelectionPolicy`` — connected AND OSC-133 idle, which is false while a TUI owns the
 /// alternate screen) does ⌘Z emit the undo byte. Off the prompt — inside `vim`/`less`, mid-command, or

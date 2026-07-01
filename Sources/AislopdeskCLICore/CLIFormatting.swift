@@ -1,12 +1,12 @@
 import Foundation
 
-// `aislopdesk` list/inspect output formatting (otty-clone E20, WI-4). PURE: every formatter is a
+// `aislopdesk` list/inspect output formatting (E20, WI-4). PURE: every formatter is a
 // deterministic value transform over the decoded NDJSON `result` rows — no socket, no I/O — so the
 // whole table/JSON surface is exhaustively unit-tested without a running app (hang-safety rule).
 //
-// otty's CLI renders list output as an aligned column table by default and as structured JSON under
-// `--json` / `--format json` (for scripting); `--no-headers` strips the header row for piping. This
-// mirrors that: the per-list helpers (`windows`/`tabs`/`panes`/`themes`/`fonts`/`keybinds`/`config`)
+// The CLI renders list output as an aligned column table by default and as structured JSON under
+// `--json` / `--format json` (for scripting); `--no-headers` strips the header row for piping. The
+// per-list helpers (`windows`/`tabs`/`panes`/`themes`/`fonts`/`keybinds`/`config`)
 // pick the columns + cell formatting; ``renderTable(headers:rows:noHeaders:)`` and
 // ``renderJSON(_:)`` are the shared low-level renderers.
 //

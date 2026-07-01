@@ -1,6 +1,6 @@
 import AislopdeskAgentDetect
 
-// `aislopdesk watch:claude <id>` (otty-clone E20, WI-8) — the PURE exit-code state machine.
+// `aislopdesk watch:claude <id>` (ui-shell E20, WI-8) — the PURE exit-code state machine.
 //
 // `watch:claude <id>` blocks until the named Claude session reaches an at-rest state, then exits.
 // Spec (reference__cli.md §CLI): exit `0` = idle or session closed, `4` = session id never seen,
@@ -16,13 +16,13 @@ import AislopdeskAgentDetect
 // a unit test, hang-safety rule); ALL exit-code decisions are HERE and exhaustively unit-tested.
 
 public enum WatchClaudeOutcome {
-    /// The three terminal exit codes (otty parity — `reference__cli.md`).
+    /// The three terminal exit codes (see `reference__cli.md`).
     public enum Exit: Int32, Equatable, Sendable {
-        /// The session reached an at-rest state — idle, done, or closed. otty `0`.
+        /// The session reached an at-rest state — idle, done, or closed. Exit code `0`.
         case settled = 0
-        /// The session id was never seen by the running app. otty `4`.
+        /// The session id was never seen by the running app. Exit code `4`.
         case neverSeen = 4
-        /// The deadline elapsed while the session was still active. otty `9`.
+        /// The deadline elapsed while the session was still active. Exit code `9`.
         case timedOut = 9
     }
 

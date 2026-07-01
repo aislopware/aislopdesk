@@ -49,7 +49,7 @@ ThirdParty/ghostty/GhosttyKit.xcframework/
 ThirdParty/ghostty/*.xcframework*
 .work/
 
-# otty-clone reference demo videos (kept on disk for reference, too large for git)
-docs/otty-clone/screenshots/*.mp4
-docs/otty-clone/screenshots/*.mov
-docs/otty-clone/screenshots/*.webm
+# ui-shell reference demo videos (kept on disk for reference, too large for git)
+docs/ui-shell/screenshots/*.mp4
+docs/ui-shell/screenshots/*.mov
+docs/ui-shell/screenshots/*.webm

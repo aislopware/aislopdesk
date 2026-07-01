@@ -1,4 +1,4 @@
-// ComposerSheet — the iOS bottom-sheet host for the otty Composer (E12 / WI-5). iOS has no system-level
+// ComposerSheet — the iOS bottom-sheet host for the Composer (E12 / WI-5). iOS has no system-level
 // floating window above other apps (sandbox), so the macOS non-activating `NSPanel` float degrades here to a
 // bottom sheet (`.presentationDetents([.medium, .large])`) hosting the SAME ``ComposerBar`` + queue strip —
 // the documented iOS ceiling (spec `agents__composer.md`). The sheet keeps the pane's DURABLE
@@ -21,7 +21,7 @@ struct ComposerSheet: View {
     let chrome: ComposerLeafChrome
     var maxLines: Int = 12
     /// Whether the active pane is an agent (`claudeStatus != .none`) — appends " — Claude Code" to the title
-    /// (the otty "Aislopdesk Composer — Claude Code" rule; no agent-name guessing when there is no agent).
+    /// (the "Aislopdesk Composer — Claude Code" rule; no agent-name guessing when there is no agent).
     var agentActive: Bool = false
 
     private var title: String {
@@ -32,12 +32,12 @@ struct ComposerSheet: View {
         VStack(spacing: 0) {
             HStack {
                 Text(title)
-                    .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote, weight: .semibold))
+                    .foregroundStyle(Slate.Text.secondary)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, Otty.Metric.space3)
-            .padding(.vertical, Otty.Metric.space2)
+            .padding(.horizontal, Slate.Metric.space3)
+            .padding(.vertical, Slate.Metric.space2)
 
             PromptQueueStrip(composer: composer)
             ComposerBar(composer: composer, chrome: chrome, maxLines: maxLines)

@@ -3,14 +3,14 @@ import Foundation
 // MARK: - Right-click paste-protection interception (audit fix — rightclick-paste-protection-hole)
 
 /// The PURE decision behind closing the right-click paste-protection hole: whether the embedder must
-/// INTERCEPT a bare (non-⌃) right-click as a PASTE — routing it through the broad otty paste-protection
+/// INTERCEPT a bare (non-⌃) right-click as a PASTE — routing it through the broad paste-protection
 /// pre-check (``PastePrecheck``) — rather than letting libghostty perform the configured `right-click-action`
 /// directly.
 ///
 /// ## Why this exists
 /// The bare-right-click dispatch is owned END-TO-END by libghostty via the `right-click-action` config
 /// (WI-7), so a `Paste` / `Copy or Paste` action pastes through libghostty's OWN gate, which only flags a
-/// `\n` / bracketed-end payload (`isSafe`). otty's four-danger analyzer (single-line `sudo`/`su`, control
+/// `\n` / bracketed-end payload (`isSafe`). This codebase's four-danger analyzer (single-line `sudo`/`su`, control
 /// chars, trailing newline, multi-line) is therefore UNREACHABLE for a right-click paste — a single-line
 /// `sudo rm -rf …` reaches the shell with no protection sheet. When this returns `true` the embedder
 /// intercepts the click BEFORE forwarding and runs the same ``PastePrecheck`` ⌘V uses.

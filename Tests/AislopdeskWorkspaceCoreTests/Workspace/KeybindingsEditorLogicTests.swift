@@ -81,9 +81,9 @@ final class KeybindingsEditorLogicTests: XCTestCase {
         )
     }
 
-    // MARK: - Capture (otty Rebind / Unbind / cancel)
+    // MARK: - Capture (Rebind / Unbind / cancel)
 
-    /// otty: "click the row then press Backspace to clear the binding." The capture resolver MUST map
+    /// Click the row then press Backspace to clear the binding. The capture resolver MUST map
     /// Backspace (keyCode 51) to `.clear`, NOT record the DEL scalar `"\u{7F}"` as a junk chord. Revert
     /// (drop the keyCode-51 branch) ⇒ the outcome becomes `.bind(key: "\u{7f}")` and this fails.
     func testBackspaceCaptureClearsRatherThanRecordingDEL() {
@@ -92,7 +92,7 @@ final class KeybindingsEditorLogicTests: XCTestCase {
             keyCode: 51, charactersIgnoringModifiers: "\u{7F}",
             command: false, shift: false, option: false, control: false,
         )
-        XCTAssertEqual(outcome, .clear, "Backspace clears the binding (otty unbind)")
+        XCTAssertEqual(outcome, .clear, "Backspace clears the binding (unbind)")
 
         // The DEL scalar must NEVER be accepted as a base key, even via some other keyCode.
         XCTAssertNil(
@@ -137,9 +137,9 @@ final class KeybindingsEditorLogicTests: XCTestCase {
         )
     }
 
-    // MARK: - Search filter (otty "Search key bindings")
+    // MARK: - Search filter ("Search key bindings")
 
-    /// otty's search box filters by action NAME and by CHORD. `KeybindingsEditorModel.matches` must match a
+    /// The search box filters by action NAME and by CHORD. `KeybindingsEditorModel.matches` must match a
     /// row by its title substring AND by its chord typed either as a glyph (`⌘`) or canonically (`cmd+d`);
     /// an unrelated query excludes it. Pins the filter the new search field drives.
     func testSearchMatchesByNameAndByChord() throws {
@@ -148,7 +148,7 @@ final class KeybindingsEditorLogicTests: XCTestCase {
 
         // By action name (case-insensitive substring of the title "Split Right").
         XCTAssertTrue(KeybindingsEditorModel.matches(split, effectiveChord: defaultChord, query: "split"))
-        // By canonical chord string (otty "type cmd+t to find what's on that combo").
+        // By canonical chord string (typing "cmd+d" finds what's bound to that combo).
         XCTAssertTrue(KeybindingsEditorModel.matches(split, effectiveChord: defaultChord, query: "cmd+d"))
         // A blank query matches everything.
         XCTAssertTrue(KeybindingsEditorModel.matches(split, effectiveChord: defaultChord, query: "   "))
@@ -158,9 +158,9 @@ final class KeybindingsEditorLogicTests: XCTestCase {
         XCTAssertFalse(KeybindingsEditorModel.matches(split, effectiveChord: defaultChord, query: "cmd+q"))
     }
 
-    // MARK: - Global reset (otty "Reset to Default", no per-row revert)
+    // MARK: - Global reset ("Reset to Default", no per-row revert)
 
-    /// The header's "Reset to Default" button is gated on `hasCustomizations` (otty: it appears only after a
+    /// The header's "Reset to Default" button is gated on `hasCustomizations` (it appears only after a
     /// binding is customized) and the reset clears ALL overrides — restoring the default chord on the LIVE
     /// table. Pins the gate + the clear-all semantics the button drives (no per-row revert path tested
     /// because there is none).

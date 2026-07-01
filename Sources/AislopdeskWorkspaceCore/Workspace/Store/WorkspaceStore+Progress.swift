@@ -30,7 +30,7 @@ public extension WorkspaceStore {
 
     /// The rolled-up OSC 9;4 progress over every leaf of session `sessionID` — the Dock aggregate source.
     /// **Error-dominant**: any leaf in `.error` makes the whole session read error (the most urgent thing to
-    /// surface — the otty "red Dock on error"); else any determinate value (the bar fills toward done, so the
+    /// surface — the macOS Dock tile turns red on error); else any determinate value (the bar fills toward done, so the
     /// MAX percent across leaves); else any indeterminate spinner; else `nil`. Mirrors
     /// ``rollupPendingCompletion(forSession:)``.
     func rollupProgress(forSession sessionID: SessionID) -> PaneProgress? {
@@ -84,7 +84,7 @@ public extension WorkspaceStore {
     /// The K5/K8 Dock-click action: reveal the NEXT failing tab/pane — a pane in `.error` progress or carrying
     /// a `.failure` completion badge — cycling forward from the focused one, and ACKNOWLEDGE it (clear its
     /// error signals) so repeated clicks step through every failing tab and the red tint clears once the last
-    /// is visited (the otty "clicking the Dock icon jumps to the next failing tab and clears the tint"). A
+    /// is visited (clicking the Dock icon jumps to the next failing tab and clears the tint). A
     /// no-op when nothing is failing. Routes through the live-model focus path (tree vs canvas) like
     /// ``revealPane(byIDString:)``.
     func revealNextErrorPane() {

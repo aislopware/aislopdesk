@@ -77,8 +77,8 @@ final class TabBadgeResolverProgressTests: XCTestCase {
     }
 
     /// The fixed precedence is preserved around the new input: a running progress spinner outranks a privilege
-    /// badge (a running privileged command still spins — otty's "caffeinate/sudo below active states"), but a
-    /// failed exit and a blocked agent still outrank it.
+    /// badge (a running privileged command still spins — active states rank above the caffeinate/sudo badge),
+    /// but a failed exit and a blocked agent still outrank it.
     func testProgressRunningKeepsFixedPrecedence() {
         XCTAssertEqual(
             badge(agent: .needsPermission, progress: .indeterminate), .awaitingInput,

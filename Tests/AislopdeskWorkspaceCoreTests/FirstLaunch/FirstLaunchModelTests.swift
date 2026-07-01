@@ -24,7 +24,7 @@ final class FirstLaunchModelTests: XCTestCase {
 
     // MARK: - Platform-filtered step set
 
-    /// macOS gets all five otty steps in checklist order.
+    /// macOS gets all five steps in checklist order.
     func testMacOSStepsAreAllFiveInOrder() {
         XCTAssertEqual(
             FirstLaunchModel.steps(for: .macOS),
@@ -128,9 +128,9 @@ final class FirstLaunchModelTests: XCTestCase {
         XCTAssertEqual(box.value, true)
     }
 
-    // MARK: - CLIShellShim (the otty "Omit Prefix" snippet — PURE)
+    // MARK: - CLIShellShim (the "Omit Prefix" snippet — PURE)
 
-    /// The exposed function names are exactly otty's documented set, in order — no non-Claude agent verbs.
+    /// The exposed function names are exactly the documented set, in order — no non-Claude agent verbs.
     func testShellShimFunctionNames() {
         XCTAssertEqual(CLIShellShim.functionNames, ["edit", "view", "watch", "jump", "learn"])
         XCTAssertFalse(CLIShellShim.functionNames.contains("codex"))

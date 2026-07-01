@@ -1,9 +1,9 @@
 import Defaults
 import Foundation
 
-// MARK: - E8 terminal-control enums (the otty Controls / Mouse / Scroll multi-state knobs)
+// MARK: - E8 terminal-control enums (the Controls / Mouse / Scroll multi-state knobs)
 
-/// A clipboard-access decision for the OSC-52 read/write gates (otty `clipboard-read` /
+/// A clipboard-access decision for the OSC-52 read/write gates (config keys `clipboard-read` /
 /// `clipboard-write`, libghostty `allow` / `deny` / `ask`).
 ///
 /// - ``allow``: silently honour the program's request.
@@ -52,7 +52,7 @@ public enum ClipboardAccess: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// What a bare right-click does in the terminal viewport (otty `mouse.rightClickAction`). ⌃+right-click
+/// What a bare right-click does in the terminal viewport (settings key `mouse.rightClickAction`). ⌃+right-click
 /// always shows the context menu regardless of this setting (handled at the GUI site, WI-7).
 ///
 /// - ``contextMenu``: show the native context menu (the default).
@@ -86,13 +86,14 @@ public enum RightClickAction: String, Codable, Sendable, CaseIterable {
 
     // NOTE: the LIVE bare-right-click dispatch is owned END-TO-END by libghostty — the config builder (WI-2)
     // emits this action's ``rawValue`` as `right-click-action`, so the surface itself performs Copy / Paste /
-    // Copy-or-Paste / Ignore / Context-Menu (1:1 with otty, which is ghostty-based). That avoids the GUI
+    // Copy-or-Paste / Ignore / Context-Menu directly, since the client's terminal surface is itself
+    // libghostty-based. That avoids the GUI
     // re-reading `hasSelection()` AFTER libghostty has already word-selected under the cursor (the WI-7 race).
     // The GUI view (`rightMouseDown`, compile-only behind `#if canImport(CGhostty)`) enforces ONLY the
     // ⌃-right-always-menu override inline; there is no client-side effect model left to keep in sync.
 }
 
-/// Overscroll behaviour past the LAST line of content (otty "Scroll Past Last Line", default Disabled).
+/// Overscroll behaviour past the LAST line of content ("Scroll Past Last Line" in Settings, default Disabled).
 /// Automatically suppressed on the alternate screen (the policy that consumes this — `ScrollPastPolicy`,
 /// WI-12 — returns `nil` there so full-screen TUIs keep their bottom edge).
 ///
@@ -122,8 +123,8 @@ public enum ScrollPastLast: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// Overscroll behaviour past the FIRST (oldest) line of scrollback (otty "Scroll Past First Line", default
-/// Disabled). Symmetric with ``ScrollPastLast``.
+/// Overscroll behaviour past the FIRST (oldest) line of scrollback ("Scroll Past First Line" in Settings,
+/// default Disabled). Symmetric with ``ScrollPastLast``.
 ///
 /// - ``disabled``: clamp at the scrollback top (the default).
 /// - ``sameAsLast``: mirror the ``ScrollPastLast`` setting (only one knob to tune).
@@ -151,8 +152,8 @@ public enum ScrollPastFirst: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// Whether ⇧+click / ⇧+drag bypasses a program's mouse capture to make a native selection (otty "Allow
-/// Shift with Mouse Click", libghostty `mouse-shift-capture`).
+/// Whether ⇧+click / ⇧+drag bypasses a program's mouse capture to make a native selection ("Allow
+/// Shift with Mouse Click" in Settings, libghostty `mouse-shift-capture`).
 ///
 /// - ``disabled``: never bypass (program always captures).
 /// - ``enabled``: ⇧ bypasses capture for that one gesture (the default).
@@ -184,16 +185,16 @@ public enum MouseShiftCapture: String, Codable, Sendable, CaseIterable {
     /// The libghostty `mouse-shift-capture` config token this case maps to. Consumed by the config builder
     /// (WI-2); kept here so the libghostty representation lives next to the enum and is unit-pinned.
     ///
-    /// **The mapping is INVERTED on purpose** because otty's user-facing axis ("Allow Shift with Mouse
+    /// **The mapping is INVERTED on purpose** because this enum's user-facing axis ("Allow Shift with Mouse
     /// Click" = "hold ⇧ to *select text* even when the running app captures the mouse") is the *opposite*
     /// of libghostty's `mouse-shift-capture` axis, which asks the reverse question — whether ⇧ is *captured
     /// into the mouse protocol and sent to the program*. Per the vendored ghostty `Config.zig` docs:
     /// `false` = ⇧ is NOT sent to the program and EXTENDS THE SELECTION (libghostty's own default, program
     /// may override via `XTSHIFTESCAPE`); `true` = ⇧ IS sent to the program (program may override); `never`
     /// = same as `false` but the program CANNOT override (⇧ always extends selection); `always` = same as
-    /// `true` but the program CANNOT override (⇧ always goes to the program). So "⇧ selects" (otty ON) maps
-    /// to libghostty's *don't-capture* tokens and "⇧ goes to the program" (otty OFF) maps to its *capture*
-    /// tokens:
+    /// `true` but the program CANNOT override (⇧ always goes to the program). So "⇧ selects" (this setting ON)
+    /// maps to libghostty's *don't-capture* tokens and "⇧ goes to the program" (this setting OFF) maps to its
+    /// *capture* tokens:
     ///
     /// - ``enabled`` (default — ⇧ extends selection, soft) → `false` — and libghostty's own default is
     ///   `false`, so the factory terminal honours, rather than overrides, the upstream default.
@@ -209,7 +210,7 @@ public enum MouseShiftCapture: String, Codable, Sendable, CaseIterable {
         }
     }
 
-    /// Whether ⇧ EXTENDS THE SELECTION — the ON state of otty's binary "Allow Shift with Mouse Click" switch.
+    /// Whether ⇧ EXTENDS THE SELECTION — the ON state of the binary "Allow Shift with Mouse Click" switch.
     /// The Settings UI surfaces this leaf as a simple ON/OFF toggle (not the 4-way enum), so a value persisted
     /// by the removed 4-way picker must project onto that binary axis: ``enabled`` / ``always`` (soft / hard
     /// "⇧ extends selection") read ON; ``disabled`` / ``never`` (soft / hard "⇧ goes to the program") read OFF.
@@ -224,7 +225,7 @@ public enum MouseShiftCapture: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// How the macOS Option key is treated for terminal input (otty "Option as Alt", libghostty
+/// How the macOS Option key is treated for terminal input ("Option as Alt" in Settings, libghostty
 /// `macos-option-as-alt`, default ``off``). aislopdesk's client renders with libghostty, so the
 /// key→byte encoding happens in the local surface — `macos-option-as-alt` is the real, reachable
 /// config knob the builder (WI-2) emits.
@@ -270,18 +271,18 @@ public enum OptionAsAlt: String, Codable, Sendable, CaseIterable {
     }
 }
 
-// MARK: - E10 link-interaction enums (otty Settings → Controls → Open With / Link Schemes)
+// MARK: - E10 link-interaction enums (Settings → Controls → Open With / Link Schemes)
 
-/// What a `⌘`click on a detected link / path does (otty `link-cmd-click`, default ``open``).
+/// What a `⌘`click on a detected link / path does (settings key `link-cmd-click`, default ``open``).
 ///
 /// - ``open``: open in the best handler — a file / folder opens or reveals on the HOST (over the E4
 ///   metadata RPC, E10 WI-7), a URL opens in the client's system browser.
 /// - ``copy``: copy the resolved absolute path / URL to the client pasteboard.
 /// - ``nothing``: do nothing on ⌘click (the user reaches links via the right-click menu / Jump-To /
-///   Hint Mode instead) — otty's escape hatch when ⌘click conflicts with a TUI.
+///   Hint Mode instead) — the escape hatch when ⌘click conflicts with a TUI.
 ///
 /// PURE `String`-raw + `CaseIterable`; a CLIENT-side dispatch token (no libghostty config key), so the raw
-/// values are aislopdesk's own / otty's persistence tokens. ``init(rawValue:)`` is validate-then-repair to
+/// values are aislopdesk's own persistence tokens. ``init(rawValue:)`` is validate-then-repair to
 /// ``open`` (the default) — the same non-failable shape as ``RightClickAction`` so the
 /// `Defaults.PreferRawRepresentable` bridge keeps working.
 public enum LinkCmdClick: String, Codable, Sendable, CaseIterable {
@@ -301,7 +302,7 @@ public enum LinkCmdClick: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// What a `⌘⇧`click on a detected link / path does (otty `link-cmd-shift-click`, default ``revealFinder``).
+/// What a `⌘⇧`click on a detected link / path does (settings key `link-cmd-shift-click`, default ``revealFinder``).
 ///
 /// - ``revealFinder``: reveal the path in the HOST Finder (the `open -R`-equivalent over the metadata RPC,
 ///   E10 WI-7); a URL has no Finder target, so the click copies it instead.
@@ -324,7 +325,7 @@ public enum LinkCmdShiftClick: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// Which URL schemes are auto-detected / underlined on `⌘`-hover (otty "Auto-Detect Link Schemes",
+/// Which URL schemes are auto-detected / underlined on `⌘`-hover ("Auto-Detect Link Schemes" in Settings,
 /// default ``all``). `http(s)`, `file`, and `mailto` are ALWAYS detected regardless of this mode (the
 /// detector hard-codes them — see ``LinkSchemePolicy``); this only governs OTHER `scheme://…` forms.
 ///
@@ -366,44 +367,45 @@ public enum AutoDetectLinkSchemes: String, Codable, Sendable, CaseIterable {
 /// PURE `Codable + Sendable + Equatable` — no SwiftUI, no AppKit — so `TerminalControlsTests` pins the
 /// factory + the enum round-trips with no view.
 public struct TerminalControls: Codable, Sendable, Equatable {
-    /// otty `copy-on-select` — copy the selection to the pasteboard as soon as it is made (default OFF).
-    /// The builder emits `clipboard` when on, `false` when off.
+    /// The `copy-on-select` config line — copy the selection to the pasteboard as soon as it is made
+    /// (default OFF). The builder emits `clipboard` when on, `false` when off.
     public var copyOnSelect: Bool
-    /// otty `clipboard-trim-trailing-spaces` — strip trailing whitespace from each copied line (default ON).
+    /// The `clipboard-trim-trailing-spaces` config line — strip trailing whitespace from each copied line
+    /// (default ON).
     public var trimTrailing: Bool
-    /// otty `selection-clear-on-typing` — clear the selection when the user types (default ON).
+    /// The `selection-clear-on-typing` config line — clear the selection when the user types (default ON).
     public var clearOnTyping: Bool
-    /// otty `selection-clear-on-copy` — clear the selection after an explicit copy (default OFF).
+    /// The `selection-clear-on-copy` config line — clear the selection after an explicit copy (default OFF).
     public var clearOnCopy: Bool
-    /// otty `clipboard-paste-protection` — warn before pasting unsafe text (default ON).
+    /// The `clipboard-paste-protection` config line — warn before pasting unsafe text (default ON).
     public var pasteProtection: Bool
-    /// otty `clipboard-paste-bracketed-safe` — treat bracketed paste as safe (skips the warning when the
-    /// program advertised `?2004h`) (default ON).
+    /// The `clipboard-paste-bracketed-safe` config line — treat bracketed paste as safe (skips the warning
+    /// when the program advertised `?2004h`) (default ON).
     public var bracketedSafe: Bool
-    /// otty `clipboard-read` — the OSC-52 clipboard-READ access gate (default ``ClipboardAccess/ask``).
+    /// The `clipboard-read` config line — the OSC-52 clipboard-READ access gate (default ``ClipboardAccess/ask``).
     public var clipboardRead: ClipboardAccess
-    /// otty `clipboard-write` — the OSC-52 clipboard-WRITE access gate (default ``ClipboardAccess/allow``).
+    /// The `clipboard-write` config line — the OSC-52 clipboard-WRITE access gate (default ``ClipboardAccess/allow``).
     public var clipboardWrite: ClipboardAccess
-    /// otty `mouse-hide-while-typing` — hide the pointer while typing (default ON).
+    /// The `mouse-hide-while-typing` config line — hide the pointer while typing (default ON).
     public var hideMouseWhileTyping: Bool
-    /// otty `mouse-shift-capture` — whether ⇧ bypasses a program's mouse capture for a native selection
-    /// (default ``MouseShiftCapture/enabled``).
+    /// The `mouse-shift-capture` config line — whether ⇧ bypasses a program's mouse capture for a native
+    /// selection (default ``MouseShiftCapture/enabled``).
     public var allowShiftClick: MouseShiftCapture
-    /// otty `cursor-click-to-move` — click in the prompt to move the shell cursor (default ON).
+    /// The `cursor-click-to-move` config line — click in the prompt to move the shell cursor (default ON).
     public var clickToMove: Bool
-    /// otty `mouse-reporting` — allow programs (vim, tmux, htop) to capture mouse events (default ON).
+    /// The `mouse-reporting` config line — allow programs (vim, tmux, htop) to capture mouse events (default ON).
     public var allowMouseCapture: Bool
-    /// otty `mouse.rightClickAction` (H7/H8) — what a bare right-click does in the viewport (default
+    /// The `mouse.rightClickAction` settings key (H7/H8) — what a bare right-click does in the viewport (default
     /// ``RightClickAction/contextMenu``). The config builder (WI-2) emits its `rawValue` as libghostty's
     /// `right-click-action` so libghostty owns the dispatch; the GUI view keeps only the ⌃-right-always-menu
     /// override.
     public var rightClickAction: RightClickAction
-    /// otty "Shift+Arrow Select" — ⇧+arrows drive native selection (emits four `adjust_selection` keybinds)
+    /// "Shift+Arrow Select" — ⇧+arrows drive native selection (emits four `adjust_selection` keybinds)
     /// instead of forwarding the arrow escapes to the program (default ON).
     public var shiftArrowSelect: Bool
-    /// otty `mouse-scroll-multiplier` — multiply the scroll-wheel delta (default `1.0`).
+    /// The `mouse-scroll-multiplier` config line — multiply the scroll-wheel delta (default `1.0`).
     public var scrollMultiplier: Double
-    /// otty "Option as Alt" — whether the macOS Option key sends Alt/Meta (Esc-prefixed) sequences
+    /// "Option as Alt" — whether the macOS Option key sends Alt/Meta (Esc-prefixed) sequences
     /// (default ``OptionAsAlt/off``, libghostty `macos-option-as-alt`). The config builder (WI-2) emits its
     /// ``OptionAsAlt/configValue`` as `macos-option-as-alt`; the client's libghostty surface owns the
     /// key→byte encoding, so this is a real, reachable knob.

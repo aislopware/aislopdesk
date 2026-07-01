@@ -173,7 +173,7 @@ public final class CommandCompletionNotifier {
     private var explicitLimiter = NotificationRateLimiter(now: ProcessInfo.processInfo.systemUptime)
 
     /// The K8 dock-bounce seam (E14/WI-5): called when a notification is DELIVERED while the app is not
-    /// active. otty drives the bounce from the notification OSCs, NOT the bell — so it rides every delivered
+    /// active. The bounce rides the notification OSCs, NOT the bell — so it fires on every delivered
     /// banner. WI-5 wires this to `NSApp.requestUserAttention(.informationalRequest)` (gated by the
     /// "Bounce Dock Icon" toggle); the default is a no-op so the pre-WI-5 build (and tests) never bounce.
     public var bounceDock: () -> Void = {}
@@ -202,9 +202,9 @@ public final class CommandCompletionNotifier {
         // ``NotificationPolicy`` per-command (any duration). Re-imposing a floor here would silently drop the
         // short failing `make` the store just authorised. The poster re-applies the policy as the foreground-gate
         // actuator (defence-in-depth — agreeing with the store), then auth + post.
-        // E14/K9: the otty per-event toggle (Notify on Finish / Error) + the Notify-While-Foreground gate.
-        // A clean exit is `notifyOnFinish` (default OFF — so a clean long command no longer posts a banner,
-        // matching otty); a non-zero exit is `notifyOnError` (default ON).
+        // E14/K9: the per-event toggle (Notify on Finish / Error) + the Notify-While-Foreground gate.
+        // A clean exit is `notifyOnFinish` (default OFF — so a clean long command no longer posts a banner);
+        // a non-zero exit is `notifyOnError` (default ON).
         guard NotificationPolicy.shouldDeliver(
             event: .commandFinish(exit: exitCode),
             appActive: appActive, sourcePaneFocused: sourcePaneFocused, settings: settings,

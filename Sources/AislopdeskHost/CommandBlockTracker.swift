@@ -61,7 +61,7 @@ struct CommandBlockTracker {
         autoProgressPrefixes: [String] = [],
     ) {
         // K2 (E14/WI-3): when the caller does not inject a segmenter, build one carrying the resolved
-        // auto-progress prefix list (otty "Auto Progress-Bar Commands"). An INJECTED segmenter keeps its
+        // auto-progress prefix list ("Auto Progress-Bar Commands"). An INJECTED segmenter keeps its
         // OWN prefixes (tests). An empty list ⇒ no synthetic spinner (byte-identical to the pre-E14 tap).
         self.segmenter = segmenter ?? CommandBlockSegmenter(autoProgressPrefixes: autoProgressPrefixes)
         // Validate-then-clamp: a non-positive bound would mean "retain nothing"; treat <=0 as the

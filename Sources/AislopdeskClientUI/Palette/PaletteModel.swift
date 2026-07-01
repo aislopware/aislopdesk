@@ -49,10 +49,10 @@ public enum QueryFilter: String, CaseIterable, Sendable, Hashable {
 
 // MARK: - Palette category (the verb grouping under section headers)
 
-/// The otty action categories the verbs-only ⌘⇧P command palette groups its catalog under (spec §Behaviors:
+/// The action categories the verbs-only ⌘⇧P command palette groups its catalog under (spec §Behaviors:
 /// "Actions are grouped under capitalized section headers e.g. WORKING DIRECTORY, VIEW"). This is DISTINCT
 /// from ``QueryFilter`` (the Open-Quickly jump-to domains): a `PaletteCategory` only SUB-groups the single
-/// ACTIONS source so the command palette reads as otty's sectioned verb list, whereas a `QueryFilter` picks
+/// ACTIONS source so the command palette reads as a sectioned verb list, whereas a `QueryFilter` picks
 /// which multi-source provider runs. Every catalog row carries one; the mixer / zero-state emit a section
 /// header per non-empty category in ``commandOrder``.
 public enum PaletteCategory: String, CaseIterable, Sendable, Hashable {
@@ -65,13 +65,13 @@ public enum PaletteCategory: String, CaseIterable, Sendable, Hashable {
     case agents = "Agents"
     case settings = "Settings"
 
-    /// The section-header label (otty title case; the palette view uppercases it for display).
+    /// The section-header label (title case; the palette view uppercases it for display).
     public var label: String { rawValue }
 
     /// The fixed display order: Working Directory leads (it OWNS the cwd badge in the view, per the
-    /// screenshot), then otty's verb groups. An empty category is skipped by the mixer / zero-state, so it
-    /// never renders an empty header. (Shell carries the E17 "Read Only" verb — otty's "Shell → Read Only";
-    /// Agents carries the E12/E13 "Open Composer" + the three "Fork in…" verbs — otty's Agents menu.)
+    /// screenshot), then the remaining verb groups. An empty category is skipped by the mixer / zero-state, so it
+    /// never renders an empty header. (Shell carries the E17 "Read Only" verb;
+    /// Agents carries the E12/E13 "Open Composer" + the three "Fork in…" verbs.)
     public static let commandOrder: [Self] = [
         .workingDirectory, .window, .pane, .tab, .view, .shell, .agents, .settings,
     ]
@@ -110,40 +110,40 @@ public enum PaletteAction: Sendable {
     /// Jump the right Details / inspector panel to a SPECIFIC tab (Info / Outline / Git / Files) AND reveal
     /// it if hidden — routed by the overlay coordinator to the injected ``OverlayCoordinator/selectDetailsTab``
     /// closure (the same live `DetailsPanelState.selected` + `WorkspaceChromeState.inspectorCollapsed` the
-    /// ⌘⇧R toggle + the View ▸ Details: * menu rows drive). otty surfaces its four UNBOUND `Details: *`
-    /// commands in the palette; aislopdesk lists them under VIEW so they run with zero config on BOTH
+    /// ⌘⇧R toggle + the View ▸ Details: * menu rows drive). These four UNBOUND `Details: *`
+    /// commands are listed under VIEW so they run with zero config on BOTH
     /// platforms (ES-E9-5 — the palette is cross-platform).
     case selectDetailsTab(DetailsPanelTab)
-    /// E19 WI-4: toggle "Pin Window" (otty View ▸ Pin Window — keep the window floating above all other apps).
+    /// E19 WI-4: toggle "Pin Window" (keep the window floating above all other apps).
     /// Routed by the overlay coordinator to the injected ``OverlayCoordinator/togglePinWindow`` closure (bound
     /// to the SAME live ``WorkspaceChromeState`` `pinned` flag the menu Button + the `NSWindow.level` glue
     /// read), so the palette row's ✓ gutter (resolved in ``OverlayHostView/toggledState(for:)``) tracks the
     /// real pinned state. A checkable toggle (ES-E2-3); a documented no-op on iOS (no window level).
     case togglePinWindow
-    /// Close the active window (otty Window ▸ Close Window). Routed by the overlay coordinator to the injected
+    /// Close the active window. Routed by the overlay coordinator to the injected
     /// ``OverlayCoordinator/closeWindow`` closure (bound on macOS to `NSWindow.performClose(nil)` → the native
     /// `windowShouldClose` close-confirmation gate, preserving the configured ``CloseConfirmationPolicy``).
     /// `nil` (iOS / tests / a pre-`onAppear` scene) falls back to ``WorkspaceStore/requestCloseWindow()`` so
     /// the row PARKS the confirmation rather than trapping — the SAME fallback the ⌘⇧W route arm uses, never a
     /// dead control.
     case closeWindow
-    /// Theme parity (Batch 4 catalog-completeness): otty's palette "Switch Theme" — switch the active local
+    /// Theme catalog verb (Batch 4 catalog-completeness): the palette "Switch Theme" row — switch the active local
     /// theme. Routed by the overlay coordinator to the injected ``OverlayCoordinator/switchTheme`` closure
     /// (bound app-side to ``PreferencesStore`` — it advances the primary slot through the built-in themes, the
     /// SAME live `appearance.theme` Settings → Appearance edits, so the chrome retints + the terminal cells
     /// repaint immediately). `nil`-closure default (tests / previews) is a graceful no-op.
     case switchTheme
-    /// Theme parity (Batch 4): otty's palette "Reload Config" / "Reload Theme" — re-apply the live client
+    /// Theme catalog verb (Batch 4): the palette "Reload Config" / "Reload Theme" row — re-apply the live client
     /// settings (theme retint + keybinding republish). Routed by the coordinator to the injected
     /// ``OverlayCoordinator/reloadConfig`` closure (bound app-side to ``PreferencesStore/reapplyLiveSettings()``
     /// plus the config-reload broadcast the CLI `config reload` posts). A graceful no-op by default.
     case reloadConfig
-    /// Theme parity (Batch 4): otty's palette "Open Theme File" — reveal the custom-themes folder
-    /// (`~/.config/aislopdesk/themes/`) in Finder so a hand-authored `.ottytheme` can be edited. Routed by the
+    /// Theme catalog verb (Batch 4): the palette "Open Theme File" row — reveal the custom-themes folder
+    /// (`~/.config/aislopdesk/themes/`) in Finder so a hand-authored `.aislopdesktheme` can be edited. Routed by the
     /// coordinator to the injected ``OverlayCoordinator/openThemeFile`` closure (macOS `NSWorkspace`; iOS has no
     /// `~/.config` so it is a documented no-op). A graceful no-op by default.
     case openThemeFile
-    /// Agent parity (Batch 4): otty Agents ▸ Send to Chat — open the Send-to-Chat dialog over the active pane's
+    /// Agent catalog verb (Batch 4): the Agents ▸ Send to Chat row — open the Send-to-Chat dialog over the active pane's
     /// quote. Routed by the coordinator to ``OverlayCoordinator/openSendToChat()`` (the SAME ⌘⌃↩ surface the
     /// menu mirrors), which HONESTLY no-ops (toast) when there is nothing to quote. CLAUDE-only.
     case openSendToChat
@@ -171,7 +171,7 @@ public struct PaletteItem: Identifiable, Sendable {
     public let shortcut: String?
     /// Which source/domain produced this row (for the section grouping + filter match).
     public let filter: QueryFilter
-    /// The otty verb category this row groups under in the verbs-only ⌘⇧P palette (Working Directory /
+    /// The verb category this row groups under in the verbs-only ⌘⇧P palette (Working Directory /
     /// Window / Pane / …). `nil` for non-action rows (jump-to Tabs/Files results, separators) — only the
     /// ACTIONS catalog tags its rows.
     public let category: PaletteCategory?

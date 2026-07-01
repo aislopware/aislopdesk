@@ -137,7 +137,7 @@ final class TerminalFindBarModelTests: XCTestCase {
         }
     }
 
-    /// ES-E5-3 (find-next-opens-find): ⌘G with the bar closed OPENS it (faithful otty behaviour).
+    /// ES-E5-3 (find-next-opens-find): ⌘G with the bar closed OPENS it.
     func testNextOpensBarWhenClosed() {
         withBar(lines: ["docs"]) { bar, _ in
             XCTAssertFalse(bar.visible)
@@ -284,8 +284,8 @@ final class TerminalFindBarModelTests: XCTestCase {
     }
 
     /// Batch-5: the find bar's `rectangle.stack` "search all tabs" button escalates to cross-tab Global Search
-    /// SEEDED with the current query, then dismisses the in-pane bar. otty-reversed pins the button's function
-    /// (`SearchIconButton("rectangle.stack") // search all tabs`); find.png places it between the next-match
+    /// SEEDED with the current query, then dismisses the in-pane bar. The button's function is pinned
+    /// (`SearchIconButton("rectangle.stack") // search all tabs`), placed between the next-match
     /// chevron and the close ×.
     ///
     /// Revert-to-confirm-fail: before this batch the model had NO `searchAllTabs()` / `onSearchAllTabs` seam

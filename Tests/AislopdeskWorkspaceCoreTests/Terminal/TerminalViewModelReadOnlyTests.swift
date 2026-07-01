@@ -48,7 +48,7 @@ final class TerminalViewModelReadOnlyTests: XCTestCase {
         XCTAssertEqual(tapped, [Data("typed".utf8)], "after exit, broadcastTap forwards again")
     }
 
-    // MARK: Beep (rate-limited — otty "beeps once" under a flood)
+    // MARK: Beep (rate-limited — beeps once under a flood)
 
     /// A read-only input flood beeps ONCE, not per event (a mouse-report flood funnels through `sendInput`).
     /// The injected `beep` seam counts without ringing a real `NSSound`; a wide interval coalesces the burst.
@@ -62,7 +62,7 @@ final class TerminalViewModelReadOnlyTests: XCTestCase {
         model.enterReadOnly()
         for _ in 0..<50 { model.sendInput(Data([0x61])) }
 
-        XCTAssertEqual(beeps, 1, "a 50-event read-only flood beeps exactly once (otty 'beeps once')")
+        XCTAssertEqual(beeps, 1, "a 50-event read-only flood beeps exactly once (rate-limited, not per event)")
     }
 
     /// The throttle is INTERVAL-driven, not a one-shot latch: with a zero interval every blocked input beeps

@@ -1,4 +1,4 @@
-// ComposerKeyResolverTests (E12 / WI-5) — the PURE Return-key mapping the Composer field dispatches. otty's
+// ComposerKeyResolverTests (E12 / WI-5) — the PURE Return-key mapping the Composer field dispatches. The
 // core invariant is "Return alone never sends — accidental sends are impossible by design"; this pins that
 // contract headlessly (no SwiftUI view, no responder, no GhosttySurface/VT/Metal). The view only DISPATCHES
 // the action this resolver returns, so proving the mapping here proves the keyboard behaviour.
@@ -32,7 +32,7 @@ final class ComposerKeyResolverTests: XCTestCase {
     }
 
     /// A bare Return (and `⇧↩`, which carries no command/option) in normal Composer mode is a NEWLINE — the
-    /// otty "Return never sends" safety. If this ever resolved to `.send`, a half-written message could fire.
+    /// "Return never sends" safety invariant. If this ever resolved to `.send`, a half-written message could fire.
     func testBareReturnIsNewlineNeverSend() {
         let action = ComposerKeyResolver.resolveReturn(command: false, option: false, queueMode: false)
         XCTAssertEqual(action, .newline)

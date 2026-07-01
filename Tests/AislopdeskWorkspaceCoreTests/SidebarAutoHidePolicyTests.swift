@@ -16,8 +16,8 @@ final class SidebarAutoHidePolicyTests: XCTestCase {
     // MARK: desiredCollapsed
 
     /// `.auto` collapses the sidebar when there is ≤1 tab and reveals it when there is more than one — the
-    /// otty "hidden when only one tab" behaviour. Asserts against an INDEPENDENT truth table, not the
-    /// function's own derivation.
+    /// sidebar is only useful for switching between tabs, so it hides itself when there is nothing to switch
+    /// between. Asserts against an INDEPENDENT truth table, not the function's own derivation.
     func testAutoCollapsesAtOrBelowOneTab() {
         XCTAssertEqual(SidebarAutoHidePolicy.desiredCollapsed(mode: .auto, tabCount: 0), true, "0 tabs → collapse")
         XCTAssertEqual(SidebarAutoHidePolicy.desiredCollapsed(mode: .auto, tabCount: 1), true, "1 tab → collapse")
@@ -43,7 +43,7 @@ final class SidebarAutoHidePolicyTests: XCTestCase {
 
     // MARK: AutoHideTabsPanelMode raw values + Defaults round-trip / repair
 
-    /// The enum raw values are the otty `auto-hide-tabs-panel` config tokens and round-trip exactly.
+    /// The enum raw values are the `auto-hide-tabs-panel` config tokens and round-trip exactly.
     func testAutoHideTabsPanelModeRawRoundTrip() {
         XCTAssertEqual(AutoHideTabsPanelMode.allCases, [.default, .always, .auto])
         XCTAssertEqual(AutoHideTabsPanelMode.default.rawValue, "default")

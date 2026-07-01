@@ -337,7 +337,7 @@ final class MuxChannelSession: @unchecked Sendable {
         // WB1: instantiate the per-channel Blocks tracker only when enabled — otherwise the byte
         // pipeline + sniffer stay byte-identical (no segmenter touches the stream, no emit). E14/K2:
         // the tracker's segmenter carries the resolved auto-progress prefix list (from
-        // `AISLOPDESK_AUTO_PROGRESS_COMMANDS`, default the otty built-in slow-command list) so a matched
+        // `AISLOPDESK_AUTO_PROGRESS_COMMANDS`, default the built-in slow-command list) so a matched
         // slow command auto-drives a synthetic OSC-9;4 spinner alongside the type-28 block metadata.
         blockTracker = blocksEnabled
             ? CommandBlockTracker(autoProgressPrefixes: HostEnvironment.autoProgressPrefixes())

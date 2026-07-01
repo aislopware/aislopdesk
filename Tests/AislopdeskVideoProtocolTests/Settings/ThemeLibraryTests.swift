@@ -132,7 +132,7 @@ final class ThemeLibraryTests: XCTestCase {
 
     private func writeFile(_ name: String, _ contents: String) throws {
         try contents.write(
-            to: tempDir.appendingPathComponent("\(name).ottytheme", isDirectory: false),
+            to: tempDir.appendingPathComponent("\(name).aislopdesktheme", isDirectory: false),
             atomically: true, encoding: .utf8,
         )
     }
@@ -141,7 +141,7 @@ final class ThemeLibraryTests: XCTestCase {
         let original = Self.richDocument()
         let result = try ThemeLibrary.write(original, to: tempDir)
         XCTAssertEqual(result.slug, "my-cool-theme")
-        XCTAssertEqual(result.url.lastPathComponent, "my-cool-theme.ottytheme")
+        XCTAssertEqual(result.url.lastPathComponent, "my-cool-theme.aislopdesktheme")
 
         let scanned = ThemeLibrary.scan(directory: tempDir)
         XCTAssertEqual(scanned.count, 1)
@@ -165,7 +165,7 @@ final class ThemeLibraryTests: XCTestCase {
     }
 
     func testScanDeduplicatesCollidingFileNameSlugs() throws {
-        // Two distinct files whose FILE NAMES (the `.ottytheme` basenames — the slug source of truth) slug to
+        // Two distinct files whose FILE NAMES (the `.aislopdesktheme` basenames — the slug source of truth) slug to
         // the same value get de-collided. The display names inside are irrelevant to the slug.
         try writeFile("Theme A", ThemeLibrary.serialize(Self.minimalDocument(name: "First")))
         try writeFile("Theme!A", ThemeLibrary.serialize(Self.minimalDocument(name: "Second")))

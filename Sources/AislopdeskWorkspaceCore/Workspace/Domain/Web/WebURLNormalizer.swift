@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Address-bar / dropped-URL normalization
 
 /// Turns a raw address-bar string (or a dropped URL/text) into a SAFE, navigable `http(s)` ``URL`` — or
-/// `nil` when nothing safe can be produced (E18, otty `spec/user-interface__files-and-links.md` › Web
+/// `nil` when nothing safe can be produced (E18, `spec/user-interface__files-and-links.md` › Web
 /// Browser Pane: *"A bare host in the address bar gets `https://` prepended; otherwise it acts as a
 /// DuckDuckGo search."*).
 ///
@@ -22,7 +22,7 @@ import Foundation
 /// `URL`/`URLComponents` build is checked, and a build failure degrades to the search fallback or `nil`.
 /// Pinned by `WebURLNormalizerTests`.
 public enum WebURLNormalizer {
-    /// The search engine a non-URL query is sent to (otty uses DuckDuckGo).
+    /// The search engine a non-URL query is sent to (DuckDuckGo).
     static let searchHost = "duckduckgo.com"
 
     /// Normalize `raw` into a navigable `http(s)` ``URL``, or `nil` (validate-then-drop). See the type doc

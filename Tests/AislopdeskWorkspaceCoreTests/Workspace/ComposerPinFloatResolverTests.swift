@@ -55,7 +55,7 @@ final class ComposerPinFloatResolverTests: XCTestCase {
         XCTAssertNil(store.pinnedComposer, "unpinning drops the window-level mount")
     }
 
-    /// otty's pin is a SINGLE window-level composer — pinning a second pane's composer must auto-unpin the
+    /// Pinning is a SINGLE window-level composer — pinning a second pane's composer must auto-unpin the
     /// first so exactly one is pinned (and reachable via ``WorkspaceStore/pinnedComposer``). REVERT-TO-CONFIRM-
     /// FAIL: without the `onPinnedExclusive` sweep, pinning B leaves A pinned too — A's composer (and its unpin
     /// toggle) become unreachable because `pinnedComposer` (first-match across the unordered registry) surfaces
@@ -73,7 +73,7 @@ final class ComposerPinFloatResolverTests: XCTestCase {
             "precondition: pane A is the single pinned composer",
         )
 
-        // Pin pane B's composer: otty's single window-level pin means A must auto-unpin.
+        // Pin pane B's composer: the single window-level pin means A must auto-unpin.
         secondTabComposer.setPinned(true)
         XCTAssertFalse(firstTabComposer.isPinned, "pinning B auto-unpins A (one global pinned composer)")
         XCTAssertTrue(secondTabComposer.isPinned, "B stays pinned")

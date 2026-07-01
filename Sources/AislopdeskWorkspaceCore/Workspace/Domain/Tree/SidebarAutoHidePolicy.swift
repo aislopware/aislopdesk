@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - SidebarAutoHidePolicy (otty `auto-hide-tabs-panel` decision)
+// MARK: - SidebarAutoHidePolicy (`auto-hide-tabs-panel` decision)
 
 /// The PURE decision for whether the vertical TABS panel (sidebar) should be collapsed for a given
 /// ``AutoHideTabsPanelMode`` + active-session tab count (E19/A18). Headless + unit-tested apart from the
@@ -17,7 +17,7 @@ public enum SidebarAutoHidePolicy {
     /// Whether the sidebar should be collapsed for `mode` given the active session's `tabCount`.
     ///
     /// - ``AutoHideTabsPanelMode/auto`` → `tabCount <= 1` (collapse when there is one tab or none, reveal
-    ///   when there is more than one — the otty "hidden when only one tab" behaviour). An empty session
+    ///   when there is more than one — hidden whenever there is nothing to switch between). An empty session
     ///   (`tabCount == 0`) collapses too — there is nothing to switch between.
     /// - ``AutoHideTabsPanelMode/default`` / ``AutoHideTabsPanelMode/always`` → `nil` (no opinion).
     ///

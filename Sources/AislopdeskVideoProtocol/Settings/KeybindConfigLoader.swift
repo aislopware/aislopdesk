@@ -1,18 +1,18 @@
 import Foundation
 
-/// E1/WI-6 (production wiring) — the loader that turns an otty-style `~/.config/aislopdesk/config.toml`
+/// E1/WI-6 (production wiring) — the loader that turns a `~/.config/aislopdesk/config.toml`
 /// into live ``KeybindingPreferences``. It is the MISSING population path: ``KeybindGrammar`` parses one
 /// `keybind` line and the dispatcher (WI-7) already consults ``KeybindingPreferences/textBindings`` /
 /// ``KeybindingPreferences/unbinds``, but until now NOTHING wrote those maps — so the `text:` / `csi:` /
 /// `esc:` / `unbind:` half of ES-E1-6 was unreachable end-to-end. This loader closes that gap: it reads the
-/// flat `key = value` config (the otty config-file format, `spec/reference__config-file-format.md`), parses
+/// flat `key = value` config (`spec/reference__config-file-format.md`), parses
 /// every `keybind = <chord>:<action>` line via ``KeybindGrammar/parseLine``, and FOLDS the result into a
 /// ``KeybindingPreferences`` the app publishes into ``WorkspaceBindingRegistry/activeOverrides``.
 ///
 /// **Validate-then-drop, file edition (CLAUDE.md §3, applied to untrusted *config text*):** the file is a
 /// user document, not a hostile UDP datagram, but the same discipline holds — a malformed `keybind` line is
 /// DROPPED (the line is skipped, the rest of the file still loads) rather than failing the whole load or
-/// trapping. Unknown keys are silently ignored (otty's lenient reader), blank lines and `#` comments are
+/// trapping. Unknown keys are silently ignored (a lenient reader), blank lines and `#` comments are
 /// skipped, and whitespace around `=` is optional.
 ///
 /// **Pure + headless.** This owns no state and reaches I/O only through the explicit ``loadFile(at:into:)``
@@ -27,9 +27,9 @@ import Foundation
 /// caller returns `nil` for an unknown action id), the named line is dropped. The `text:` / `csi:` / `esc:` /
 /// `unbind:` directives need NO registry and are handled here unconditionally — that is the ES-E1-6 core.
 public enum KeybindConfigLoader {
-    /// The default config path: `~/.config/aislopdesk/config.toml` (the otty `~/.config/otty/config.toml`
-    /// analog, renamed for this app). Honours `XDG_CONFIG_HOME` when set (the freedesktop convention otty's
-    /// `~/.config` base follows); falls back to `$HOME/.config`. Returns `nil` when no home can be resolved.
+    /// The default config path: `~/.config/aislopdesk/config.toml`. Honours `XDG_CONFIG_HOME` when set (the
+    /// freedesktop convention the `~/.config` base follows); falls back to `$HOME/.config`. Returns `nil` when
+    /// no home can be resolved.
     public static func defaultConfigURL(environment: [String: String] = ProcessInfo.processInfo.environment)
         -> URL?
     {
@@ -77,10 +77,10 @@ public enum KeybindConfigLoader {
 
     /// The PURE fold (no I/O): parse `configText` and merge its `keybind` directives into `base`.
     ///
-    /// Each line is read in the otty flat-config dialect: leading/trailing whitespace trimmed, blank lines and
+    /// Each line is read in a flat-config dialect: leading/trailing whitespace trimmed, blank lines and
     /// `#` comments skipped, and exactly one `key = value` per line (lenient whitespace around `=`). Only the
-    /// `keybind` key is consulted here — every OTHER key is silently ignored (otty's "unknown keys are
-    /// silently ignored", so this loader can share the file with the rest of the config). A `keybind` value is
+    /// `keybind` key is consulted here — every OTHER key is silently ignored (unknown keys are silently
+    /// ignored, so this loader can share the file with the rest of the config). A `keybind` value is
     /// handed to ``KeybindGrammar/parseLine``; a line that fails to parse is DROPPED (the rest still load).
     ///
     /// The parsed action routes by kind:
@@ -132,7 +132,7 @@ public enum KeybindConfigLoader {
 
     /// The `keybind` value on one config line, or `nil` when the line is blank, a comment, or assigns a
     /// DIFFERENT key. Splits on the FIRST `=` (lenient whitespace), trims, and matches the bare key `keybind`.
-    /// An optional surrounding pair of double quotes on the value is stripped (otty's lenient quoting).
+    /// An optional surrounding pair of double quotes on the value is stripped (lenient quoting).
     private static func keybindValue(in rawLine: String) -> String? {
         let line = rawLine.trimmingCharacters(in: .whitespaces)
         guard !line.isEmpty, !line.hasPrefix("#") else { return nil }

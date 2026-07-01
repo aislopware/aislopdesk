@@ -36,7 +36,7 @@ struct MarkdownText: View {
             // Guard / fallback path: selectable monospaced plain text (also what an empty string yields).
             Text(markdown)
                 .font(.system(.callout, design: .monospaced))
-                .foregroundStyle(Otty.Text.primary)
+                .foregroundStyle(Slate.Text.primary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

@@ -17,13 +17,13 @@ public struct AgentPreferences: Codable, Sendable, Equatable {
     public var agentDetect: Bool?
     /// Claude Code hooks (the richest, opt-in signal, wire type 27) → `AISLOPDESK_AGENT_HOOKS`.
     public var agentHooks: Bool?
-    /// E13 WI-3 (ES-E13-3): hold a system-sleep assertion while ANY agent is processing (otty "Prevent Sleep
-    /// While Processing") → `AISLOPDESK_AGENT_PREVENT_SLEEP` (default-OFF host gate, `== "1"`). Host-LOCAL
+    /// E13 WI-3 (ES-E13-3): hold a system-sleep assertion while ANY agent is processing (the "Prevent Sleep
+    /// While Processing" toggle) → `AISLOPDESK_AGENT_PREVENT_SLEEP` (default-OFF host gate, `== "1"`). Host-LOCAL
     /// policy: the daemon holds the `IOPMAssertion` (``PreventSleepAssertion``) driven by the `claudeStatus
     /// .working` aggregate it already computes, so it needs no live wire verb — it rides this sidecar like the
     /// other two flags (surfaced with the `.reconnect` timing chip). `nil` ⇒ unset (the daemon default-OFF).
     public var preventSleep: Bool?
-    /// E13 WI-3: re-arm a detached agent session on connection recovery (otty "Resume on Recovery") →
+    /// E13 WI-3: re-arm a detached agent session on connection recovery (the "Resume on Recovery" toggle) →
     /// `AISLOPDESK_AGENT_RESUME_ON_RECOVERY` (default-ON host gate, `!= "0"`). Host-LOCAL, sidecar-borne like
     /// ``preventSleep``. `nil` ⇒ unset (the daemon default-ON).
     public var resumeOnRecovery: Bool?

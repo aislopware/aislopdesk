@@ -61,7 +61,7 @@ final class RecipeTrustTests: XCTestCase {
 
     func testEditedByteProducesDifferentHashAndFreshPrompt() {
         let original = bytes(of: "commands = ['make deploy']")
-        // Edit ONE byte (the trailing char) — the otty rule: "editing the file changes its hash".
+        // Edit ONE byte (the trailing char) — the invariant: "editing the file changes its hash".
         var edited = original
         edited[edited.count - 1] = edited[edited.count - 1] ^ 0x01
         let originalHash = RecipeTrustStore.sha256Hex(original)
@@ -117,7 +117,7 @@ final class RecipeTrustTests: XCTestCase {
 
     func testAlwaysTrustPersistsAndDecodes() throws {
         var store = RecipeTrustStore.empty
-        let hash = RecipeTrustStore.sha256Hex(bytes(of: "foreign.ottyrecipe"))
+        let hash = RecipeTrustStore.sha256Hex(bytes(of: "foreign.aislopdeskrecipe"))
         store.trust(hash: hash, name: "deploy-prod-debug", origin: .alwaysTrust)
 
         let data = try XCTUnwrap(store.encoded(), "the trust store encodes to JSON")

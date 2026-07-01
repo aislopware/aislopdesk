@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E9 — the Outline tab's PURE presentation mapping: otty-style relative-time bucketing (with an injected
+/// E9 — the Outline tab's PURE presentation mapping: relative-time bucketing (with an injected
 /// fixed `now`) and the exit-status → gutter classification. Headless (no view / theme read).
 final class OutlinePresentationTests: XCTestCase {
     // MARK: relativeTime boundaries

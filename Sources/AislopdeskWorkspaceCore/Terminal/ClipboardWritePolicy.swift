@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - E8 WI-2 (I11): the embedder side of otty's clipboard-WRITE "Ask" gate
+// MARK: - E8 WI-2 (I11): the embedder side of the clipboard-WRITE "Ask" gate
 
 /// What the terminal embedder should do when libghostty asks it to WRITE the pasteboard — a
 /// `copy_to_clipboard` binding action or, the security-relevant case, a remote program's OSC-52 WRITE.
@@ -17,7 +17,7 @@ public enum ClipboardWriteDecision: Equatable, Sendable {
     case drop
 }
 
-/// The PURE, headless decision behind otty's **clipboard-write = ask** gate at the libghostty `write_clipboard_cb`.
+/// The PURE, headless decision behind the **clipboard-write = ask** gate at the libghostty `write_clipboard_cb`.
 ///
 /// ## Why this exists (the inert-"Ask" bug)
 /// E8 surfaces a clipboard-write Allow / Deny / Ask picker and the config builder emits `clipboard-write =

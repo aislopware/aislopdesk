@@ -64,8 +64,8 @@ final class AgentPreferencesSidecarTests: XCTestCase {
         XCTAssertTrue(HostEnvironment.agentResumeOnRecoveryEnabled(environment: env))
     }
 
-    // The flag was a live, enabled UI toggle whose host reader had ZERO consumers (a no-op). otty maps
-    // "Resume Session on Recovery" onto `DetachedSessionStore`, so the actuation AND-s the flag into
+    // The flag was a live, enabled UI toggle whose host reader had ZERO consumers (a no-op). "Resume
+    // Session on Recovery" maps onto `DetachedSessionStore`, so the actuation AND-s the flag into
     // `HostServer.detachEnabled` — the single reattach gate. These pin that the consumer exists: OFF forces
     // detach off (a recovered terminal spawns a fresh shell instead of reattaching), ON leaves it on. Both
     // FAIL on the un-fixed code, where `detachEnabled` ignored the flag and stayed ON regardless.

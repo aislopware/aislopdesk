@@ -17,14 +17,14 @@ public struct TerminalPreferences: Codable, Sendable, Equatable {
     public var fontWeight: String
     /// Theme name / palette (libghostty `theme`).
     public var theme: String
-    /// Terminal background colour (libghostty `background`, 6-hex). Defaults to otty's "Paper" warm
+    /// Terminal background colour (libghostty `background`, 6-hex). Defaults to a warm "Paper"
     /// off-white so the terminal surface matches the Paper chrome (named themes are not bundled, so an
     /// explicit colour — applied AFTER `theme` — is what actually pins the surface light).
     public var background: String
-    /// Terminal foreground / text colour (libghostty `foreground`, 6-hex). otty's primary text on Paper.
+    /// Terminal foreground / text colour (libghostty `foreground`, 6-hex). The primary text colour on Paper.
     public var foreground: String
 
-    /// Cursor style (libghostty `cursor-style`). otty's four styles (`cursor-style.png`): Block,
+    /// Cursor style (libghostty `cursor-style`). Four styles: Block,
     /// Block (hollow), Bar, Underline. `block_hollow` is a native libghostty cursor style
     /// (`terminal/cursor.zig`); the raw values are the libghostty config tokens 1:1.
     public enum CursorStyle: String, Codable, Sendable, CaseIterable {
@@ -33,7 +33,7 @@ public struct TerminalPreferences: Codable, Sendable, Equatable {
         case bar
         case underline
 
-        /// The otty-facing display label (the dropdown text), since the kebab-style raw value
+        /// The UI-facing display label (the dropdown text), since the kebab-style raw value
         /// (`block_hollow`) does not capitalize into "Block (hollow)".
         public var displayName: String {
             switch self {
@@ -45,13 +45,13 @@ public struct TerminalPreferences: Codable, Sendable, Equatable {
         }
     }
 
-    /// Whether the cursor blinks (libghostty `cursor-style-blink`). A TRI-STATE matching otty's three-value
-    /// "Cursor blink style" dropdown (`cursor-style.png`): ``default`` defers to DEC mode 12 (the otty
+    /// Whether the cursor blinks (libghostty `cursor-style-blink`). A TRI-STATE "Cursor blink style"
+    /// setting: ``default`` defers to DEC mode 12 (the
     /// default), ``on`` / ``off`` force it. libghostty's `cursor-style-blink` is an optional bool (`?bool` —
     /// null = defer to DEC mode 12), so ``default`` SKIPS the config line and only ``on`` / ``off`` emit
     /// `true` / `false` (see ``TerminalConfigBuilder``).
     public enum CursorBlink: String, Codable, Sendable, CaseIterable {
-        /// Defer to DEC mode 12 (the program decides) — emits NO `cursor-style-blink` line (the otty default).
+        /// Defer to DEC mode 12 (the program decides) — emits NO `cursor-style-blink` line (the default).
         case `default`
         /// Force blinking on (`cursor-style-blink = true`).
         case on
@@ -67,9 +67,9 @@ public struct TerminalPreferences: Codable, Sendable, Equatable {
     /// Scrollback buffer size in lines (libghostty `scrollback-limit`, rows).
     public var scrollbackLines: Int
 
-    /// Cursor body-glide animation (otty `cursor.animation`).
+    /// Cursor body-glide animation (`cursor.animation`).
     public enum CursorAnimation: String, Codable, Sendable, CaseIterable {
-        /// No animation — the caret jumps discretely (the libghostty default; the otty default).
+        /// No animation — the caret jumps discretely (the libghostty default; also the default here).
         case off
         /// Glide the caret on same-row moves and add a small elastic overshoot on click / focus. A
         /// CLIENT-side render layer (the pinned libghostty fork exposes no cursor-animation key, so the
@@ -82,17 +82,17 @@ public struct TerminalPreferences: Codable, Sendable, Equatable {
     // env overrides, so they never reach the EnvConfig overlay. Empty colour strings mean "follow the
     // theme" (the builder skips an empty `cursor-color` / `cursor-text` line — the "unset honoured" rule).
     /// Cursor body colour (libghostty `cursor-color`, 6-hex). Empty = follow the foreground automatically
-    /// (otty's "Default"); a non-empty value pins the caret colour.
+    /// ("Default"); a non-empty value pins the caret colour.
     public var cursorColor: String
     /// Glyph colour rendered UNDER the cursor (libghostty `cursor-text`, 6-hex). Empty = follow the
-    /// background automatically (otty's "Default").
+    /// background automatically ("Default").
     public var cursorTextColor: String
     /// Cursor body opacity (libghostty `cursor-opacity`, `0.0`…`1.0`), default `1.0` (fully opaque).
     public var cursorOpacity: Double
-    /// Cursor glide animation (otty `cursor.animation`), default ``CursorAnimation/off``.
+    /// Cursor glide animation (`cursor.animation`), default ``CursorAnimation/off``.
     public var cursorAnimation: CursorAnimation
 
-    // E15 (WI-2): otty FONT-PARITY render prefs (Appearance → Font). Like the cursor render fields these are
+    // E15 (WI-2): FONT-PARITY render prefs (Appearance → Font). Like the cursor render fields these are
     // pure-chrome prefs with real defaults — applied live via `TerminalConfigBuilder` → libghostty — NEVER
     // env overrides / `video-prefs.json` / golden corpus. Every default value below is the one that emits NO
     // new libghostty line, so a default-constructed value stays byte-identical to the pre-E15 builder output
@@ -103,44 +103,44 @@ public struct TerminalPreferences: Codable, Sendable, Equatable {
     /// (the default) ⇒ only the primary `font-family` line.
     public var fontFamilyFallback: String
     /// Explicit bold face family (libghostty `font-family-bold`). Emitted ONLY when ``autoMatchWeightStyle``
-    /// is OFF and non-empty (otty surfaces the four manual face pickers only when auto-match is off).
+    /// is OFF and non-empty (the UI surfaces the four manual face pickers only when auto-match is off).
     public var fontFamilyBold: String
     /// Explicit italic face family (libghostty `font-family-italic`). Same gate as ``fontFamilyBold``.
     public var fontFamilyItalic: String
     /// Explicit bold-italic face family (libghostty `font-family-bold-italic`). Same gate as ``fontFamilyBold``.
     public var fontFamilyBoldItalic: String
-    /// otty "Auto-match weight & style" (default ON): pick the real bold/italic/bold-italic faces of the
+    /// "Auto-match weight & style" (default ON): pick the real bold/italic/bold-italic faces of the
     /// chosen family automatically. When OFF, the explicit `fontFamilyBold/Italic/BoldItalic` fields apply.
     public var autoMatchWeightStyle: Bool
-    /// Ligature mode (otty `font-ligatures`), default ``FontLigatures/off`` (no `font-feature` line).
+    /// Ligature mode (`font-ligatures`), default ``FontLigatures/off`` (no `font-feature` line).
     public var fontLigatures: FontLigatures
-    /// Extend ligation to alphabetic sequences (otty `font-ligatures-alphabet`), default `false`. When `true`
+    /// Extend ligation to alphabetic sequences (`font-ligatures-alphabet`), default `false`. When `true`
     /// AND ligatures are on, the builder appends `liga` to the `font-feature` list.
     public var fontLigaturesAlphabet: Bool
-    /// Bold face mode (otty `font-bold`), default ``FontStyleMode/auto`` (no line).
+    /// Bold face mode (`font-bold`), default ``FontStyleMode/auto`` (no line).
     public var fontBold: FontStyleMode
-    /// Italic face mode (otty `font-italic`), default ``FontStyleMode/auto`` (no line).
+    /// Italic face mode (`font-italic`), default ``FontStyleMode/auto`` (no line).
     public var fontItalic: FontStyleMode
-    /// SGR underline rendering (otty `font-underline`), default `true` (on). PERSISTED + surfaced but NOT
+    /// SGR underline rendering (`font-underline`), default `true` (on). PERSISTED + surfaced but NOT
     /// emitted — there is no verified stock libghostty key (deferred-apply; see ``TerminalFontSettings``).
     public var fontUnderline: Bool
-    /// SGR 5/6 blink rendering (otty `font-blink`), default `false` (off — an accessibility concern).
+    /// SGR 5/6 blink rendering (`font-blink`), default `false` (off — an accessibility concern).
     /// PERSISTED + surfaced but NOT emitted — no verified stock libghostty key (deferred-apply).
     public var fontBlink: Bool
-    /// Glyph anti-aliasing blend mode (otty `font-blending`), default ``FontBlending/default``. Only
+    /// Glyph anti-aliasing blend mode (`font-blending`), default ``FontBlending/default``. Only
     /// ``FontBlending/macosLike`` maps (→ `font-thicken = true`); the others persist but are not emitted.
     public var fontBlending: FontBlending
-    /// Cell-height mode (otty `line-height`), default ``LineHeightMode/default`` (no `adjust-cell-height`
+    /// Cell-height mode (`line-height`), default ``LineHeightMode/default`` (no `adjust-cell-height`
     /// line — the theme/font decides).
     public var lineHeight: LineHeightMode
 
-    // E12 (Composer): the otty "Composer max height" default lives here as the single source the fire-time
+    // E12 (Composer): the "Composer max height" default lives here as the single source the fire-time
     // `SettingsKey.composerMaxHeight` Defaults key reads for its default. The per-instance max-height / pin
     // MIRROR fields were removed — they had zero readers (the leaf reads the fire-time
     // `SettingsKey.composerMaxHeightFraction`; the pin persists PER-PANE keyed by `PaneID` via
     // `SettingsKey.isComposerPinned`/`setComposerPinned`), so a typed mirror here only risked a false
     // "persisted" claim. CLIENT-only, no `video-prefs.json` sidecar / env overlay / golden corpus (decision #6).
-    /// The default Composer max-height fraction (otty "Composer max height", unspecified on the docs page →
+    /// The default Composer max-height fraction (the "Composer max height" setting defaults to
     /// ~0.4 of the pane height). Read by `SettingsKey.Keys.composerMaxHeight` as its default.
     public static let defaultComposerMaxHeightFraction: Double = 0.4
 

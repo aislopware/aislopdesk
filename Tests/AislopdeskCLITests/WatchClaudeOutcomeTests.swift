@@ -2,7 +2,7 @@ import AislopdeskAgentDetect
 import AislopdeskCLICore
 import XCTest
 
-// `aislopdesk watch:claude <id>` exit-code state machine (otty-clone E20, WI-8).
+// `aislopdesk watch:claude <id>` exit-code state machine (ui-shell E20, WI-8).
 //
 // The EXPECTED exit codes / steps are authored INDEPENDENTLY here (literal `0`/`4`/`9` and the
 // hand-written at-rest classification), not derived from `WatchClaudeOutcome`'s own output, so a
@@ -13,7 +13,7 @@ import XCTest
 final class WatchClaudeOutcomeTests: XCTestCase {
     private typealias Outcome = WatchClaudeOutcome
 
-    // MARK: - Exit-code constants (otty parity: 0 idle/closed · 4 never-seen · 9 timeout)
+    // MARK: - Exit-code constants (0 = idle/closed · 4 = never-seen · 9 = timeout)
 
     func testExitRawValuesArePinned() {
         XCTAssertEqual(Outcome.Exit.settled.rawValue, 0)

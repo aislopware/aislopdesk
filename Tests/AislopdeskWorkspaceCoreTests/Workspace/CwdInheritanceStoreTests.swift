@@ -307,7 +307,7 @@ final class CwdInheritanceStoreTests: XCTestCase {
         XCTAssertEqual(newFake?.sentBytes ?? [], [], "a remote-GUI pane takes no `cd`")
     }
 
-    // MARK: - New session (otty "New Window") working-directory policy (E7 carry-over #7)
+    // MARK: - New session ("New Window") working-directory policy (E7 carry-over #7)
 
     // `SettingsKey.workingDirectoryNewWindow` was a DEAD accessor read NOWHERE before E7. These pin that
     // `newSession` now resolves + stamps it the same way `newTab` / `splitActivePane` do: inherit stamps the

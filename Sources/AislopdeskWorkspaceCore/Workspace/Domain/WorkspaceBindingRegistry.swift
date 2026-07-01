@@ -17,9 +17,9 @@ public enum WorkspaceAction: Hashable, Sendable {
     case splitLeft // ⌘⌥D — split the active pane, inserting the new pane on the LEADING (left) side
     case splitUp // ⌘⌥⇧D — split the active pane, inserting the new pane on the LEADING (top) side
     case closePane // ⌘W  — close the active pane (cascades the tab/session)
-    case renamePane // (no otty default chord) — rename the active TAB on the tree shell (opens its
+    case renamePane // (no default chord) — rename the active TAB on the tree shell (opens its
     // tab-strip inline field); the active canvas pane on the retained-but-dead canvas path. Reachable from
-    // the title menu / context menu / palette only (otty ships no rename chord — ⌘⇧R is Toggle Details).
+    // the title menu / context menu / palette only (⌘⇧R is reserved for Toggle Details).
     case breakPaneToTab // ⌃⌘T — eject the active pane into a new tab
     case toggleFloat // ⌥⌘F — float / embed the active pane (zellij toggle-float; E5 relocated off ⌘⇧F)
     case spawnFloating // ⌃⌘⇧F — spawn a new floating scratch pane (⌃⌘F is reserved for system Toggle Fullscreen)
@@ -53,7 +53,7 @@ public enum WorkspaceAction: Hashable, Sendable {
 
     // View
     case toggleZoom // ⌘⇧↩ — maximize / restore the active pane (render-only)
-    case commandPalette // ⌘⇧P — show/hide the command palette (otty's documented default)
+    case commandPalette // ⌘⇧P — show/hide the command palette (the documented default)
     case cheatSheet // ⌘/ — show/hide the keyboard cheat sheet
     case find // ⌘F — show/hide the find-in-terminal bar over the active pane (W14 #5)
     case findNext // ⌘G — advance to the NEXT find match (opens the find bar if closed)
@@ -66,23 +66,23 @@ public enum WorkspaceAction: Hashable, Sendable {
     case toggleViKeyHints
     // Read-Only mode (E17 ES-E17-1): toggle the active pane's READ-ONLY input gate — every outbound input
     // path (keys / paste / IME commit / mouse-report / click-to-move / drop / sync-broadcast) is dropped +
-    // beeps once while output keeps streaming. otty documents NO default chord; reachable via the menu +
+    // beeps once while output keeps streaming. No default chord; reachable via the menu +
     // command palette ("Read Only" / readonly / lock / freeze / view only) only.
     case toggleReadOnly
     // Secure Keyboard Entry (E17 ES-E17-4): the MANUAL toggle for macOS process-global secure event input
-    // over the active pane (otty Edit ▸ Secure Keyboard Entry). The AUTO path engages on a host no-echo
-    // password prompt without an action; this is the explicit user override. otty ships no default chord —
+    // over the active pane. The AUTO path engages on a host no-echo
+    // password prompt without an action; this is the explicit user override. No default chord —
     // reachable via the menu + command palette ("Secure Keyboard Entry") only.
     case secureKeyboardEntry
-    case toggleSidebar // ⌘⇧L — show/hide the sessions sidebar (otty "Toggle Tabs Panel")
-    case toggleDetailsPanel // ⌘⇧R — show/hide the right-hand Details / inspector panel (otty parity)
-    // View → Pin Window (otty; E19 ES-E19-1): keep the window floating above ALL other apps' windows.
-    // CHORD-LESS — otty ships no default chord; the live macOS app flips `WorkspaceChromeState.pinned` →
+    case toggleSidebar // ⌘⇧L — show/hide the sessions sidebar
+    case toggleDetailsPanel // ⌘⇧R — show/hide the right-hand Details / inspector panel
+    // View → Pin Window (E19 ES-E19-1): keep the window floating above ALL other apps' windows.
+    // CHORD-LESS — no default chord; the live macOS app flips `WorkspaceChromeState.pinned` →
     // `NSWindow.level = .floating` via the route closure. A window-scope view concern → needs no active pane;
     // iOS has no window level (documented no-op).
     case pinWindow
     // Jump the Details / inspector panel to a SPECIFIC tab (Info / Outline / Git / Files) AND reveal it if
-    // hidden (otty's four `Details: *` jump commands; ES-E9-5). Parameterized like `selectTab`/`applyLayout`;
+    // hidden (four `Details: *` jump commands; ES-E9-5). Parameterized like `selectTab`/`applyLayout`;
     // unbound by default (the four registry rows carry `chord: nil`) — the user can bind any in Settings.
     case selectDetailsTab(DetailsPanelTab)
     case openQuickly // ⌘⇧O — open the fuzzy "open quickly" file/symbol switcher (E11 stub)
@@ -95,7 +95,7 @@ public enum WorkspaceAction: Hashable, Sendable {
     // Hint Mode (E10 ES-E10-6 / `terminal-features__hint-mode`): overlay 2-letter Vimium labels on every
     // detected target in the active pane's viewport; type the label to run the action — no mouse. Three
     // intents: ⌘⇧J open (paths→host / URLs→client), ⌘⇧Y copy (→ client clipboard), reveal-in-Finder (host)
-    // which is CHORD-LESS (otty's ⌘⇧R is aislopdesk's Toggle Details — see `view.toggleDetails`), so it is
+    // which is CHORD-LESS (⌘⇧R is reserved for Toggle Details — see `view.toggleDetails`), so it is
     // palette/menu-surfaced + an in-overlay action switch. E10 OWNS ⌘⇧J for Hint to Open, so `.peekAndReply`
     // moved off ⌘⇧J → ⌘⌥J (carryover-binding; see `view.peekReply`). Each targets the active terminal pane (a
     // graceful no-op off-terminal).
@@ -129,8 +129,8 @@ public enum WorkspaceAction: Hashable, Sendable {
     case nextTab // ⌘⇧]
     case prevTab // ⌘⇧[
     case selectTab(Int) // ⌘1…⌘9 (1-based)
-    case closeTab // (no otty default chord) — close the active tab (all its panes); reachable via the ⌘W
-    // close cascade + palette/menu (E7 carry-over #5: otty's ⌘⇧W is Close WINDOW, so it ships no Close-Tab chord)
+    case closeTab // (no default chord) — close the active tab (all its panes); reachable via the ⌘W
+    // close cascade + palette/menu (E7 carry-over #5: ⌘⇧W is reserved for Close Window, so there is no Close-Tab chord)
     case closeWindow // ⌘⇧W — close the active window (→ Session); the close-confirmation surface gates it
     case reopenClosed // ⌘⇧T — reopen the most recently closed pane (browser idiom; E3 stub)
 
@@ -160,12 +160,12 @@ public enum WorkspaceAction: Hashable, Sendable {
     case forkInNewTab
 
     // Recipes (E16 ES-E16-1/2/3): save the current tab/window layout (+ optional commands) to a
-    // `.ottyrecipe`, and open a `.ottyrecipe` to restore it. Both open a VIEW surface (the save sheet / the
+    // `.aislopdeskrecipe`, and open a `.aislopdeskrecipe` to restore it. Both open a VIEW surface (the save sheet / the
     // open picker) routed through the store's `pending*` flags — so, like `.commandPalette`, they act at the
     // window scope and need no active pane. `.saveRecipe` is the ONE recipe verb that carries a default chord
     // (⌘S), folded in via ``aliasChords`` (no display row — the menu is shortcut-LESS, the NSEvent dispatcher
     // owns the chord). BOTH verbs are surfaced in the command palette (the cross-platform `RecipePaletteSource`,
-    // which also lists one "Open Recipe: <name>" row per saved `.ottyrecipe`) AND the File menu — so Save / Open
+    // which also lists one "Open Recipe: <name>" row per saved `.aislopdeskrecipe`) AND the File menu — so Save / Open
     // Recipe are reachable on iOS, which has no menu bar; neither is menu-only.
     case saveRecipe
     case openRecipe
@@ -370,10 +370,10 @@ public struct WorkspaceBinding: Sendable, Equatable {
 ///
 /// Every chord is ⌘- or ⌥-prefixed (the load-bearing §5 conflict rule: a bare key / Ctrl-letter falls
 /// through to the focused terminal), and no two bindings share a chord — both pinned by
-/// `TreeCommandRoutingTests`. The chords mirror otty's reference keymap: ⌘T new tab, ⌘W close, ⌘D
+/// `TreeCommandRoutingTests`. The chords follow the reference keymap: ⌘T new tab, ⌘W close, ⌘D
 /// split-right, ⌘⇧D split-down, ⌃⌘+arrows focus, ⌘⇧↩ zoom, ⌘⇧]/⌘⇧[ next/prev tab, ⌘1…9 select tab,
 /// ⌃⌘N new session, ⌘⇧L toggle Tabs panel, ⌘⇧R toggle Details panel, ⌃⌘T break-pane-to-tab, ⌘⇧P palette,
-/// ⌘/ cheat sheet. Rename has no otty default chord — it is menu / palette / context-menu only (`chord: nil`).
+/// ⌘/ cheat sheet. Rename has no default chord — it is menu / palette / context-menu only (`chord: nil`).
 public enum WorkspaceBindingRegistry {
     /// The shipped binding table, in cheat-sheet / palette display order (panes, tabs, sessions, focus,
     /// view). `.selectTab(n)` for n=1…9 is generated (one chord each) but is NOT listed here — it is
@@ -410,7 +410,7 @@ public enum WorkspaceBindingRegistry {
             category: .panes, chord: KeyChord(character: "w", [.command]),
             symbol: "xmark", keywords: "quit kill end terminate remove",
         ),
-        // Rename has NO otty default chord (⌘⇧R is otty's Toggle Details Panel — see `view.toggleDetails`).
+        // Rename has NO default chord (⌘⇧R is reserved for Toggle Details Panel — see `view.toggleDetails`).
         // It is reachable from the title menu / context menu / palette only; `chord: nil` surfaces the row
         // (cheat sheet / menu / palette) without binding a key. Pinned chord-less by `E1KeymapParityTests`.
         WorkspaceBinding(
@@ -425,8 +425,8 @@ public enum WorkspaceBindingRegistry {
         ),
         // Floating panes (zellij toggle-float / new floating pane). ⌥⌘F floats/embeds the active pane; ⌃⌘⇧F
         // spawns a new floating scratch pane (the "F = float" family). The float-toggle was ⌘⇧F before E5, but
-        // otty fidelity gives ⌘⇧F to Global Search (`view.globalSearch`), so float-toggle RELOCATED to ⌥⌘F.
-        // New Floating was ⌃⌘F, but otty's reference keymap reserves ⌃⌘F for **Toggle Fullscreen**
+        // ⌘⇧F is reserved for Global Search (`view.globalSearch`), so float-toggle RELOCATED to ⌥⌘F.
+        // New Floating was ⌃⌘F, but the reference keymap reserves ⌃⌘F for **Toggle Fullscreen**
         // (reference__keybindings.md:54 / customization__custom-keybindings.md:46 — the macOS-native
         // Enter/Exit Full Screen); the dispatcher leaves ⌃⌘F UNBOUND so it passes through to AppKit's standard
         // "Enter Full Screen" View-menu item (no registry action, no menu shortcut to add). New Floating
@@ -466,7 +466,7 @@ public enum WorkspaceBindingRegistry {
             category: .panes, chord: KeyChord(.downArrow, [.option, .command, .shift]),
             symbol: "arrow.down.square", keywords: "swap reorder shift pane down",
         ),
-        // Move divider (keyboard divider nudge). otty's "Move divider up/down/left/right" = ⌃⌘⇧arrows
+        // Move divider (keyboard divider nudge). "Move divider up/down/left/right" = ⌃⌘⇧arrows
         // (spec/reference__keybindings.md:86-89, customization__custom-keybindings.md:78-81) — distinct from
         // focus (⌃⌘arrows). Grows the active pane toward the arrow (right/down) or shrinks it (left/up).
         WorkspaceBinding(
@@ -518,7 +518,7 @@ public enum WorkspaceBindingRegistry {
             symbol: "plus.rectangle.on.rectangle", keywords: "add open create tab",
         ),
         // Tab cycling RE-POINTED to ⌘⇧]/⌘⇧[ (E1 ES-E1-2 / DECISIONS): plain ⌘]/⌘[ now drive sequential
-        // PANE cycling (`focus.cycleNext`/`focus.cyclePrev`), matching otty's reference table. The old
+        // PANE cycling (`focus.cycleNext`/`focus.cyclePrev`), per the reference table. The old
         // ⌘]/⌘[ tab parity (Muxy) is deliberately superseded — pinned by `E1KeymapParityTests`.
         WorkspaceBinding(
             id: "tab.next", action: .nextTab, title: "Next Tab",
@@ -530,8 +530,8 @@ public enum WorkspaceBindingRegistry {
             category: .tabs, chord: KeyChord(character: "[", [.command, .shift]),
             symbol: "arrow.backward.square", keywords: "cycle back previous switch tab",
         ),
-        // Close Tab has NO otty default chord (E7 carry-over #5 / DECISIONS): otty's ⌘⇧W is Close WINDOW, and
-        // ⌘W already cascades pane → tab → window, so otty ships no dedicated Close-Tab chord. The row stays in
+        // Close Tab has NO default chord (E7 carry-over #5 / DECISIONS): ⌘⇧W is Close WINDOW, and
+        // ⌘W already cascades pane → tab → window, so there is no dedicated Close-Tab chord. The row stays in
         // the palette / menu (`chord: nil` surfaces it without binding a key) and tab close stays reachable via
         // the ⌘W cascade. Pinned chord-less by `TreeCommandRoutingTests`; the ⌘⇧W re-map is in DECISIONS.md.
         WorkspaceBinding(
@@ -539,7 +539,7 @@ public enum WorkspaceBindingRegistry {
             category: .tabs, chord: nil,
             symbol: "xmark.rectangle", keywords: "close end terminate tab all panes",
         ),
-        // Close Window ⌘⇧W (E7 carry-over #5) — otty's reference default (spec/user-interface__window-tab-
+        // Close Window ⌘⇧W (E7 carry-over #5) — the reference default (spec/user-interface__window-tab-
         // split.md:99/103/104: ⌘⇧W = Close window). A window maps to an aislopdesk ``Session`` (DECISIONS.md),
         // so routing it to `requestCloseWindow()` parks the close behind the `closeConfirmWindow` policy /
         // busy-shell guard. ⌘⇧W was Close Tab before E7; reconciled here (Close Tab gave the chord up, keeping
@@ -592,7 +592,7 @@ public enum WorkspaceBindingRegistry {
             category: .sessions, chord: KeyChord(character: "n", [.control, .command]),
             symbol: "macwindow.badge.plus", keywords: "host connection add open create workspace",
         ),
-        // Focus pane up/down/left/right — otty's documented default ⌃⌘arrows
+        // Focus pane up/down/left/right — the documented default ⌃⌘arrows
         // (spec/reference__keybindings.md:82-85, customization__custom-keybindings.md:74-77). The single most
         // load-bearing pane-navigation chord set; the divider-move family sits on ⌃⌘⇧arrows above.
         WorkspaceBinding(
@@ -629,16 +629,16 @@ public enum WorkspaceBindingRegistry {
             symbol: "arrow.backward", keywords: "cycle previous pane focus sequential rotate back",
         ),
         // View
-        // Zoom / unzoom split — otty's documented default ⌘⇧↩ (spec/reference__keybindings.md:78,
+        // Zoom / unzoom split — the documented default ⌘⇧↩ (spec/reference__keybindings.md:78,
         // customization__custom-keybindings.md:70). Toggles a single pane to fill the tab.
         WorkspaceBinding(
             id: "view.zoom", action: .toggleZoom, title: "Maximize Pane",
             category: .view, chord: KeyChord(.return, [.command, .shift]),
             symbol: "arrow.up.left.and.arrow.down.right", keywords: "fullscreen full screen zoom expand enlarge",
         ),
-        // Command Palette ⌘⇧P — otty's documented default (spec/reference__keybindings.md:42,
+        // Command Palette ⌘⇧P — the documented default (spec/reference__keybindings.md:42,
         // spec/user-interface__command-palette.md:5/9/35 "Opened with ⌘⇧P from anywhere"). ⌘⇧P is FREE (no
-        // other `p` chord). Pinned by `E1KeymapParityTests`; the otty-divergence history is in DECISIONS.md.
+        // other `p` chord). Pinned by `E1KeymapParityTests`; the chord-reassignment history is in DECISIONS.md.
         WorkspaceBinding(
             id: "view.palette", action: .commandPalette, title: "Command Palette",
             category: .view, chord: KeyChord(character: "p", [.command, .shift]),
@@ -668,18 +668,18 @@ public enum WorkspaceBindingRegistry {
             symbol: "chevron.up", keywords: "previous find search back backward match",
         ),
         // Global Search (E5 ES-E5-5): ⇧⌘F searches every tab's scrollback and shows a grouped results surface.
-        // otty fidelity gives ⇧⌘F to global search; the float-toggle that used to own it relocated to ⌥⌘F
+        // ⇧⌘F is reserved for global search; the float-toggle that used to own it relocated to ⌥⌘F
         // (see `pane.toggleFloat`). ⇧⌘F is now FREE. Pinned unique by `TreeCommandRoutingTests`.
         WorkspaceBinding(
             id: "view.globalSearch", action: .globalSearch, title: "Global Search…",
             category: .view, chord: KeyChord(character: "f", [.command, .shift]),
             symbol: "magnifyingglass.circle", keywords: "global search all tabs scrollback grep cross pane find",
         ),
-        // Vi Mode (P5b / E17 WI-5): modal keyboard scrollback navigation (the otty "Vi Mode" / tmux-zellij
-        // copy-mode). otty's documented entry chord is ⌃⇧Space; aislopdesk's canonical DISPLAY chord stays the
+        // Vi Mode (P5b / E17 WI-5): modal keyboard scrollback navigation ("Vi Mode" / tmux-zellij
+        // copy-mode). The documented entry chord is ⌃⇧Space; aislopdesk's canonical DISPLAY chord stays the
         // pre-existing ⌘⇧C (so existing muscle memory / the menu glyph are unchanged), and ⌃⇧Space is folded in
         // as a SECOND resolving chord via ``aliasChords`` (no extra display row — the ⌘+ font-increase idiom).
-        // The title is "Vi Mode" (otty parity) with "copy mode" kept in the keywords so palette search for the
+        // The title is "Vi Mode" with "copy mode" kept in the keywords so palette search for the
         // old name still finds it. ⌘⇧C is FREE — `c` appears in NO other binding, and ⌘⇧C does not collide with
         // the system plain ⌘C copy (a different modifier set, handled by the terminal's own copy responder).
         // Verified unique by the chord-uniqueness guard.
@@ -701,9 +701,9 @@ public enum WorkspaceBindingRegistry {
             symbol: "keyboard.badge.eye",
             keywords: "vi mode key hints reference card cheat shortcuts copy mode command slash toggle bar",
         ),
-        // Read-Only mode (E17 ES-E17-1): toggle the active pane's input gate. otty documents NO default
-        // chord — the feature is reachable via the menu (otty's "Shell → Read Only"; aislopdesk surfaces it
-        // in the View menu, as the app ships no Shell menu) + the command palette ("Read Only", also
+        // Read-Only mode (E17 ES-E17-1): toggle the active pane's input gate. No default
+        // chord — the feature is reachable via the View menu (the app ships no Shell menu)
+        // + the command palette ("Read Only", also
         // `readonly` / `lock` / `freeze` / `view only` — the spec's exact accepted terms). `chord: nil`
         // surfaces the row WITHOUT binding a key (the chord-less idiom — like `pane.rename` / `tab.close`);
         // the user may bind it in Settings → Keybindings. Pinned chord-less by `TreeCommandRoutingTests`.
@@ -714,7 +714,7 @@ public enum WorkspaceBindingRegistry {
             keywords: "read only readonly lock freeze view only locked viewer input gate protect",
         ),
         // Secure Keyboard Entry (E17 ES-E17-4): the MANUAL toggle for macOS process-global secure event input
-        // over the active pane (otty Edit ▸ Secure Keyboard Entry). otty ships NO default chord — `chord: nil`
+        // over the active pane. No default chord — `chord: nil`
         // surfaces the row in the menu + palette WITHOUT binding a key (the chord-less idiom — like
         // `view.readOnly` / `pane.rename`); the user may bind it in Settings → Keybindings. Pinned chord-less
         // by `TreeCommandRoutingTests`.
@@ -724,7 +724,7 @@ public enum WorkspaceBindingRegistry {
             symbol: "lock.shield",
             keywords: "secure input keyboard entry password sudo protect eavesdrop sniff secure event input",
         ),
-        // Toggle Tabs Panel ⌘⇧L — otty's reference default (spec/reference__keybindings.md:66 "Toggle tabs
+        // Toggle Tabs Panel ⌘⇧L — the reference default (spec/reference__keybindings.md:66 "Toggle tabs
         // panel | ⌘⇧L"; line 201 "⌘⇧L … map to sidebar … toggles"). RE-BOUND from the old ⌘B: ⌘B routed to
         // `store.toggleSidebarCollapsed()`, a LEGACY flag the native split shell never reads (the macOS
         // collapse is driven by `WorkspaceChromeState.sidebarCollapsed`), so ⌘B was a DEAD chord. Now ⌘⇧L
@@ -736,7 +736,7 @@ public enum WorkspaceBindingRegistry {
             category: .view, chord: KeyChord(character: "l", [.command, .shift]),
             symbol: "sidebar.left", keywords: "sidebar sessions tabs panel rail hide show collapse",
         ),
-        // Toggle Details Panel ⌘⇧R — otty's reference default (spec/reference__keybindings.md:67; the
+        // Toggle Details Panel ⌘⇧R — the reference default (spec/reference__keybindings.md:67; the
         // command-palette.png screenshot shows "Toggle Details Panel" with chips ⇧⌘R). The titlebar's
         // matching hidden SwiftUI .keyboardShortcut was DEAD because the NSEvent dispatcher swallowed ⌘⇧R
         // first (it was bound to rename); routing it through `toggleDetailsPanel` (a view-@State closure,
@@ -746,8 +746,8 @@ public enum WorkspaceBindingRegistry {
             category: .view, chord: KeyChord(character: "r", [.command, .shift]),
             symbol: "sidebar.right", keywords: "details inspector panel right pane hide show collapse",
         ),
-        // Pin Window (E19 ES-E19-1, otty "View ▸ Pin Window" — `spec/user-interface__window-tab-split.md:14`
-        // "keeps the window floating above all other apps' windows"). otty ships NO default chord — `chord:
+        // Pin Window (E19 ES-E19-1, "View ▸ Pin Window" — `spec/user-interface__window-tab-split.md:14`
+        // "keeps the window floating above all other apps' windows"). No default chord — `chord:
         // nil` surfaces the row in the menu + palette + cheat sheet WITHOUT binding a key (the chord-less
         // idiom — like `view.readOnly` / `pane.rename`); the user may bind it in Settings → Keybindings. The
         // live macOS app flips `WorkspaceChromeState.pinned` → `NSWindow.level = .floating` (a window-scope
@@ -759,7 +759,7 @@ public enum WorkspaceBindingRegistry {
             symbol: "pin",
             keywords: "pin window float floating always on top above keep front level stay topmost pip",
         ),
-        // Details tab jump commands (E9/WI-7, ES-E9-5, B2): otty's four UNBOUND-by-default commands that
+        // Details tab jump commands (E9/WI-7, ES-E9-5, B2): four UNBOUND-by-default commands that
         // switch the right-hand Details panel to a specific tab (Info / Outline / Git / Files) AND reveal the
         // panel when hidden (the reveal is wired in the view closure). `chord: nil` — the palette/menu-only
         // idiom (like `tab.close` / `view.openQuickly`) surfaces them in the command palette + cheat sheet
@@ -805,13 +805,13 @@ public enum WorkspaceBindingRegistry {
             keywords: "jump to outline quick switch goto navigate command url path link prompt current",
         ),
         // Hint Mode (E10 ES-E10-6 / `terminal-features__hint-mode`): the three "Hint to …" intents that overlay
-        // 2-letter Vimium labels on the active pane's detected targets. ⌘⇧J Open + ⌘⇧Y Copy are otty's
+        // 2-letter Vimium labels on the active pane's detected targets. ⌘⇧J Open + ⌘⇧Y Copy are the
         // documented defaults — both FREE on the tree shell after E10 RE-POINTED `.peekAndReply` off ⌘⇧J →
         // ⌘⌥J (the carryover binding "E10 OWNS ⌘⇧J for Hint Mode"; `y` is in NO other chord). Reveal-in-Finder
-        // is otty's ⌘⇧R, but ⌘⇧R is aislopdesk's Toggle Details (`view.toggleDetails`, otty-faithful,
+        // would naturally take ⌘⇧R, but ⌘⇧R is aislopdesk's Toggle Details (`view.toggleDetails`,
         // `E1KeymapParityTests`-pinned), so Hint to Reveal is CHORD-LESS (`chord: nil` — palette/menu-surfaced
         // + an in-overlay action switch while hint mode is up; the user may bind it in Settings). The ⌘⇧R
-        // divergence is documented in DECISIONS.md. Pinned unique by the chord-uniqueness guard.
+        // reassignment is documented in DECISIONS.md. Pinned unique by the chord-uniqueness guard.
         WorkspaceBinding(
             id: "view.hintOpen", action: .hintToOpen, title: "Hint to Open",
             category: .view, chord: KeyChord(character: "j", [.command, .shift]),
@@ -895,7 +895,7 @@ public enum WorkspaceBindingRegistry {
             symbol: "chevron.down.circle", keywords: "jump next command prompt block osc133 down",
         ),
         // E1 font size (ES-E1-4): ⌘= bumps, ⌘- shrinks, ⌘0 resets. ⌘0 is FREE (the select-tab digits start
-        // at ⌘1). The `+` glyph (otty's ⌘+) does NOT fold onto `=` for free — on a US/ANSI layout ⌘+ is
+        // at ⌘1). The `+` glyph (⌘+) does NOT fold onto `=` for free — on a US/ANSI layout ⌘+ is
         // delivered as `+`+⇧ (or keypad `+`), which `charactersIgnoringModifiers` keys as a DISTINCT chord —
         // so ``aliasChords`` adds those two spellings → `.increaseFontSize` (no extra display row). A font-size
         // step resizes the cell box, so FEWER/MORE cells fit the pane and the remote PTY grid REFLOWS (SIGWINCH)
@@ -939,12 +939,12 @@ public enum WorkspaceBindingRegistry {
             category: .agents, chord: KeyChord(.return, [.command, .control]),
             symbol: "arrow.up.message", keywords: "send chat agent selection command share forward",
         ),
-        // Fork / Branch (E13 ES-E13-7, otty `agents__fork-branch-session`): the palette "Fork in…" entries
+        // Fork / Branch (E13 ES-E13-7, `agents__fork-branch-session`): the palette "Fork in…" entries
         // that route a detected `/branch` (a NEW Claude session id) into a split / new tab running VERBATIM
         // `claude --resume <new-id>`. PALETTE / MENU ONLY (`chord: nil`) — the fork is initiated inside the
         // agent's own `/branch` slash command, then the user picks a destination here; there is no key
         // equivalent. Claude-only. "Fork in New Window" is suppressed (no multi-window on the remote / iOS
-        // arch), and Split Left / Up are not surfaced (right / down / new-tab match otty's shipped trio).
+        // arch), and Split Left / Up are not surfaced (right / down / new-tab form the shipped trio).
         WorkspaceBinding(
             id: "agent.forkSplitRight", action: .forkInSplitRight, title: "Fork in Split Right",
             category: .agents, chord: nil,
@@ -991,7 +991,7 @@ public enum WorkspaceBindingRegistry {
     /// ``allBindings`` / ``groupedForDisplay`` — the chord-uniqueness guard runs over `allBindings`, so an
     /// alias here is intentionally outside it (it shares its ACTION, not its chord, with the canonical row).
     ///
-    /// E1 ES-E1-4: the font-increase chord is canonically ⌘= (no ⇧), but otty's spec / muscle memory is the
+    /// E1 ES-E1-4: the font-increase chord is canonically ⌘= (no ⇧), but the conventional / muscle-memory chord is the
     /// `+` glyph (`⌘+`). On a US/ANSI layout `+` IS Shift-`=`, and `charactersIgnoringModifiers` ignores
     /// ⌘/⌥/⌃ but NOT ⇧ — so physically pressing ⌘+ delivers the character `"+"` with ⇧ set, i.e.
     /// `KeyChord(character: "+", [.command, .shift])`, NOT ⌘=. Without this alias that chord is unbound and
@@ -999,7 +999,7 @@ public enum WorkspaceBindingRegistry {
     /// shifted main-row `+` (`⌘⇧+`) and the (unshifted) keypad `+` (`⌘+`). `KeyChord.init(character:)`
     /// lower-cases, which is a no-op for `+`, so both spellings key cleanly.
     ///
-    /// E17 ES-E17-2 / WI-5: otty's documented Vi Mode entry chord is ⌃⇧Space. aislopdesk's canonical Vi-Mode
+    /// E17 ES-E17-2 / WI-5: the documented Vi Mode entry chord is ⌃⇧Space. aislopdesk's canonical Vi-Mode
     /// binding (`view.copyMode`) DISPLAYS ⌘⇧C, so ⌃⇧Space is folded in here as a SECOND resolving chord onto the
     /// same `.toggleCopyMode` action — exactly like the ⌘+ font-increase alias (no extra display row, shares the
     /// ACTION not the chord). Space is the NAMED `.space` key (the macOS normalizer maps keyCode 49 → `.space`
@@ -1014,7 +1014,7 @@ public enum WorkspaceBindingRegistry {
     public static let aliasChords: [KeyChord: WorkspaceAction] = [
         KeyChord(character: "+", [.command, .shift]): .increaseFontSize, // ⌘+ = ⌘⇧= on a US/ANSI layout
         KeyChord(character: "+", [.command]): .increaseFontSize, // keypad + (no ⇧ reported)
-        KeyChord(.space, [.control, .shift]): .toggleCopyMode, // ⌃⇧Space = otty's Vi Mode entry (alias of ⌘⇧C)
+        KeyChord(.space, [.control, .shift]): .toggleCopyMode, // ⌃⇧Space = Vi Mode entry (alias of ⌘⇧C)
         KeyChord(character: "s", [.command]): .saveRecipe, // ⌘S = Save Recipe (E16; menu is shortcut-less)
     ]
 

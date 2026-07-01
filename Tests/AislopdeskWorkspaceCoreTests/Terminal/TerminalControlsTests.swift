@@ -26,7 +26,7 @@ final class TerminalControlsTests: XCTestCase {
     func testFactoryFromFreshSuiteEqualsDefaults() {
         let controls = TerminalControls.from(defaults: makeIsolatedDefaults())
         XCTAssertEqual(controls, TerminalControls())
-        // Spot-check the otty default values directly (independent of the init defaults).
+        // Spot-check the default values directly (independent of the init defaults).
         XCTAssertFalse(controls.copyOnSelect)
         XCTAssertTrue(controls.trimTrailing)
         XCTAssertTrue(controls.clearOnTyping)
@@ -97,7 +97,7 @@ final class TerminalControlsTests: XCTestCase {
 
     // MARK: - Enum raw values + repair
 
-    /// The control enums' raw values are the otty / aislopdesk config tokens (the persisted strings + the
+    /// The control enums' raw values are aislopdesk's own config tokens (the persisted strings + the
     /// libghostty `clipboard-read/write` tokens). A rename here would split-brain persistence from the
     /// config builder (WI-2) → pinned.
     func testEnumRawValuesArePinned() {
@@ -131,7 +131,7 @@ final class TerminalControlsTests: XCTestCase {
     }
 
     /// `MouseShiftCapture.configValue` is the libghostty `mouse-shift-capture` token WI-2 emits. This is a
-    /// REAL ORACLE, not a restatement of the mapping: otty's "Allow Shift with Mouse Click" axis ("hold ⇧ to
+    /// REAL ORACLE, not a restatement of the mapping: the "Allow Shift with Mouse Click" setting's axis ("hold ⇧ to
     /// *select text* even when the running app captures the mouse") is the INVERSE of libghostty's
     /// `mouse-shift-capture` axis (whether ⇧ is *captured into the mouse protocol and sent to the program*).
     /// Per the vendored ghostty `Config.zig`: `false` = ⇧ extends the selection (libghostty's own default,
@@ -139,7 +139,7 @@ final class TerminalControlsTests: XCTestCase {
     /// extends selection (program can't override); `always` = ⇧ ALWAYS goes to the program (can't override).
     /// So "⇧ selects" must yield a *don't-capture* token and "⇧ goes to the program" a *capture* token.
     func testMouseShiftCaptureConfigValue() {
-        // The tokens libghostty interprets as "⇧ extends the selection" (the otty intent when shift-select is
+        // The tokens libghostty interprets as "⇧ extends the selection" (the intent when shift-select is
         // ALLOWED). The default/soft form must be `false` — libghostty's own default — so the factory neither
         // inverts the meaning NOR overrides the upstream default.
         let extendsSelectionTokens = Set(["false", "never"])
@@ -195,7 +195,7 @@ final class TerminalControlsTests: XCTestCase {
     /// `OptionAsAlt`'s raw values are aislopdesk's own kebab-readable persistence tokens; `configValue` is the
     /// libghostty `macos-option-as-alt` token (`false`/`true`/`left`/`right`) the config builder (WI-2) emits.
     /// The two axes DIFFER (`both` persists as `both`, emits `true`), so this is a real oracle, not a restate of
-    /// the rawValue. The factory keeps OFF (Option composes accented characters — otty's default).
+    /// the rawValue. The factory keeps OFF (Option composes accented characters by default).
     func testOptionAsAltRawValuesAndConfigValue() {
         XCTAssertEqual(OptionAsAlt.allCases.map(\.rawValue), ["off", "both", "left", "right"])
         XCTAssertEqual(OptionAsAlt.off.configValue, "false")

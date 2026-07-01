@@ -23,15 +23,15 @@
 // This is expected, not a stall: it is the literal-highlight ceiling surfacing at row granularity, not a bug.
 // Literal mode is unchanged: it arms `search:` + `navigate_search:next`/`previous`.
 //
-// Anatomy matches `find.png` (top-trailing of the focused pane, floating card, `Otty.*` tokens ONLY — raw
+// Anatomy matches `find.png` (top-trailing of the focused pane, floating card, `Slate.*` tokens ONLY — raw
 // font / radius literals fail `scripts/check-ds-leaks.sh`):
 //   [ query field ][ Aa case pill ][ ab whole-word pill ][ .* regex pill ][ N of M ][ ∧ prev ][ ∨ next ]
 //   [ ▣ search-all-tabs ][ × close ]
 // (the `rectangle.stack` "search all tabs" button escalates to cross-tab Global Search ⇧⌘F — see
 // ``TerminalFindBarModel/searchAllTabs()``)
-// (ES-E5-2 requires the `N of M` counter; otty places it contextually — `find.png` does not show a separate
-// inline counter for the captured query, so the screenshot is NOT the source for the counter's placement. We
-// keep it before the nav chevrons as a reasonable home for the required count.)
+// (ES-E5-2 requires the `N of M` counter; `find.png` does not show a separate inline counter for the captured
+// query, so the screenshot is NOT the source for the counter's placement. We keep it before the nav chevrons
+// as a reasonable home for the required count.)
 //
 // Behaviour (ES-E5-1..4): auto-focus the field on appear (pre-focused per spec); live query → recompute +
 // re-arm highlight; ↩ / ⇧↩ next / prev; `Aa` / `.*` toggle case / regex; Esc (or ×) closes + clears all
@@ -179,10 +179,9 @@ final class TerminalFindBarModel {
         model?.performSearchSurfaceAction("scroll_to_row:\(row)")
     }
 
-    /// `rectangle.stack` "search all tabs" — escalate the in-pane find to cross-tab Global Search (otty's
-    /// `⇧⌘F`), SEEDED with the current query, then dismiss this bar. The button's function is pinned by
-    /// otty-reversed's `ReplicaSearch.swift` (`SearchIconButton(systemName: "rectangle.stack") {} // search all
-    /// tabs`); find.png places it between the next-match chevron and the close ×. The seed is read BEFORE
+    /// `rectangle.stack` "search all tabs" — escalate the in-pane find to cross-tab Global Search (`⇧⌘F`),
+    /// SEEDED with the current query, then dismiss this bar. `find.png` places the button between the
+    /// next-match chevron and the close ×. The seed is read BEFORE
     /// ``close()`` clears the controller (the closure captures the string by value), so Global Search opens
     /// pre-filled with whatever the user was finding.
     func searchAllTabs() {
@@ -238,13 +237,13 @@ struct TerminalFindBar: View {
     private let iconSize: CGFloat = 16
     private let fieldWidth: CGFloat = 200
     #else
-    private let plate: CGFloat = Otty.Metric.plate
-    private let iconSize: CGFloat = Otty.Metric.iconSize
+    private let plate: CGFloat = Slate.Metric.plate
+    private let iconSize: CGFloat = Slate.Metric.iconSize
     private let fieldWidth: CGFloat = 130
     #endif
 
     var body: some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             queryField
             // find.png's THREE individually-outlined mode chips: case (`Aa`), whole-word (underlined `ab`),
             // and regex (`.*`), in that order. ``FindTogglePillTray`` lays them out identically to global-search.
@@ -262,7 +261,7 @@ struct TerminalFindBar: View {
                     isOn: model.controller.wholeWord,
                     help: "Whole word",
                     plate: plate,
-                    underlined: true, // otty draws the whole-word chip's glyph underlined (find.png)
+                    underlined: true, // the whole-word chip's glyph is drawn underlined (find.png)
                 ) {
                     model.toggleWholeWord()
                 }
@@ -271,31 +270,30 @@ struct TerminalFindBar: View {
                 }
             }
             counter
-            OttyPlateButton(symbol: .chevronUp, help: "Previous match (⇧⌘G)", size: iconSize, plate: plate) {
+            SlatePlateButton(symbol: .chevronUp, help: "Previous match (⇧⌘G)", size: iconSize, plate: plate) {
                 model.previous()
             }
-            OttyPlateButton(symbol: .chevronDown, help: "Next match (⌘G)", size: iconSize, plate: plate) {
+            SlatePlateButton(symbol: .chevronDown, help: "Next match (⌘G)", size: iconSize, plate: plate) {
                 model.next()
             }
-            // find.png shows a `rectangle.stack` button between the next-chevron and the close ×. Its function is
-            // confirmed by otty-reversed (`ReplicaSearch.swift`: `SearchIconButton("rectangle.stack") // search
-            // all tabs`): it ESCALATES the in-pane find to cross-tab Global Search (⇧⌘F), seeded with the current
-            // query. Wired through ``TerminalFindBarModel/searchAllTabs()`` → ``OverlayCoordinator/openGlobalSearch``.
-            OttyPlateButton(symbol: .rectangleStack, help: "Search all tabs (⇧⌘F)", size: iconSize, plate: plate) {
+            // find.png shows a `rectangle.stack` button between the next-chevron and the close ×. It ESCALATES
+            // the in-pane find to cross-tab Global Search (⇧⌘F), seeded with the current query. Wired through
+            // ``TerminalFindBarModel/searchAllTabs()`` → ``OverlayCoordinator/openGlobalSearch``.
+            SlatePlateButton(symbol: .rectangleStack, help: "Search all tabs (⇧⌘F)", size: iconSize, plate: plate) {
                 model.searchAllTabs()
             }
-            OttyPlateButton(symbol: .xmark, help: "Close (Esc)", size: iconSize, plate: plate) {
+            SlatePlateButton(symbol: .xmark, help: "Close (Esc)", size: iconSize, plate: plate) {
                 model.close()
             }
         }
-        .padding(.horizontal, Otty.Metric.space2)
-        .padding(.vertical, Otty.Metric.space1)
+        .padding(.horizontal, Slate.Metric.space2)
+        .padding(.vertical, Slate.Metric.space1)
         // find.png: the floating find-bar card is delineated by its FILL + drop SHADOW only — there is NO
         // hairline stroke around the CARD (verified by pixel-scanning find.png: the pane→shadow gradient
         // transitions straight into the card fill with no border line). Only the `Aa`/`ab`/`.*` mode chips keep
         // their OWN individual hairline outlines (FindTogglePill); the card itself wears no border/overlay.
-        .background(Otty.Surface.element, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusControl))
-        .shadow(color: Otty.State.shadow, radius: 12, x: 0, y: 4)
+        .background(Slate.Surface.element, in: RoundedRectangle(cornerRadius: Slate.Metric.radiusControl))
+        .shadow(color: Slate.State.shadow, radius: 12, x: 0, y: 4)
         .onAppear {
             // A `@FocusState` set in the same tick the view appears (before its backing responder exists) is
             // dropped — defer one runloop hop (the palette / cheat-sheet idiom).
@@ -326,13 +324,13 @@ struct TerminalFindBar: View {
     private var queryField: some View {
         TextField("Find", text: queryBinding)
             .textFieldStyle(.plain)
-            .font(.system(size: Otty.Typeface.body))
-            .foregroundStyle(Otty.Text.primary)
-            .tint(Otty.State.accent) // the active caret is the accent colour (otty parity)
+            .font(.system(size: Slate.Typeface.body))
+            .foregroundStyle(Slate.Text.primary)
+            .tint(Slate.State.accent) // the active caret is the accent colour
             .focused($queryFocused)
             .frame(width: fieldWidth)
-            .padding(.horizontal, Otty.Metric.space2)
-            .padding(.vertical, Otty.Metric.space1)
+            .padding(.horizontal, Slate.Metric.space2)
+            .padding(.vertical, Slate.Metric.space1)
             // find.png: the query text sits in its OWN delineated inset — a distinct FILLED gray rounded field
             // INSIDE the find-bar card (NOT flush on it). The card itself is `Surface.element` (≈ white/elevated
             // in light themes), so a flush `Surface.card` field reads as near-invisible there; instead the field
@@ -346,10 +344,10 @@ struct TerminalFindBar: View {
             // boundary that reads as a distinct inset REGARDLESS of which way the fill contrasts, keeping the
             // query field clearly delineated on every theme. This is the INNER field only — the card's
             // no-border / fill+shadow chrome (Batch-4) is NOT re-stroked (the outer card stays borderless).
-            .background(Otty.State.selected, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall))
+            .background(Slate.State.selected, in: RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall))
             .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
-                    .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
+                    .strokeBorder(Slate.Line.subtle, lineWidth: Slate.Metric.hairline),
             )
             .onSubmit { model.next() } // plain ↩ → next match
     }
@@ -365,12 +363,12 @@ struct TerminalFindBar: View {
     @ViewBuilder private var counter: some View {
         if let label = counterText {
             Text(label)
-                .font(.system(size: Otty.Typeface.footnote))
+                .font(.system(size: Slate.Typeface.footnote))
                 .monospacedDigit()
-                .foregroundStyle(Otty.Text.secondary)
+                .foregroundStyle(Slate.Text.secondary)
                 .lineLimit(1)
                 .fixedSize()
-                .padding(.horizontal, Otty.Metric.space1)
+                .padding(.horizontal, Slate.Metric.space1)
         }
     }
 
@@ -398,13 +396,13 @@ struct TerminalFindBar: View {
 ///
 /// `FindTogglePillTray` is therefore just a TRANSPARENT layout container — an `HStack` with the screenshot's
 /// inter-chip gap and NO background / border of its own (the delineation lives on each ``FindTogglePill``).
-/// Reused by BOTH the find bar and the global-search query bar (the EXACT same control). `Otty.*` tokens only.
+/// Reused by BOTH the find bar and the global-search query bar (the EXACT same control). `Slate.*` tokens only.
 struct FindTogglePillTray<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
         // No shared plate/border here — the chips delineate themselves; the tray only spaces them with a gap.
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             content
         }
     }
@@ -416,12 +414,12 @@ struct FindTogglePillTray<Content: View>: View {
 /// bare glyph); hover → a `State.hover` plate (border held); on → accent text on an `accentMuted` wash + an
 /// accent hairline ring. There is NO shared backing tray — `find.png` / `global-search.png` show detached,
 /// individually-bordered chips with gaps between them. Factored to file scope (internal) so the WI-4
-/// GlobalSearch surface reuses the EXACT pill (the two surfaces render identically). `Otty.*` tokens only.
+/// GlobalSearch surface reuses the EXACT pill (the two surfaces render identically). `Slate.*` tokens only.
 struct FindTogglePill: View {
     let label: String
     let isOn: Bool
     var help: String?
-    var plate: CGFloat = Otty.Metric.plate
+    var plate: CGFloat = Slate.Metric.plate
     /// Underline the glyph (the whole-word `ab` chip in find.png / global-search.png draws underlined). The
     /// `Aa` / `.*` chips pass `false` so only the whole-word chip wears the underline.
     var underlined: Bool = false
@@ -433,31 +431,31 @@ struct FindTogglePill: View {
         Button(action: action) {
             Text(label)
                 .underline(underlined)
-                .font(.system(size: Otty.Typeface.footnote, weight: .semibold, design: .monospaced))
-                .foregroundStyle(isOn ? Otty.State.accent : Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote, weight: .semibold, design: .monospaced))
+                .foregroundStyle(isOn ? Slate.State.accent : Slate.Text.secondary)
                 .frame(minWidth: plate, minHeight: plate)
-                .padding(.horizontal, Otty.Metric.space1)
+                .padding(.horizontal, Slate.Metric.space1)
                 .background(
                     // Each chip carries its OWN resting plate (find.png / global-search.png): idle = a subtle
                     // `Surface.card` plate, hover = a `State.hover` plate, on = the accent wash. No shared tray.
-                    isOn ? Otty.State.accentMuted : (hovering ? Otty.State.hover : Otty.Surface.card),
-                    in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall),
+                    isOn ? Slate.State.accentMuted : (hovering ? Slate.State.hover : Slate.Surface.card),
+                    in: RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall),
                 )
                 .overlay(
                     // Every chip is individually outlined: idle/hover wear a `Line.subtle` hairline so the chip is
                     // delineated (never a bare glyph); the ON chip swaps in the accent ring.
-                    RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
+                    RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall)
                         .strokeBorder(
-                            isOn ? Otty.State.accent.opacity(0.5) : Otty.Line.subtle,
-                            lineWidth: Otty.Metric.hairline,
+                            isOn ? Slate.State.accent.opacity(0.5) : Slate.Line.subtle,
+                            lineWidth: Slate.Metric.hairline,
                         ),
                 )
                 .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .ottyHelp(help)
+        .slateHelp(help)
         .onHover { hovering = $0 }
-        .animation(Otty.Anim.smallFade, value: hovering)
+        .animation(Slate.Anim.smallFade, value: hovering)
     }
 }
 #endif

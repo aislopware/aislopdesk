@@ -11,7 +11,7 @@
 // `clearSnippetRunRequest()`. Cancel just clears the flag. A reserved-only / placeholder-free body never
 // reaches this sheet (it runs immediately via `beginRunSnippet`).
 //
-// Plain SwiftUI — no NSWindow / WKWebView. Otty.* tokens only (raw font/radius literals fail
+// Plain SwiftUI — no NSWindow / WKWebView. Slate.* tokens only (raw font/radius literals fail
 // `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
@@ -57,19 +57,19 @@ struct SnippetValueSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space4) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space4) {
             header
             slotFields
             footer
         }
-        .padding(Otty.Metric.space4)
+        .padding(Slate.Metric.space4)
         #if os(macOS)
             .frame(width: 420)
         #else
             .frame(maxWidth: 420)
         #endif
-            .background(Otty.Surface.card)
-            .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard))
+            .background(Slate.Surface.card)
+            .clipShape(RoundedRectangle(cornerRadius: Slate.Metric.radiusCard))
     }
 
     // MARK: Header
@@ -77,13 +77,13 @@ struct SnippetValueSheet: View {
     private var header: some View {
         HStack {
             Text("Snippet Values")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
             Spacer(minLength: 0)
             Button { cancel() } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                    .foregroundStyle(Slate.Text.tertiary)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -94,18 +94,18 @@ struct SnippetValueSheet: View {
     // MARK: Slots
 
     private var slotFields: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space3) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space3) {
             ForEach(form.slots, id: \.self) { slot in
-                VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                VStack(alignment: .leading, spacing: Slate.Metric.space1) {
                     Text(slot)
-                        .font(.system(size: Otty.Typeface.base, weight: .medium).monospaced())
-                        .foregroundStyle(Otty.Text.primary)
+                        .font(.system(size: Slate.Typeface.base, weight: .medium).monospaced())
+                        .foregroundStyle(Slate.Text.primary)
                     TextField(slot, text: binding(for: slot))
                         .textFieldStyle(.plain)
-                        .font(.system(size: Otty.Typeface.body).monospaced())
-                        .foregroundStyle(Otty.Text.primary)
-                        .tint(Otty.State.accent)
-                        .padding(Otty.Metric.space2)
+                        .font(.system(size: Slate.Typeface.body).monospaced())
+                        .foregroundStyle(Slate.Text.primary)
+                        .tint(Slate.State.accent)
+                        .padding(Slate.Metric.space2)
                         .background(plate)
                 }
             }
@@ -122,23 +122,23 @@ struct SnippetValueSheet: View {
     // MARK: Footer
 
     private var footer: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Spacer(minLength: 0)
             Button("Cancel") { cancel() }
                 .buttonStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
-                .padding(.horizontal, Otty.Metric.space3)
-                .padding(.vertical, Otty.Metric.space1)
+                .font(.system(size: Slate.Typeface.body))
+                .foregroundStyle(Slate.Text.secondary)
+                .padding(.horizontal, Slate.Metric.space3)
+                .padding(.vertical, Slate.Metric.space1)
             Button(action: run) {
                 Text("Run")
-                    .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                    .foregroundStyle(Otty.Surface.card)
-                    .padding(.horizontal, Otty.Metric.space3)
-                    .padding(.vertical, Otty.Metric.space1)
+                    .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                    .foregroundStyle(Slate.Surface.card)
+                    .padding(.horizontal, Slate.Metric.space3)
+                    .padding(.vertical, Slate.Metric.space1)
                     .background(
-                        RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                            .fill(Otty.State.accent),
+                        RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                            .fill(Slate.State.accent),
                     )
             }
             .buttonStyle(.plain)
@@ -146,11 +146,11 @@ struct SnippetValueSheet: View {
     }
 
     private var plate: some View {
-        RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-            .fill(Otty.Surface.element)
+        RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+            .fill(Slate.Surface.element)
             .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                    .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                    .strokeBorder(Slate.Line.subtle, lineWidth: Slate.Metric.hairline),
             )
     }
 

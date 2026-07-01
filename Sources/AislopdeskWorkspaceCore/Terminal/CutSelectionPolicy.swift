@@ -4,8 +4,8 @@ import Foundation
 
 /// What ⌘X / Edit ▸ Cut should do on the terminal surface, decided from the live selection + screen state.
 ///
-/// Mirrors otty's Cut spec (`spec/terminal-features__input.md`): "Cut (⌘X): always copies the selection to
-/// the clipboard; if editable prompt text, also deletes it; on read-only, falls back to a plain copy."
+/// The Cut behavior (tracked in `docs/ui-shell/spec/terminal-features__input.md`): Cut (⌘X) always copies the
+/// selection to the clipboard; if editable prompt text, also deletes it; on read-only, falls back to a plain copy.
 ///
 /// - ``none``: nothing is selected — ⌘X is a no-op (there is nothing to cut).
 /// - ``copyOnly``: copy the selection but NEVER delete — read-only scrollback, or a full-screen / foreground
@@ -18,7 +18,7 @@ public enum CutAction: Equatable, Sendable {
     case copyAndDelete
 }
 
-/// The PURE, headless decision behind otty's terminal **Cut** (⌘X). The GUI surface (`GhosttyTerminalView`,
+/// The PURE, headless decision behind the terminal **Cut** (⌘X). The GUI surface (`GhosttyTerminalView`,
 /// compile-only behind `#if canImport(CGhostty)`) is a thin actuator: it always performs the
 /// `copy_to_clipboard` binding action for a non-``CutAction/none`` decision, and on ``CutAction/copyAndDelete``
 /// sends ``deleteCount(selection:selectionEndsAtCursor:)`` DEL (`0x7F`) bytes.

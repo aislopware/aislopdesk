@@ -1,11 +1,11 @@
-// PaneContainer — one placed leaf = the flush, borderless pane content (otty port).
+// PaneContainer — one placed leaf = the flush, borderless pane content.
 //
 // Resolves the pane's `LivePaneSession` handle + `PaneSpec` from the store, routes by pane kind to the
 // content view (terminal → `TerminalLeafView`; `.remoteGUI`/`.systemDialog` → the `VideoWindowFactory`
-// seam, else a native placeholder). otty renders the terminal as a FLUSH, borderless panel on paper — there
+// seam, else a native placeholder). The terminal renders as a FLUSH, borderless panel on paper — there
 // is NO floating card, NO accent ring, NO drop shadow and NO inset gutter. The per-pane controls
 // (split/close) hover-reveal as a top overlay instead of a resting header bar; focus is conveyed only by
-// dimming the unfocused panes (otty's `⌘D` split treatment). Tap anywhere focuses the pane via the store.
+// dimming the unfocused panes (the `⌘D` split treatment). Tap anywhere focuses the pane via the store.
 //
 // The whole pane is keyed `.id(PaneID)` by the SplitContainer so the surface/connection are never reused
 // across panes (identity hazard). SYSTEM colours/fonts only.
@@ -103,7 +103,7 @@ struct PaneContainer: View {
             InPaneChooserView(store: store, paneID: paneID)
         } else if kind == .web {
             // E18 WI-4: a LOCAL web pane (`PaneKind.web`) materializes NO live session (reconcile skips it,
-            // like `.chooser`) — `live` is `nil` and the leaf renders the otty browser chrome + the
+            // like `.chooser`) — `live` is `nil` and the leaf renders the local browser chrome + the
             // headless-safe `WebRendererFactory` seam straight from the spec's persisted address.
             WebLeafView(store: store, paneID: paneID, isFocused: isFocused, staticMirror: staticMirror)
         } else if isVideo {
@@ -133,7 +133,7 @@ struct PaneContainer: View {
     var body: some View {
         paneContent
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Otty.Surface.card)
+            .background(Slate.Surface.card)
             // While this pane is mid-resize, cover its (frozen / stretched) surface with a calm scrim so the
             // moment reads as a deliberate "resizing" state, not a glitchy stretch. Kept in the tree at
             // opacity 0 (cheap) and faded in — never hit-tests, so taps / the divider gesture pass through.
@@ -141,7 +141,7 @@ struct PaneContainer: View {
                 PaneResizeScrim()
                     .opacity(showResizeScrim ? 1 : 0)
                     .allowsHitTesting(false)
-                    .animation(Otty.Anim.reveal, value: showResizeScrim)
+                    .animation(Slate.Anim.reveal, value: showResizeScrim)
             }
             // E18 WI-5: the external-drag drop-zone overlay. Kept in the tree at opacity 0 (cheap, never
             // hit-tests) and faded in only while a supported drag hovers the pane (`dropModel.isActive`). It
@@ -155,7 +155,7 @@ struct PaneContainer: View {
                 )
                 .opacity(dropModel.isActive ? 1 : 0)
                 .allowsHitTesting(false)
-                .animation(Otty.Anim.reveal, value: dropModel.isActive)
+                .animation(Slate.Anim.reveal, value: dropModel.isActive)
             }
             // Generic resize signal: when this pane's laid-out `size` changes (from ANY source) show the
             // scrim, then hold it until the size has been steady for `resizeScrimSettle`. `.task(id:)`
@@ -188,7 +188,7 @@ struct PaneContainer: View {
             .onChange(of: dragging) { _, active in
                 if !active { resizedDuringDrag = false }
             }
-            // otty: the terminal is a FLUSH, borderless panel on paper — fills the leaf rect edge-to-edge.
+            // The terminal is a FLUSH, borderless panel on paper — fills the leaf rect edge-to-edge.
             // No rounded card, no accent ring, no drop shadow, no gutter, and NO per-pane header bar (the
             // active pane's title + split/close controls live in the titlebar `⋯` menu). Adjacent split
             // panes are separated only by the `PaneDivider` hairline `SplitContainer` places between leaves.
@@ -210,17 +210,17 @@ struct PaneContainer: View {
                 overlayCoordinator: overlayCoordinator,
             ))
             // FOCUS = a small FILLED accent triangle tucked into the active pane's TOP-LEFT corner (Warp-style,
-            // the KEPT marker after the box/bracket/underline/dot/top-bar iterations). `Otty.State.accent`,
+            // the KEPT marker after the box/bracket/underline/dot/top-bar iterations). `Slate.State.accent`,
             // faded in only while focused; the unfocused panes render at FULL opacity (no dim — it washed out
             // live content). `allowsHitTesting(false)` so taps / the divider gesture pass through. OUTERMOST
             // overlay → above the resize-scrim + drop-zone overlays (KEPT exactly as-is — re-render logic).
             .overlay(alignment: .topLeading) {
-                PaneFocusCorner(size: Otty.Metric.focusCornerSize)
-                    .fill(Otty.State.accent)
+                PaneFocusCorner(size: Slate.Metric.focusCornerSize)
+                    .fill(Slate.State.accent)
                     .opacity(isFocused ? 1 : 0)
                     .allowsHitTesting(false)
             }
-            .animation(Otty.Anim.standard, value: isFocused)
+            .animation(Slate.Anim.standard, value: isFocused)
     }
 }
 

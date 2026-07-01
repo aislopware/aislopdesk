@@ -1,11 +1,11 @@
 import XCTest
 @testable import AislopdeskWorkspaceCore
 
-/// E3 WI-2 (ES-E3-2): pins the pure otty `working-directory` policy — ``WorkingDirectoryPolicy`` — covering
-/// the `init(rawConfig:)` ↔ `rawConfig` round-trip (the persisted otty config string) and
+/// E3 WI-2 (ES-E3-2): pins the pure `working-directory` policy — ``WorkingDirectoryPolicy`` — covering
+/// the `init(rawConfig:)` ↔ `rawConfig` round-trip (the persisted config string) and
 /// `resolve(activePaneCwd:)` per case.
 ///
-/// The load-bearing guarantees: `inherit` carries the active pane's cwd through (the otty "Same as Current"
+/// The load-bearing guarantees: `inherit` carries the active pane's cwd through (the "Same as Current"
 /// behaviour); `home` resolves to **`nil`** so the store sends NO redundant `cd` into a login shell that
 /// already starts at `$HOME`; a config value that is neither `inherit` nor `home` becomes a fixed `path`.
 /// Validate-then-repair: an empty / whitespace value is `home`, never a trap. Pure value type — no store,

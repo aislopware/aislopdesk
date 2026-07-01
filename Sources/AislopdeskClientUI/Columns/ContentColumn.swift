@@ -1,8 +1,8 @@
-// ContentColumn — the centre content area (otty port). Renders the active tab's pane tree via the
+// ContentColumn — the centre content area. Renders the active tab's pane tree via the
 // identity-preserving `SplitContainer` (a native `ContentUnavailableView` empty-state when no session/tab),
-// with otty's hover-reveal titlebar floating as a TOP overlay. The titlebar lives here (not at window level)
+// with a hover-reveal titlebar floating as a TOP overlay. The titlebar lives here (not at window level)
 // so its centred title menu centres over the content area for free, and the terminal extends under it
-// (otty's clean resting silhouette). The shared `WorkspaceChromeState` drives the sidebar/Details toggles.
+// for a clean resting silhouette. The shared `WorkspaceChromeState` drives the sidebar/Details toggles.
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -18,11 +18,11 @@ struct ContentColumn: View {
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Otty.Surface.window)
+            .background(Slate.Surface.window)
         #if os(macOS)
             // The hover-reveal titlebar floats as a TOP overlay. New-pane gestures (`+` / title-menu split)
             // mint an in-pane `.chooser` pane directly — the chooser is the pane's CONTENT, not a modal.
-            .overlay(alignment: .top) { OttyTitlebar(store: store, chrome: chrome) }
+            .overlay(alignment: .top) { SlateTitlebar(store: store, chrome: chrome) }
         #endif
     }
 
@@ -31,7 +31,7 @@ struct ContentColumn: View {
     private var content: some View {
         #if os(macOS)
         VStack(spacing: 0) {
-            Color.clear.frame(height: Otty.Metric.titlebarHeight)
+            Color.clear.frame(height: Slate.Metric.titlebarHeight)
             paneArea
         }
         #else

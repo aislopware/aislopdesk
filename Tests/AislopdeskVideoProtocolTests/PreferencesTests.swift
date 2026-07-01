@@ -29,7 +29,7 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(def.cursorStyle, .block)
         XCTAssertEqual(def.cursorBlink, .default) // tri-state default = defer to DEC mode 12
         // E8 WI-1: cursor color/text/opacity/animation render-pref defaults (empty colour = follow theme,
-        // opacity 1.0, animation Off — the otty "Default" state).
+        // opacity 1.0, animation Off — the "Default" state).
         XCTAssertEqual(def.cursorColor, "")
         XCTAssertEqual(def.cursorTextColor, "")
         XCTAssertEqual(def.cursorOpacity, 1.0)

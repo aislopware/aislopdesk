@@ -21,7 +21,7 @@
 //
 // SEAM discipline: this library NEVER imports `AislopdeskVideoClient`/VideoToolbox/Metal — only the seam
 // types (`VideoWindowFactory`, `RemoteWindowDescriptor`, `RemotePaneContext`) cross. A headless `swift build`
-// registers no factory, so `VideoWindowFactory.make` yields an `EmptyView`. SYSTEM/Otty tokens only.
+// registers no factory, so `VideoWindowFactory.make` yields an `EmptyView`. SYSTEM/Slate tokens only.
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -69,7 +69,7 @@ struct GuiLeafView: View {
                 // Inner padding so the remote surface doesn't sit flush against the pane edges / the split
                 // divider (issue: "thêm padding vào các pane"). The Metal-hosting view is sized to this PADDED
                 // frame, so its pointer→host coordinate mapping (relative to the view bounds) stays consistent.
-                .padding(Otty.Metric.space2)
+                .padding(Slate.Metric.space2)
             // WINDOW-PANE CONTROL BAR (issue 5): the bottom bar carries the window CONTROLS — resize (moved out
             // of the pane CONTENT into the footer), lock-position (freeze the edge-hover auto-pan), and zoom
             // in / out / reset — NOT a status strip. Host + connection state now live ONCE in the sidebar
@@ -91,10 +91,10 @@ struct GuiLeafView: View {
             if Self.showReadOnlyPill(staticMirror: staticMirror, isReadOnly: store.isReadOnly(for: paneID)) {
                 ReadOnlyPill(onDeactivate: { store.setPaneReadOnly(paneID, false) })
                     .transition(.move(edge: .top).combined(with: .opacity))
-                    .padding(Otty.Metric.space2)
+                    .padding(Slate.Metric.space2)
             }
         }
-        .animation(Otty.Anim.reveal, value: store.isReadOnly(for: paneID))
+        .animation(Slate.Anim.reveal, value: store.isReadOnly(for: paneID))
         // CAP ADMISSION (A2): request a slot on appear AND re-attempt whenever a sibling frees one
         // (`videoPromotionGeneration` bumps). `.task(id:)` cancels+restarts on either change. NEVER
         // calls `live.setVideoActive` directly — the store enforces the cap + tearingDownVideo
@@ -197,13 +197,13 @@ struct GuiLeafView: View {
     /// The native placeholder for the non-live states: the cap-gated "video paused" notice, or the bare
     /// idle mirror used on the static snapshot path.
     private func placeholder(_ state: RemoteGUIDisplay) -> some View {
-        VStack(spacing: Otty.Metric.space3) {
+        VStack(spacing: Slate.Metric.space3) {
             Image(systemSymbol: live?.kind == .systemDialog ? .lockShield : .display)
-                .font(.system(size: Otty.Typeface.display, weight: .regular))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.display, weight: .regular))
+                .foregroundStyle(Slate.Text.secondary)
             Text(placeholderLabel(state))
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(NativePaneColor.terminalBackground)
@@ -219,7 +219,7 @@ struct GuiLeafView: View {
 /// CONTENT — a "Resize…" button (opens a numeric size popover; replaced the old fiddly DRAG grip), a "lock
 /// position" toggle (freezes the edge-hover auto-pan), and zoom out / reset / in (client-side compositor zoom
 /// of the actual-size viewport). A flat strip flush along the pane bottom, separated from the surface by a
-/// single top hairline (otty flat design — never a floating card). The resize button is gated on a live
+/// single top hairline (flat design — never a floating card). The resize button is gated on a live
 /// host-resize sink (``RemoteWindowModel/canResizeWindow``, withheld while read-only); the zoom/lock controls
 /// on a live viewport sink (``RemoteWindowModel/canControlViewport``, live even while read-only — pure client ops).
 private struct GuiPaneControlBar: View {
@@ -232,38 +232,38 @@ private struct GuiPaneControlBar: View {
     @State private var showResizePopover = false
 
     var body: some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             if let model, model.canResizeWindow {
-                OttyPlateButton(symbol: .arrowUpLeftAndArrowDownRight, help: "Resize remote window…") {
+                SlatePlateButton(symbol: .arrowUpLeftAndArrowDownRight, help: "Resize remote window…") {
                     showResizePopover = true
                 }
                 .popover(isPresented: $showResizePopover, arrowEdge: .bottom) {
                     RemoteWindowSizePopover(model: model, isPresented: $showResizePopover)
                 }
             }
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             if let model, model.canControlViewport {
-                OttyPlateButton(symbol: .minusMagnifyingglass, help: "Zoom out") { model.sendViewport(.zoomOut) }
-                OttyPlateButton(symbol: .arrowCounterclockwise, help: "Actual size (reset zoom + position)") {
+                SlatePlateButton(symbol: .minusMagnifyingglass, help: "Zoom out") { model.sendViewport(.zoomOut) }
+                SlatePlateButton(symbol: .arrowCounterclockwise, help: "Actual size (reset zoom + position)") {
                     model.sendViewport(.reset)
                 }
-                OttyPlateButton(symbol: .plusMagnifyingglass, help: "Zoom in") { model.sendViewport(.zoomIn) }
-                OttyPlateButton(
+                SlatePlateButton(symbol: .plusMagnifyingglass, help: "Zoom in") { model.sendViewport(.zoomIn) }
+                SlatePlateButton(
                     symbol: panLocked ? .lockFill : .lockOpen,
                     help: panLocked ? "Unlock viewport (resume edge-pan)" : "Lock viewport position (freeze edge-pan)",
-                    tint: panLocked ? Otty.State.accent : Otty.Text.icon,
+                    tint: panLocked ? Slate.State.accent : Slate.Text.icon,
                 ) {
                     panLocked.toggle()
                     model.sendViewport(.toggleLock)
                 }
             }
         }
-        .padding(.horizontal, Otty.Metric.space2)
-        .frame(height: Otty.Metric.paneHeaderHeight)
+        .padding(.horizontal, Slate.Metric.space2)
+        .frame(height: Slate.Metric.paneHeaderHeight)
         .frame(maxWidth: .infinity)
-        .background(Otty.Surface.card) // FLAT: bar background == pane background
+        .background(Slate.Surface.card) // FLAT: bar background == pane background
         .overlay(alignment: .top) {
-            Rectangle().fill(Otty.Line.divider).frame(height: Otty.Metric.hairline)
+            Rectangle().fill(Slate.Line.divider).frame(height: Slate.Metric.hairline)
         }
     }
 }
@@ -295,18 +295,18 @@ private struct RemoteWindowSizePopover: View {
     ) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space3) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space3) {
             Text("Resize remote window")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
             axisRow("Width", value: $width, range: Self.minSide...maxW)
             axisRow("Height", value: $height, range: Self.minSide...maxH)
             if let mx = model.windowMaxPointSize {
                 Text("Display max \(Int(mx.width)) × \(Int(mx.height)) pt")
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
             }
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 if model.windowMaxPointSize != nil {
                     Button("Maximize") { width = maxW
                         height = maxH
@@ -319,7 +319,7 @@ private struct RemoteWindowSizePopover: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(Otty.Metric.space4)
+        .padding(Slate.Metric.space4)
         .frame(width: 280)
         .onAppear {
             let cur = model.windowPointSize ?? CGSize(width: 1280, height: 800)
@@ -329,18 +329,18 @@ private struct RemoteWindowSizePopover: View {
     }
 
     private func axisRow(_ label: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             Text(label)
                 .frame(width: 52, alignment: .leading)
-                .foregroundStyle(Otty.Text.secondary)
+                .foregroundStyle(Slate.Text.secondary)
             TextField(label, value: value, format: .number)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 92)
             Stepper(label, value: value, in: range, step: 20)
                 .labelsHidden()
-            Text("pt").foregroundStyle(Otty.Text.secondary)
+            Text("pt").foregroundStyle(Slate.Text.secondary)
         }
-        .font(.system(size: Otty.Typeface.body))
+        .font(.system(size: Slate.Typeface.body))
     }
 
     private func apply() {

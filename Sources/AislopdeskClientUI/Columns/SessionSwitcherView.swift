@@ -1,9 +1,9 @@
 // SessionSwitcherView — the multi-session switcher mounted atop the sidebar navigator (E19 WI-5 / A32).
 //
-// aislopdesk adds a Session layer above otty's single-window Window→Tab→Pane model, so the faithful otty
-// affordance is a compact session selector at the TOP of the TABS sidebar (above the "TABS" header). It lists
+// aislopdesk layers a Session above the single-window Window→Tab→Pane model, so the switcher is a compact
+// session selector at the TOP of the TABS sidebar (above the "TABS" header). It lists
 // ``WorkspaceStore/tree``'s sessions (derived by the pure ``SessionRowModel/rows(for:)`` so the row set is
-// headless-tested), marks the active one with the same otty WHITE-CARD highlight as ``OttyTabRow``, and
+// headless-tested), marks the active one with the same WHITE-CARD highlight as ``SlateTabRow``, and
 // routes every action straight through the EXISTING store ops — `selectSession` (tap), `renameSession`
 // (inline `TextField`), `closeSession` (close / context menu), and `newSessionDefault` (the "+ New Session"
 // add affordance, which names via ``WorkspaceStore/defaultSessionName``). It invents NO new ops and does NOT
@@ -11,9 +11,9 @@
 //
 // The ENTIRE switcher shows only when there is more than one session (`rows.count > 1`) — with a single
 // session it renders NOTHING (no "SESSIONS" header, no lone row, no add affordance, no divider) so the
-// default workspace matches otty's `workspace-tabs.png` (just the warm panel → "TABS" header → tab rows).
+// default workspace stays just the warm panel → "TABS" header → tab rows.
 // "New Session" stays reachable via the ⌃⌘N command / palette; the switcher reveals itself once a 2nd
-// session exists. macOS renders flat otty rows; iOS renders a leading `Section` so it composes into the
+// session exists. macOS renders flat rows; iOS renders a leading `Section` so it composes into the
 // navigator's system `List` (iPad navigation intact).
 
 #if canImport(SwiftUI)
@@ -61,21 +61,21 @@ struct SessionSwitcherView: View {
     }
 
     #if os(macOS)
-    /// macOS: a flat session list — otty white-card active rows + a "+ New Session" add row — painted on the
+    /// macOS: a flat session list — white-card active rows + a "+ New Session" add row — painted on the
     /// warm sidebar above the "TABS" header (the host split item is a plain item, so no native vibrancy).
     private var macBody: some View {
         let rows = SessionRowModel.rows(for: store.tree)
         // The DEFAULT single-session workspace shows ZERO session chrome — no "SESSIONS" header, no session
-        // rows, no "+ New Session" add row, no divider — so the sidebar matches otty's `workspace-tabs.png`
-        // (warm panel → "TABS" header → tab rows). The whole switcher block is gated on `rows.count > 1`; it
+        // rows, no "+ New Session" add row, no divider — so the sidebar stays just the warm panel →
+        // "TABS" header → tab rows. The whole switcher block is gated on `rows.count > 1`; it
         // reveals itself once a 2nd session exists. "New Session" stays reachable via ⌃⌘N / the palette while
         // hidden. (Just gating the header — as before — left ~3 spurious elements in the most common state.)
         return VStack(alignment: .leading, spacing: 0) {
             if rows.count > 1 {
                 Text("SESSIONS")
-                    .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
+                    .font(.system(size: Slate.Typeface.footnote, weight: .semibold))
                     .tracking(0.6)
-                    .foregroundStyle(Otty.State.header)
+                    .foregroundStyle(Slate.State.header)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 6)
                 VStack(alignment: .leading, spacing: 2) {
@@ -97,7 +97,7 @@ struct SessionSwitcherView: View {
                     .padding(.horizontal, 8)
                     .padding(.top, 2)
                 Rectangle()
-                    .fill(Otty.Line.divider)
+                    .fill(Slate.Line.divider)
                     .frame(height: 1)
                     .padding(.horizontal, 12)
                     .padding(.top, 8)
@@ -123,7 +123,7 @@ struct SessionSwitcherView: View {
                     }
                     Button { store.newSessionDefault() } label: {
                         Label("New Session", systemSymbol: .plus)
-                            .foregroundStyle(Otty.State.accent)
+                            .foregroundStyle(Slate.State.accent)
                     }
                 } header: {
                     Text("Sessions")
@@ -143,7 +143,7 @@ struct SessionSwitcherView: View {
                 HStack(spacing: 8) {
                     Label {
                         Text(row.name)
-                            .foregroundStyle(Otty.Text.primary)
+                            .foregroundStyle(Slate.Text.primary)
                             .lineLimit(1)
                     } icon: {
                         Image(systemSymbol: .rectangleStack)
@@ -151,14 +151,14 @@ struct SessionSwitcherView: View {
                     Spacer(minLength: 6)
                     if row.active {
                         Image(systemSymbol: .checkmark)
-                            .font(.system(size: Otty.Typeface.small, weight: .semibold))
-                            .foregroundStyle(Otty.State.accent)
+                            .font(.system(size: Slate.Typeface.small, weight: .semibold))
+                            .foregroundStyle(Slate.State.accent)
                             .accessibilityLabel("Active session")
                     }
                     if row.tabCount > 0 {
                         Text("\(row.tabCount)")
-                            .font(.system(size: Otty.Typeface.small, design: .monospaced))
-                            .foregroundStyle(Otty.Text.secondary)
+                            .font(.system(size: Slate.Typeface.small, design: .monospaced))
+                            .foregroundStyle(Slate.Text.secondary)
                     }
                 }
             }
@@ -170,7 +170,7 @@ struct SessionSwitcherView: View {
                 Button { beginRename(row) } label: {
                     Label("Rename", systemSymbol: .pencil)
                 }
-                .tint(Otty.State.accent)
+                .tint(Slate.State.accent)
             }
         }
     }
@@ -178,8 +178,8 @@ struct SessionSwitcherView: View {
 }
 
 #if os(macOS)
-/// One macOS session row — otty's silhouette: the name on the warm sidebar, ACTIVE = the white card (radius-7
-/// fill + 1px border + faint shadow) exactly like ``OttyTabRow``, hover = a flat plate with a reveal close
+/// One macOS session row — the name on the warm sidebar, ACTIVE = the white card (radius-7
+/// fill + 1px border + faint shadow) exactly like ``SlateTabRow``, hover = a flat plate with a reveal close
 /// `×`, trailing tab-count, and a right-click context menu (Rename / Close). While renaming the name swaps for
 /// a focused `TextField` that commits on submit / blur through the parent's existing-op closures.
 private struct SessionRow: View {
@@ -200,9 +200,9 @@ private struct SessionRow: View {
             if isRenaming {
                 TextField("Session name", text: $draft)
                     .textFieldStyle(.plain)
-                    .font(.system(size: Otty.Typeface.body))
-                    .foregroundStyle(Otty.Text.primary)
-                    .tint(Otty.State.accent)
+                    .font(.system(size: Slate.Typeface.body))
+                    .foregroundStyle(Slate.Text.primary)
+                    .tint(Slate.State.accent)
                     .focused($focused)
                     .onSubmit(onCommit)
                     .onExitCommand(perform: onCancel)
@@ -210,14 +210,14 @@ private struct SessionRow: View {
                     .onChange(of: focused) { _, nowFocused in if !nowFocused { onCommit() } }
             } else {
                 Text(model.name)
-                    .font(.system(size: Otty.Typeface.body, weight: model.active ? .medium : .regular))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.body, weight: model.active ? .medium : .regular))
+                    .foregroundStyle(Slate.Text.primary)
                     .lineLimit(1)
                 Spacer(minLength: 6)
                 if model.tabCount > 0 {
                     Text("\(model.tabCount)")
-                        .font(.system(size: Otty.Typeface.small, design: .monospaced))
-                        .foregroundStyle(Otty.Text.secondary)
+                        .font(.system(size: Slate.Typeface.small, design: .monospaced))
+                        .foregroundStyle(Slate.Text.secondary)
                         .opacity(hovering ? 0 : 1)
                 }
             }
@@ -231,11 +231,11 @@ private struct SessionRow: View {
         }
         .padding(.horizontal, 12)
         .frame(height: 30)
-        .background(rowBackground, in: .rect(cornerRadius: Otty.Metric.radiusTab))
+        .background(rowBackground, in: .rect(cornerRadius: Slate.Metric.radiusTab))
         .overlay {
             if model.active {
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusTab)
-                    .strokeBorder(Otty.Line.card, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusTab)
+                    .strokeBorder(Slate.Line.card, lineWidth: 1)
             }
         }
         .shadow(color: model.active ? .black.opacity(0.04) : .clear, radius: 2, y: 1)
@@ -246,15 +246,15 @@ private struct SessionRow: View {
             Button("Rename") { onBeginRename() }
             Button("Close", role: .destructive) { onClose() }
         }
-        .animation(Otty.Anim.smallFade, value: hovering)
-        .animation(Otty.Anim.smallFade, value: model.active)
+        .animation(Slate.Anim.smallFade, value: hovering)
+        .animation(Slate.Anim.smallFade, value: model.active)
     }
 
     private var closeButton: some View {
         Button(action: onClose) {
             Image(systemSymbol: .xmark)
-                .font(.system(size: Otty.Typeface.small, weight: .medium))
-                .foregroundStyle(Otty.Text.icon)
+                .font(.system(size: Slate.Typeface.small, weight: .medium))
+                .foregroundStyle(Slate.Text.icon)
                 .frame(width: 18, height: 18)
                 .contentShape(.rect)
         }
@@ -264,13 +264,13 @@ private struct SessionRow: View {
     }
 
     private var rowBackground: Color {
-        if model.active { Otty.Surface.selectedCard }
-        else if hovering { Otty.State.hover }
+        if model.active { Slate.Surface.selectedCard }
+        else if hovering { Slate.State.hover }
         else { .clear }
     }
 }
 
-/// The flat "+ New Session" add affordance — an otty hover-plate row with a leading plus glyph. Routes to
+/// The flat "+ New Session" add affordance — a hover-plate row with a leading plus glyph. Routes to
 /// ``WorkspaceStore/newSessionDefault()`` (which names the session via ``WorkspaceStore/defaultSessionName``).
 private struct SessionAddRow: View {
     let action: () -> Void
@@ -282,21 +282,21 @@ private struct SessionAddRow: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 Image(systemSymbol: .plus)
-                    .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                    .foregroundStyle(Otty.Text.icon)
+                    .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                    .foregroundStyle(Slate.Text.icon)
                 Text("New Session")
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12)
             .frame(height: 28)
-            .background(hovering ? Otty.State.hover : .clear, in: .rect(cornerRadius: Otty.Metric.radiusTab))
+            .background(hovering ? Slate.State.hover : .clear, in: .rect(cornerRadius: Slate.Metric.radiusTab))
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .animation(Otty.Anim.smallFade, value: hovering)
+        .animation(Slate.Anim.smallFade, value: hovering)
     }
 }
 #endif

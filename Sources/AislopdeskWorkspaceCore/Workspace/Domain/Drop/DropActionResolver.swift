@@ -42,7 +42,7 @@ public enum DropAction: Equatable, Sendable {
 // MARK: - Resolver (the (zone × content) policy table)
 
 /// The PURE policy mapping a hovered ``DropZone`` + classified ``DroppedContent`` to a ``DropAction``,
-/// or `nil` for a disabled cell (otty `spec/user-interface__drag-and-drop.md`). The spec's table:
+/// or `nil` for a disabled cell (see `docs/ui-shell/spec/user-interface__drag-and-drop.md`). The spec's table:
 ///
 /// | Dragged thing | Green half / terminal action            | Blue half / pane action          |
 /// |---------------|------------------------------------------|----------------------------------|

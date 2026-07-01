@@ -75,7 +75,7 @@ final class TabDragPayloadTests: XCTestCase {
 
     // MARK: - E18 WI-7: tab-reorder insertion-line indicator (targeted-row resolution)
 
-    /// The insertion line (otty's "thin insertion-line indicator [for] the landing position between tabs")
+    /// The insertion line — a thin indicator for the landing position between tabs —
     /// anchors on the TOP edge of the row a reorder drag is hovering: ``TabReorderInsertionLine/anchorIndex``
     /// resolves the TARGETED row to its CURRENT rendered slot, so the rule tracks the row the cursor is over
     /// (a different target ⇒ a different anchor), not a fixed position. Fails to compile on the un-WI-7 code

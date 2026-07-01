@@ -19,7 +19,7 @@
 // SEAM discipline: the host owns NO state — every read/close goes through the coordinator (the single
 // `@Observable` reducer). The `toggledState` predicate is built by the root from the live `WorkspaceChromeState`
 // (macOS) or a no-op (iOS, until iOS chrome exists) and handed in, so the pure coordinator never learns about
-// chrome. `Otty.*` tokens ONLY (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
+// chrome. `Slate.*` tokens ONLY (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -119,7 +119,7 @@ struct OverlayHostView: View {
                 )
             }
             // E5 / WI-4: the cross-tab Global Search surface (⇧⌘F). A LARGE, content-area-filling, NON-scrimmed
-            // card (E5 divergence #1 — the faithful equivalent of otty's dedicated results tab) so it is NOT
+            // card (E5 divergence #1 — a dedicated results overlay rather than a results tab) so it is NOT
             // wrapped in a `Scrim` and does NOT dim the workspace. It is mounted BELOW the toast stack so a
             // background toast still floats over it, and it is gated separately from `anyScrimmedModal` (it is
             // not in `anyModalVisible`) — its own `.allowsHitTesting` term below captures clicks while shown.
@@ -142,9 +142,9 @@ struct OverlayHostView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // One fade for the whole panel layer, keyed on the modal gate so a panel appearing/dismissing
         // cross-fades with its scrim (the toast stack runs its own value-keyed animation internally).
-        .animation(Otty.Anim.standard, value: anyScrimmedModal)
+        .animation(Slate.Anim.standard, value: anyScrimmedModal)
         // The non-scrimmed Global Search surface fades on its own flag (it is excluded from `anyScrimmedModal`).
-        .animation(Otty.Anim.standard, value: coordinator.globalSearchVisible)
+        .animation(Slate.Anim.standard, value: coordinator.globalSearchVisible)
         // Transparent to hits when nothing is up so the workspace beneath stays interactive. Global Search is a
         // full surface (not a scrimmed modal), so it adds its own hit-testing term.
         .allowsHitTesting(anyScrimmedModal || coordinator.globalSearchVisible || !coordinator.toasts.isEmpty)
@@ -198,7 +198,7 @@ struct Scrim: View {
 
     var body: some View {
         Rectangle()
-            .fill(Otty.State.shadow)
+            .fill(Slate.State.shadow)
             .ignoresSafeArea()
             .contentShape(Rectangle())
             .onTapGesture { onTap() }
@@ -208,7 +208,7 @@ struct Scrim: View {
 
 // MARK: - OverlayPanel
 
-/// The shared floating-panel shell (E2 / WI-5): a fixed-width `Otty.Surface.card` panel with the family's
+/// The shared floating-panel shell (E2 / WI-5): a fixed-width `Slate.Surface.card` panel with the family's
 /// rounded corners, hairline border, and drop shadow — used by ``ConnectHostView`` and
 /// ``RemoteWindowPickerModal`` so the aislopdesk-specific overlays read as one family with the palette /
 /// cheat sheet (which bake the same shell inline). The ZStack in ``OverlayHostView`` centers it.
@@ -220,13 +220,13 @@ struct OverlayPanel<Content: View>: View {
     var body: some View {
         content()
             .frame(width: width)
-            .background(Otty.Surface.card)
-            .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard))
+            .background(Slate.Surface.card)
+            .clipShape(RoundedRectangle(cornerRadius: Slate.Metric.radiusCard))
             .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusCard)
-                    .stroke(Otty.Line.card, lineWidth: Otty.Metric.hairline),
+                RoundedRectangle(cornerRadius: Slate.Metric.radiusCard)
+                    .stroke(Slate.Line.card, lineWidth: Slate.Metric.hairline),
             )
-            .shadow(color: Otty.State.shadow, radius: 30, x: 0, y: 12)
+            .shadow(color: Slate.State.shadow, radius: 30, x: 0, y: 12)
     }
 }
 
@@ -238,7 +238,7 @@ struct OverlayPanel<Content: View>: View {
 /// native `NSAlert` in ``WindowCloseConfirmationDelegate``; this covers the pane/tab scope on both platforms
 /// so a close behind a running command always surfaces a prompt instead of silently doing nothing. The store
 /// owns the resolve (`confirmPendingClose()` / `cancelPendingClose()`); this view is pure plumbing.
-/// `Otty.*` tokens ONLY (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
+/// `Slate.*` tokens ONLY (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
 struct CloseConfirmationPanel: View {
     /// The headline ("Close “<pane>”?") the host builds from the pending pane's spec.
     let title: String
@@ -251,9 +251,9 @@ struct CloseConfirmationPanel: View {
     var onCancel: () -> Void
 
     /// The close-confirmation subtitle for a given resolved policy + close scope (E3 carry-over #4). PURE —
-    /// unit-pinnable without instantiating the view (no `NSAlert` / window). The wording mirrors otty's
-    /// softer NSAlert copy: a running process names the consequence; `always` asks plainly (scoped to "pane"
-    /// vs "tab"); `multiple_tabs` warns that the window holds several tabs.
+    /// unit-pinnable without instantiating the view (no `NSAlert` / window). The wording stays soft: a running
+    /// process names the consequence; `always` asks plainly (scoped to "pane" vs "tab"); `multiple_tabs` warns
+    /// that the window holds several tabs.
     static func reason(for policy: CloseConfirmationPolicy, scope: CloseScope = .tab) -> String {
         switch policy {
         case .process:
@@ -271,43 +271,43 @@ struct CloseConfirmationPanel: View {
 
     var body: some View {
         OverlayPanel(width: 380) {
-            VStack(alignment: .leading, spacing: Otty.Metric.space3) {
-                HStack(spacing: Otty.Metric.space2) {
+            VStack(alignment: .leading, spacing: Slate.Metric.space3) {
+                HStack(spacing: Slate.Metric.space2) {
                     Image(systemSymbol: .exclamationmarkTriangle)
-                        .font(.system(size: Otty.Typeface.body))
-                        .foregroundStyle(Otty.Status.warn)
+                        .font(.system(size: Slate.Typeface.body))
+                        .foregroundStyle(Slate.Status.warn)
                     Text(title)
-                        .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                        .foregroundStyle(Otty.Text.primary)
+                        .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                        .foregroundStyle(Slate.Text.primary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Text(subtitle)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: Otty.Metric.space2) {
+                HStack(spacing: Slate.Metric.space2) {
                     Spacer(minLength: 0)
                     Button("Cancel") { onCancel() }
                         .buttonStyle(.plain)
-                        .font(.system(size: Otty.Typeface.body))
-                        .foregroundStyle(Otty.Text.secondary)
-                        .padding(.horizontal, Otty.Metric.space3)
-                        .padding(.vertical, Otty.Metric.space1)
+                        .font(.system(size: Slate.Typeface.body))
+                        .foregroundStyle(Slate.Text.secondary)
+                        .padding(.horizontal, Slate.Metric.space3)
+                        .padding(.vertical, Slate.Metric.space1)
                     Button { onConfirm() } label: {
                         Text("Close")
-                            .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                            .foregroundStyle(Otty.Surface.card)
-                            .padding(.horizontal, Otty.Metric.space3)
-                            .padding(.vertical, Otty.Metric.space1)
+                            .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                            .foregroundStyle(Slate.Surface.card)
+                            .padding(.horizontal, Slate.Metric.space3)
+                            .padding(.vertical, Slate.Metric.space1)
                             .background(
-                                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                                    .fill(Otty.Status.warn),
+                                RoundedRectangle(cornerRadius: Slate.Metric.radiusControl)
+                                    .fill(Slate.Status.warn),
                             )
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(Otty.Metric.space4)
+            .padding(Slate.Metric.space4)
         }
         #if os(macOS)
         .onExitCommand { onCancel() }

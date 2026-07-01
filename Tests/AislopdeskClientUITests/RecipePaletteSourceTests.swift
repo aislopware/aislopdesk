@@ -3,10 +3,10 @@ import XCTest
 @testable import AislopdeskClientUI
 @testable import AislopdeskWorkspaceCore
 
-/// E16 / M1 — the recipe command-palette source. The command palette is one of otty's THREE documented recipe
-/// surfaces (Settings ▸ Recipes, File ▸ Recipe menu, the command palette) and is the ONLY cross-platform one,
+/// E16 / M1 — the recipe command-palette source. The command palette is one of THREE recipe surfaces
+/// (Settings ▸ Recipes, File ▸ Recipe menu, the command palette) and is the ONLY cross-platform one,
 /// so a `RecipePaletteSource` must surface "Save Recipe…" / "Open Recipe…" verb rows (arming the store's
-/// `requestSaveRecipe()` / `requestOpenRecipe()` edges) plus one row per saved `.ottyrecipe`. This also makes
+/// `requestSaveRecipe()` / `requestOpenRecipe()` edges) plus one row per saved `.aislopdeskrecipe`. This also makes
 /// Save / Open Recipe reachable on iOS (no menu, no ⌘S). Headless: the source is a pure value over a snapshot,
 /// the row actions run against a store with NO NSWindow / view.
 @MainActor
@@ -56,7 +56,7 @@ final class RecipePaletteSourceTests: XCTestCase {
         XCTAssertTrue(store.recipes.pendingOpenRecipe, "Open Recipe… arms requestOpenRecipe()")
     }
 
-    /// A snapshot lists one row per saved `.ottyrecipe` ("Open Recipe: <name>"), opening it from the library.
+    /// A snapshot lists one row per saved `.aislopdeskrecipe` ("Open Recipe: <name>"), opening it from the library.
     func testSnapshotProducesRowPerSavedRecipe() throws {
         let store = makeStore()
         _ = try XCTUnwrap(store.saveRecipe(scope: .window, content: .layoutOnly, name: "Layout A"))

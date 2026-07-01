@@ -39,7 +39,7 @@ public struct KeybindingPreferences: Codable, Sendable, Equatable {
         }
 
         /// Normalise a base-key spelling to the ONE canonical token: lowercased, with the named-key ALIAS
-        /// spellings otty also accepts (`pgup`/`pageup`, `pgdn`/`pagedown`, `enter`/`return`,
+        /// spellings this format also accepts (`pgup`/`pageup`, `pgdn`/`pagedown`, `enter`/`return`,
         /// `leftarrow`/`left`, `rightarrow`/`right`, `uparrow`/`up`, `downarrow`/`down`) folded to the single
         /// token the dispatcher's reverse bridge emits (`KeyChord.asPreferencesChord` →
         /// `preferencesKeyToken`: `"pageup"`, `"return"`, `"left"`, …). WITHOUT this fold a config line like
@@ -146,7 +146,7 @@ public struct KeybindingPreferences: Codable, Sendable, Equatable {
     }
 
     /// A literal-byte override (E1/WI-6): a chord bound to send raw bytes to the focused terminal instead
-    /// of firing a named action — otty's `text:` / `csi:` / `esc:` config bindings (see
+    /// of firing a named action — the `text:` / `csi:` / `esc:` config bindings (see
     /// `spec/customization__custom-keybindings.md`). The bytes are RESOLVED at parse time (by
     /// ``KeybindGrammar``, which prepends `ESC` / `ESC [` for the `esc:` / `csi:` kinds), so the dispatcher
     /// just hands ``payload`` to `sendBytes` — no escape re-interpretation at dispatch. ``kind`` is kept for
@@ -192,7 +192,7 @@ public struct KeybindingPreferences: Codable, Sendable, Equatable {
     /// change. (JSON-encodes as a flat key/value array since the key is not a `String` — round-trips fine.)
     public var textBindings: [KeyChord: TextBinding]
 
-    /// E1/WI-6: chords whose DEFAULT action is suppressed (otty's `unbind:<chord>`). The dispatcher passes
+    /// E1/WI-6: chords whose DEFAULT action is suppressed (the `unbind:<chord>` config directive). The dispatcher passes
     /// a matching event straight through (the default responder chain handles it) instead of firing the
     /// registry action. Empty by default ⇒ no behaviour change.
     public var unbinds: Set<KeyChord>

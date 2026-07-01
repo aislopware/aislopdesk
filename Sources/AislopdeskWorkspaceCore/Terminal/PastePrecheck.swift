@@ -15,19 +15,19 @@ public enum PastePrecheckDecision: Equatable, Sendable {
     case confirm(PasteSafetyAnalyzer.PasteDangers)
 }
 
-/// The PURE, headless decision behind otty's **Paste Protection** at the EMBEDDER's paste entry point.
+/// The PURE, headless decision behind **Paste Protection** at the EMBEDDER's paste entry point.
 ///
 /// ## Why this exists (the reachability bug — ES-E8-3)
 /// libghostty only invokes its `confirm_read_clipboard_cb` (the site that ran ``PasteSafetyAnalyzer``)
 /// when its OWN `input.paste.isSafe` returns false — and `isSafe` flags ONLY a payload containing `\n`
-/// (or a literal bracketed-paste end marker `\x1b[201~`). That gate is **NARROWER** than otty's four
-/// dangers: a single-line `sudo rm -rf /`, an ESC-laced control-char paste, or a bare-`\r` paste are all
-/// `isSafe == true`, so they reached the terminal SILENTLY — two of otty's four advertised dangers were
-/// effectively suppressed. The embedder could only ever DROP a warning libghostty already tripped, never
-/// ADD one.
+/// (or a literal bracketed-paste end marker `\x1b[201~`). That gate is **NARROWER** than the four paste
+/// dangers this codebase flags (see ``PasteSafetyAnalyzer``): a single-line `sudo rm -rf /`, an ESC-laced
+/// control-char paste, or a bare-`\r` paste are all `isSafe == true`, so they reached the terminal
+/// SILENTLY — two of the four advertised dangers were effectively suppressed. The embedder could only
+/// ever DROP a warning libghostty already tripped, never ADD one.
 ///
-/// The fix is to run otty's analyzer at the embedder's paste path BEFORE handing the bytes to libghostty,
-/// so all four danger classes are reachable regardless of newlines. This enum is the **testable heart** of
+/// The fix is to run the danger analyzer at the embedder's paste path BEFORE handing the bytes to
+/// libghostty, so all four danger classes are reachable regardless of newlines. This enum is the **testable heart** of
 /// that pre-check; the GUI surface (`GhosttyTerminalView`, compile-only behind `#if canImport(CGhostty)`)
 /// is the thin actuator that reads the pasteboard, calls ``decide(clipboard:protectionOn:isAlternateScreen:)``,
 /// and either pastes directly or shows the sheet.
@@ -42,7 +42,7 @@ public enum PastePrecheck {
     ///
     /// - Parameters:
     ///   - clipboard: the pasteboard text the user is about to paste.
-    ///   - protectionOn: the live otty "Paste Protection" toggle
+    ///   - protectionOn: the live "Paste Protection" toggle
     ///     (``SettingsKey/pasteProtectionEnabled``, default ON).
     ///   - isAlternateScreen: whether a full-screen / foreground program owns the screen (the GUI derives
     ///     this from the OSC-133 shell-activity the host streams). A full-screen TUI receives the paste

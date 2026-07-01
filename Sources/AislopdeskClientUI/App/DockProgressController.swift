@@ -29,10 +29,10 @@ public final class DockProgressController {
     /// is thread-safe).
     private nonisolated(unsafe) var activationObserver: NSObjectProtocol?
 
-    /// Invoked when the app becomes active WHILE the Dock tile is in the error tint — the closest-faithful
-    /// stand-in for the otty "click the tinted Dock icon → jump to the next failing tab + clear the tint"
-    /// (the precise per-click hook is `NSApplicationDelegate.applicationShouldHandleReopen`, which SwiftUI
-    /// owns; see docs/DECISIONS.md). The app wires this to ``WorkspaceStore/revealNextErrorPane()``.
+    /// Invoked when the app becomes active WHILE the Dock tile is in the error tint — clicking the tinted
+    /// Dock icon jumps to the next failing tab and clears the tint (the precise per-click hook is
+    /// `NSApplicationDelegate.applicationShouldHandleReopen`, which SwiftUI owns; see docs/DECISIONS.md).
+    /// The app wires this to ``WorkspaceStore/revealNextErrorPane()``.
     public var onActivatedWhileErrored: () -> Void = {}
 
     // `NSApplication.shared` (NOT the `NSApp` IUO global) so the default argument is safe even when the

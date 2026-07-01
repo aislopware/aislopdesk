@@ -139,7 +139,7 @@ final class ClaudeStatusWiringTests: XCTestCase {
     }
 
     /// Each GENUINE `.done` turn-finished EDGE dispatches one prompt, FIFO; the `.done→.idle` decay does not
-    /// re-dispatch — so two prompts need two real working→done turns, matching otty's one-per-turn cadence.
+    /// re-dispatch — so two prompts need two real working→done turns, one prompt dispatched per turn.
     func testEachAgentDoneEdgeDispatchesOnePromptInOrder() throws {
         let session = makeTerminalSession()
         let composer = try XCTUnwrap(session.composer)

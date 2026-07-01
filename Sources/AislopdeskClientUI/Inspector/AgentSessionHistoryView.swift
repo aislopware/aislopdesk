@@ -1,19 +1,19 @@
 // AgentSessionHistoryView — the Details Panel's "View Session History" viewer (E4, WI-6).
 //
-// Ports the otty agent-history viewer (spec/agents__history.md → agent-history.png): the Info tab surfaces
+// The agent-history viewer (spec/agents__history.md → agent-history.png): the Info tab surfaces
 // a "View Session History" action (clock icon + green label); opening it presents this viewer, which lists
 // the pane project's captured agent sessions (`PaneMetadataModel.agentSessions`) and — on selecting one —
 // fetches its raw JSONL via the `readAgentSession` verb and renders it as a human-readable transcript
 // (speaker turns + collapsed tool-call summaries + Markdown bodies) instead of raw JSON.
 //
-// SCOPE (per the E4 mapping notes): E4 LISTS + RENDERS only. otty's "Resume" / "Send to Chat" / "Fork in…"
+// SCOPE (per the E4 mapping notes): E4 LISTS + RENDERS only. "Resume" / "Send to Chat" / "Fork in…"
 // are the later agent epics — this viewer is read-only. The JSONL → transcript parse runs through the
 // EXISTING `AislopdeskInspector.TranscriptParser` (never a second JSONL parser); each turn's body renders
 // through the app's one `MarkdownText` seam (Textual's `StructuredText` + its large-document guard).
 //
 // The parse path (`AgentTranscript`) + the formatting helpers (relative time, agent label, tool summary,
 // clock-time extraction) are PURE + headlessly unit-tested (`InspectorRenderingTests`) — the view only maps
-// their result onto `Otty` tokens, so a regression in the bytes→transcript path fails a test, not a render.
+// their result onto `Slate` tokens, so a regression in the bytes→transcript path fails a test, not a render.
 
 #if canImport(SwiftUI)
 import AislopdeskInspector
@@ -34,8 +34,8 @@ struct AgentSessionHistoryView: View {
     /// Performs a Resume for the open session: jump to its live pane, or spawn one running the VERBATIM
     /// `claude --resume <id>`. No-op default so the viewer is standalone-mountable (previews / tests). E13/WI-6.
     var onResume: (AgentResumeRouter.ResumeTarget) -> Void = { _ in }
-    /// Opens the Send-to-Chat dialog pre-loaded with the transcript row the user right-clicked (otty:
-    /// "select text in transcript → context menu → Send to Chat"). No-op default so the viewer is
+    /// Opens the Send-to-Chat dialog pre-loaded with the transcript row the user right-clicked
+    /// (select text in transcript → context menu → Send to Chat). No-op default so the viewer is
     /// standalone-mountable (previews / tests). Wired by `InspectorColumn` to `overlay.openSendToChat(context:)`.
     var onSendToChat: (SendToChatContext) -> Void = { _ in }
 
@@ -46,7 +46,7 @@ struct AgentSessionHistoryView: View {
     /// The open transcript's RAW JSONL text (the bytes `readAgentSession` returned), shown when `showRaw`.
     /// E13/WI-6.
     @State private var rawText = ""
-    /// The transcript header's rendered ⇄ raw-JSONL toggle (otty's `agent-history.png` toggle). E13/WI-6.
+    /// The transcript header's rendered ⇄ raw-JSONL toggle (see `agent-history.png`). E13/WI-6.
     @State private var showRaw = false
     /// True while the `readAgentSession` round-trip for `selectedSession` is in flight.
     @State private var loading = false
@@ -56,7 +56,7 @@ struct AgentSessionHistoryView: View {
     var body: some View {
         VStack(spacing: 0) {
             headerBar
-            Rectangle().fill(Otty.Line.divider).frame(height: 1)
+            Rectangle().fill(Slate.Line.divider).frame(height: 1)
             if selectedSession != nil {
                 transcriptView
             } else {
@@ -64,59 +64,59 @@ struct AgentSessionHistoryView: View {
             }
         }
         .frame(minWidth: 520, idealWidth: 620, minHeight: 420, idealHeight: 560)
-        .background(Otty.Surface.content)
+        .background(Slate.Surface.content)
     }
 
     // MARK: Header bar (back · title · close)
 
     private var headerBar: some View {
-        HStack(spacing: Otty.Metric.space2) {
+        HStack(spacing: Slate.Metric.space2) {
             if selectedSession != nil {
                 Button(action: back) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: Otty.Typeface.base, weight: .semibold))
-                        .foregroundStyle(Otty.Text.icon)
+                        .font(.system(size: Slate.Typeface.base, weight: .semibold))
+                        .foregroundStyle(Slate.Text.icon)
                 }
                 .buttonStyle(.plain)
                 .help("Back to sessions")
             }
             Text(headerTitle)
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer(minLength: Otty.Metric.space2)
+            Spacer(minLength: Slate.Metric.space2)
             if selectedSession != nil {
                 rawToggleButton
                 resumeButton
             }
             Button(action: onClose) {
-                HStack(spacing: Otty.Metric.space1) {
+                HStack(spacing: Slate.Metric.space1) {
                     Image(systemName: "xmark")
                     Text("Close")
                 }
-                .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+                .foregroundStyle(Slate.Text.secondary)
             }
             .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
             .help("Close")
         }
-        .padding(.horizontal, Otty.Metric.space3)
+        .padding(.horizontal, Slate.Metric.space3)
         .frame(height: 40)
-        .background(Otty.Surface.sidebar)
+        .background(Slate.Surface.sidebar)
     }
 
-    /// The rendered ⇄ raw-JSONL toggle (transcript header, otty `agent-history.png`): when showing the
+    /// The rendered ⇄ raw-JSONL toggle (transcript header, see `agent-history.png`): when showing the
     /// rendered transcript it offers "Raw" (the `{}` log), and vice-versa. Only shown with a session open.
     private var rawToggleButton: some View {
         Button { showRaw.toggle() } label: {
-            HStack(spacing: Otty.Metric.space1) {
+            HStack(spacing: Slate.Metric.space1) {
                 Image(systemName: showRaw ? "doc.plaintext" : "curlybraces")
                 Text(showRaw ? "Rendered" : "Raw")
             }
-            .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-            .foregroundStyle(Otty.Text.secondary)
+            .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+            .foregroundStyle(Slate.Text.secondary)
         }
         .buttonStyle(.plain)
         .help(showRaw ? "Show the rendered transcript" : "Show the raw JSONL log")
@@ -127,12 +127,12 @@ struct AgentSessionHistoryView: View {
     /// Claude-only (the resume verb is fixed; BINDING directive 1).
     private var resumeButton: some View {
         Button(action: resume) {
-            HStack(spacing: Otty.Metric.space1) {
+            HStack(spacing: Slate.Metric.space1) {
                 Image(systemName: "play.circle")
                 Text("Resume")
             }
-            .font(.system(size: Otty.Typeface.footnote, weight: .medium))
-            .foregroundStyle(Otty.Text.primary)
+            .font(.system(size: Slate.Typeface.footnote, weight: .medium))
+            .foregroundStyle(Slate.Text.primary)
         }
         .buttonStyle(.plain)
         .help("Resume this session")
@@ -159,9 +159,9 @@ struct AgentSessionHistoryView: View {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(model.agentSessions.enumerated()), id: \.offset) { _, session in
                         sessionRow(session)
-                        Rectangle().fill(Otty.Line.divider)
+                        Rectangle().fill(Slate.Line.divider)
                             .frame(height: 1)
-                            .padding(.leading, Otty.Metric.space3)
+                            .padding(.leading, Slate.Metric.space3)
                     }
                 }
             }
@@ -172,39 +172,39 @@ struct AgentSessionHistoryView: View {
         Button {
             open(session)
         } label: {
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 Image(systemName: "text.bubble")
-                    .font(.system(size: Otty.Typeface.body))
-                    .foregroundStyle(Otty.Text.icon)
+                    .font(.system(size: Slate.Typeface.body))
+                    .foregroundStyle(Slate.Text.icon)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(displayTitle(session))
-                        .font(.system(size: Otty.Typeface.base))
-                        .foregroundStyle(Otty.Text.primary)
+                        .font(.system(size: Slate.Typeface.base))
+                        .foregroundStyle(Slate.Text.primary)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    HStack(spacing: Otty.Metric.space1) {
+                    HStack(spacing: Slate.Metric.space1) {
                         Text(AgentTranscript.agentLabel(session.agentKind))
-                            .font(.system(size: Otty.Typeface.small, weight: .medium))
-                            .foregroundStyle(Otty.State.accent)
+                            .font(.system(size: Slate.Typeface.small, weight: .medium))
+                            .foregroundStyle(Slate.State.accent)
                         if !session.cwd.isEmpty {
                             Text(session.cwd)
-                                .font(.system(size: Otty.Typeface.small))
-                                .foregroundStyle(Otty.Text.tertiary)
+                                .font(.system(size: Slate.Typeface.small))
+                                .foregroundStyle(Slate.Text.tertiary)
                                 .lineLimit(1)
                                 .truncationMode(.head)
                         }
                     }
                 }
-                Spacer(minLength: Otty.Metric.space2)
+                Spacer(minLength: Slate.Metric.space2)
                 Text(AgentTranscript.relativeTime(session.mtimeMS))
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.tertiary)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: Otty.Typeface.small, weight: .semibold))
-                    .foregroundStyle(Otty.Text.icon)
+                    .font(.system(size: Slate.Typeface.small, weight: .semibold))
+                    .foregroundStyle(Slate.Text.icon)
             }
-            .padding(.horizontal, Otty.Metric.space3)
-            .padding(.vertical, Otty.Metric.space2)
+            .padding(.horizontal, Slate.Metric.space3)
+            .padding(.vertical, Slate.Metric.space2)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -241,7 +241,7 @@ struct AgentSessionHistoryView: View {
     private var renderedTranscriptView: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let selectedSession { sessionMeta(selectedSession) }
-            Rectangle().fill(Otty.Line.divider).frame(height: 1)
+            Rectangle().fill(Slate.Line.divider).frame(height: 1)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(entries) { entry in
@@ -252,12 +252,12 @@ struct AgentSessionHistoryView: View {
         }
     }
 
-    /// The RAW JSONL log (the "Raw" toggle, otty `agent-history.png`): the verbatim bytes `readAgentSession`
+    /// The RAW JSONL log (the "Raw" toggle, see `agent-history.png`): the verbatim bytes `readAgentSession`
     /// returned, monospaced + selectable. An empty log shows the empty state rather than a blank pane.
     private var rawTranscriptView: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let selectedSession { sessionMeta(selectedSession) }
-            Rectangle().fill(Otty.Line.divider).frame(height: 1)
+            Rectangle().fill(Slate.Line.divider).frame(height: 1)
             if rawText.isEmpty {
                 emptyState(
                     "Empty Transcript",
@@ -267,10 +267,10 @@ struct AgentSessionHistoryView: View {
             } else {
                 ScrollView([.vertical, .horizontal]) {
                     Text(rawText)
-                        .font(.system(size: Otty.Typeface.small, design: .monospaced))
-                        .foregroundStyle(Otty.Text.primary)
+                        .font(.system(size: Slate.Typeface.small, design: .monospaced))
+                        .foregroundStyle(Slate.Text.primary)
                         .textSelection(.enabled)
-                        .padding(Otty.Metric.space3)
+                        .padding(Slate.Metric.space3)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -278,45 +278,45 @@ struct AgentSessionHistoryView: View {
     }
 
     private func sessionMeta(_ session: MetadataCodec.AgentSessionInfo) -> some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Text(displayTitle(session))
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
+                .font(.system(size: Slate.Typeface.body, weight: .semibold))
+                .foregroundStyle(Slate.Text.primary)
                 .lineLimit(2)
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 Text(AgentTranscript.agentLabel(session.agentKind))
-                    .font(.system(size: Otty.Typeface.small, weight: .medium))
-                    .foregroundStyle(Otty.State.accent)
+                    .font(.system(size: Slate.Typeface.small, weight: .medium))
+                    .foregroundStyle(Slate.State.accent)
                 if !session.cwd.isEmpty {
                     Text(session.cwd)
-                        .font(.system(size: Otty.Typeface.small))
-                        .foregroundStyle(Otty.Text.secondary)
+                        .font(.system(size: Slate.Typeface.small))
+                        .foregroundStyle(Slate.Text.secondary)
                         .lineLimit(1)
                         .truncationMode(.head)
                 }
-                Spacer(minLength: Otty.Metric.space2)
+                Spacer(minLength: Slate.Metric.space2)
                 Text(AgentTranscript.relativeTime(session.mtimeMS))
-                    .font(.system(size: Otty.Typeface.small))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.small))
+                    .foregroundStyle(Slate.Text.tertiary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, Otty.Metric.space3)
-        .padding(.vertical, Otty.Metric.space2)
+        .padding(.horizontal, Slate.Metric.space3)
+        .padding(.vertical, Slate.Metric.space2)
     }
 
     private func transcriptRow(_ entry: AgentTranscriptEntry) -> some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             rowHeader(entry)
             if !entry.markdown.isEmpty {
                 MarkdownText(markdown: entry.markdown)
-                    .padding(.leading, Otty.Metric.space3)
+                    .padding(.leading, Slate.Metric.space3)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, Otty.Metric.space3)
-        .padding(.vertical, Otty.Metric.space2)
-        .background(entry.role == .user ? Otty.State.hover : Color.clear)
+        .padding(.horizontal, Slate.Metric.space3)
+        .padding(.vertical, Slate.Metric.space2)
+        .background(entry.role == .user ? Slate.State.hover : Color.clear)
         .contextMenu {
             // Copy the row's text body — the Markdown source (without the speaker header).
             if !entry.markdown.isEmpty {
@@ -326,8 +326,8 @@ struct AgentSessionHistoryView: View {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
             }
-            // Send to Chat: pre-load the dialog with this row's text as the quoted context (otty:
-            // "select text in transcript → context menu → Send to Chat"). Dismiss the history sheet
+            // Send to Chat: pre-load the dialog with this row's text as the quoted context
+            // (select text in transcript → context menu → Send to Chat). Dismiss the history sheet
             // FIRST so the send-to-chat overlay opens in front of a clean workspace (not behind the sheet).
             if !entry.markdown.isEmpty {
                 Button {
@@ -343,29 +343,29 @@ struct AgentSessionHistoryView: View {
     }
 
     private func rowHeader(_ entry: AgentTranscriptEntry) -> some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             switch entry.role {
             case .user:
-                OttyStatusDot(color: Otty.Text.icon, size: 6)
+                SlateStatusDot(color: Slate.Text.icon, size: 6)
             case .assistant:
                 Image(systemName: "chevron.right")
-                    .font(.system(size: Otty.Typeface.small, weight: .semibold))
-                    .foregroundStyle(Otty.Text.icon)
+                    .font(.system(size: Slate.Typeface.small, weight: .semibold))
+                    .foregroundStyle(Slate.Text.icon)
             }
             Text(entry.speaker)
-                .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote, weight: .semibold))
+                .foregroundStyle(Slate.Text.secondary)
             if let detail = entry.detail, !detail.isEmpty {
                 Text("· \(detail)")
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.tertiary)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
             if let clock = entry.timestamp.flatMap(AgentTranscript.clockTime(fromISO:)) {
                 Text(clock)
-                    .font(.system(size: Otty.Typeface.small))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.small))
+                    .foregroundStyle(Slate.Text.tertiary)
                     .monospacedDigit()
             }
             Spacer(minLength: 0)
@@ -512,8 +512,8 @@ enum AgentTranscript {
     }
 
     /// A compact, deterministic summary of an assistant turn's tool calls — grouped by name in first-use
-    /// order, a "×N" suffix when a tool repeats (e.g. "Read ×6 · Edit · Bash"). Mirrors otty's collapsed
-    /// tool-call summary line.
+    /// order, a "×N" suffix when a tool repeats (e.g. "Read ×6 · Edit · Bash"). A collapsed one-line
+    /// tool-call summary.
     static func toolSummary(_ uses: [ToolUseBlock]) -> String {
         var order: [String] = []
         var counts: [String: Int] = [:]
@@ -545,7 +545,7 @@ enum AgentTranscript {
         }
     }
 
-    /// A coarse relative-time label for a session's `mtimeMS` (otty's "43s ago" / "3 min ago" / "2h ago" /
+    /// A coarse relative-time label for a session's `mtimeMS` ("43s ago" / "3 min ago" / "2h ago" /
     /// "3d ago"). `now` is injectable so the bucketing is unit-tested deterministically. A future timestamp
     /// (clock skew) clamps to "just now".
     static func relativeTime(_ mtimeMS: Int64, now: Date = Date()) -> String {
@@ -562,7 +562,7 @@ enum AgentTranscript {
 
     /// Extracts the "HH:mm:ss" clock portion of an ISO-8601 timestamp (the per-turn time hint), or `nil` if
     /// the string has no parseable time field — never a trap. Pure string slicing (no `DateFormatter`): the
-    /// transcript only needs the wall-clock hint otty shows next to each speaker, not a parsed `Date`.
+    /// transcript only needs the wall-clock hint shown next to each speaker, not a parsed `Date`.
     static func clockTime(fromISO iso: String) -> String? {
         guard let tIndex = iso.firstIndex(of: "T") else { return nil }
         var time = ""

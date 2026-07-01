@@ -15,7 +15,7 @@
 // macOS `Settings` scene is a SEPARATE scene from the main `WindowGroup`, so the store is injected there
 // explicitly (an environment value set on the WindowGroup does not cross into the Settings scene).
 //
-// Otty.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
+// Slate.* tokens only (raw font/radius literals fail `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -101,13 +101,13 @@ struct WorkspaceTransferSettingsView: View {
 
     var body: some View {
         Group {
-            ottyFormSection("Workspace") {
+            slateFormSection("Workspace") {
                 Text(
                     "Export your layout, groups, snippets, and bookmarks to a file, or import one back. The "
                         + "host connection is never written into the file or adopted on import.",
                 )
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
 
                 Button("Export Workspace…") {
                     guard let store = workspaceStore else { return }
@@ -158,8 +158,8 @@ struct WorkspaceTransferSettingsView: View {
 // MARK: - macOS File-menu items (optional parity, shortcut-LESS)
 
 #if os(macOS)
-/// The macOS File-menu Export / Import Workspace items (E7 WI-4, optional parity — matches otty's "Config
-/// File" action rows). Shortcut-LESS by design: the app-level `NSEvent` dispatcher owns chord dispatch
+/// The macOS File-menu Export / Import Workspace items (E7 WI-4, optional — mirrors the Settings → Advanced
+/// "Config File" action rows). Shortcut-LESS by design: the app-level `NSEvent` dispatcher owns chord dispatch
 /// (DECISIONS N6), so a `.keyboardShortcut` here would double-fire / swallow a prefix tail. The menu lives in
 /// a different scene from the Settings `.fileExporter`, so a shared SwiftUI document state can't span them —
 /// these use AppKit `NSSavePanel` / `NSOpenPanel` directly, reusing the SAME store engine + `UTType`. A

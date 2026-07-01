@@ -3,7 +3,7 @@ import Foundation
 import XCTest
 @testable import AislopdeskHost
 
-/// E14/K2 — the host-side auto-progress feature: the PURE ``AutoProgressMatcher`` (otty "Auto
+/// E14/K2 — the host-side auto-progress feature: the PURE ``AutoProgressMatcher`` ("Auto
 /// Progress-Bar Commands") + its wiring into the ``CommandBlockSegmenter`` C / D marks, which
 /// synthesizes an INDETERMINATE OSC-9;4 spinner for a configured slow command and clears it on exit.
 ///
@@ -37,7 +37,7 @@ final class AutoProgressMatcherTests: XCTestCase {
     }
 
     func testEmptyPrefixListDisablesMatching() {
-        // The otty "clear the field disables auto-progress entirely" rule: an empty list never matches.
+        // Clearing the field disables auto-progress entirely: an empty list never matches.
         XCTAssertFalse(AutoProgressMatcher.matches(commandLine: "curl https://x", prefixes: []))
     }
 
@@ -47,7 +47,7 @@ final class AutoProgressMatcherTests: XCTestCase {
     }
 
     func testPrefixMatchIsCaseSensitive() {
-        // otty's prefixes are case-sensitive — `GIT PUSH` is a different command than `git push`.
+        // Prefixes are case-sensitive — `GIT PUSH` is a different command than `git push`.
         XCTAssertFalse(AutoProgressMatcher.matches(commandLine: "GIT PUSH origin", prefixes: ["git push"]))
     }
 
@@ -59,7 +59,7 @@ final class AutoProgressMatcherTests: XCTestCase {
     }
 
     func testParsePrefixesUnsetReturnsBuiltInList() {
-        // env UNSET (nil) ⇒ the otty default built-in list.
+        // env UNSET (nil) ⇒ the default built-in list.
         XCTAssertEqual(AutoProgressMatcher.parsePrefixes(envValue: nil), AutoProgressMatcher.builtInPrefixes)
     }
 

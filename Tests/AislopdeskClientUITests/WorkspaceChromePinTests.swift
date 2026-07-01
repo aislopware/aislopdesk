@@ -13,7 +13,7 @@ import XCTest
 
 @MainActor
 final class WorkspaceChromePinTests: XCTestCase {
-    /// A fresh window is NOT pinned (otty parity — pinning is an explicit affordance), and `togglePin()`
+    /// A fresh window is NOT pinned (pinning is an explicit affordance), and `togglePin()`
     /// flips the flag each call. REVERT-TO-CONFIRM-FAIL: the property / method do not exist on the un-fixed
     /// `WorkspaceChromeState`, so this fails to compile-then-pass only once WI-4 adds them.
     func testTogglePinFlipsTheChromeFlag() {
@@ -51,7 +51,7 @@ final class WorkspaceChromePinTests: XCTestCase {
 
     /// E19 / WI-4 (M4) — the palette ✓ gutter tracks the pinned state. `OverlayHostView.toggledState(for:)`
     /// resolves the "action.pinWindow" row to `chrome.pinned`, so the palette lights the checkmark while
-    /// pinned and clears it when unpinned — otty's checkable Pin Window (ES-E2-3). REVERT-TO-CONFIRM-FAIL:
+    /// pinned and clears it when unpinned — the checkable Pin Window row (ES-E2-3). REVERT-TO-CONFIRM-FAIL:
     /// drop the `case "action.pinWindow": chrome.pinned` arm and the resolver falls to the `default: false`,
     /// so the ✓ never lights and `pinned == true` below fails.
     func testToggledStateLightsPinRowWhenPinned() {

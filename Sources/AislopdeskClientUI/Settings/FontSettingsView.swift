@@ -1,6 +1,6 @@
-// FontSettingsView — the otty Appearance → Font section (E15 WI-8).
+// FontSettingsView — the Appearance → Font section (E15 WI-8).
 //
-// A faithful clone of `docs/otty-clone/screenshots/font-setting.png` + `font-setting-bold.png`: the
+// Follows the design spec `docs/ui-shell/screenshots/font-setting.png` + `font-setting-bold.png`: the
 // "FONT FAMILY" section opens with a "Settings for" pill row of SCOPE TABS — Computed / Global / Light Theme
 // / Dark Theme / Fallback — then a contextual note, the "Auto-match weight & style" toggle, the Font Family
 // combobox with "Aa" specimens (and, when auto-match is OFF, the Bold / Italic / Bold-Italic face pickers),
@@ -16,7 +16,7 @@
 // ``FontScopeResolver/lightSlotSlug(_:)`` / `darkSlotSlug(_:)`); the read-only Computed tab shows
 // ``FontScopeResolver/resolvedFamily(global:themeFonts:slug:fallback:)`` for the active OS-appearance slot.
 //
-// DEFERRED-APPLY (decision #5): otty's underline-off and SGR-blink toggles, and the `srgb-over` / `linear` /
+// DEFERRED-APPLY (decision #5): the underline-off and SGR-blink toggles, and the `srgb-over` / `linear` /
 // `perceptual` blending modes, have no verified stock libghostty key — they PERSIST + surface here with a
 // note but are NOT emitted (exactly the precedent set by `cursorAnimation = .smooth`). Ligatures, fallback,
 // per-face families, bold/italic mode, line-height, and `macos-like` blending (→ `font-thicken`) DO map and
@@ -25,12 +25,12 @@
 // HOST-FONT REALITY (`spec/customization__fonts.md` mapping notes): the terminal renders on the HOST inside
 // libghostty, so font INSTALLATION is a host concern — there is no client "font folder" to open. The Font
 // Family field is therefore a free-text combobox (type any family the host has) whose specimen dropdown lists
-// THIS device's monospaced faces only as a convenience; a note makes the host boundary explicit. otty's
-// "Install font" / "Open font folder" buttons are intentionally omitted (no client analog).
+// THIS device's monospaced faces only as a convenience; a note makes the host boundary explicit. There are
+// no "Install font" / "Open font folder" buttons — no client analog exists (the host owns font installation).
 //
 // PLATFORM: cross-platform (compiled on iOS too). The installed-font enumeration goes through CoreText
 // (`CTFontManagerCopyAvailableFontFamilyNames`), nonisolated + cross-platform — no AppKit/UIKit, no
-// MainActor hop. Otty.* tokens only (no raw font/radius literals — `scripts/check-ds-leaks.sh`).
+// MainActor hop. Slate.* tokens only (no raw font/radius literals — `scripts/check-ds-leaks.sh`).
 
 #if canImport(SwiftUI)
 import AislopdeskVideoProtocol
@@ -67,7 +67,7 @@ struct FontSettingsView: View {
     // MARK: - Font Family section (scope tabs + combobox)
 
     private var fontFamilySection: some View {
-        ottyFormSection("Font Family") {
+        slateFormSection("Font Family") {
             scopeTabs
             scopeNote
             scopeBody
@@ -77,11 +77,11 @@ struct FontSettingsView: View {
 
     /// The "Settings for" label + the pill row of scope tabs (Computed / Global / Light / Dark / Fallback).
     private var scopeTabs: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space1) {
             Text("Settings for")
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
-            HStack(spacing: Otty.Metric.space2) {
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Text.secondary)
+            HStack(spacing: Slate.Metric.space2) {
                 ForEach(FontScope.allCases) { tab in scopePill(tab) }
             }
         }
@@ -91,12 +91,12 @@ struct FontSettingsView: View {
         let selected = tab == scope
         return Button { scope = tab } label: {
             Text(tab.label)
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(selected ? Otty.Surface.window : Otty.Text.secondary)
-                .padding(.horizontal, Otty.Metric.space3)
-                .padding(.vertical, Otty.Metric.space1)
-                .background(Capsule().fill(selected ? Otty.Text.primary : Color.clear))
-                .overlay(Capsule().strokeBorder(Otty.Line.subtle, lineWidth: selected ? 0 : 1))
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(selected ? Slate.Surface.window : Slate.Text.secondary)
+                .padding(.horizontal, Slate.Metric.space3)
+                .padding(.vertical, Slate.Metric.space1)
+                .background(Capsule().fill(selected ? Slate.Text.primary : Color.clear))
+                .overlay(Capsule().strokeBorder(Slate.Line.subtle, lineWidth: selected ? 0 : 1))
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -105,7 +105,7 @@ struct FontSettingsView: View {
     /// The contextual note under the tab row — the muted "saved into …" line, or (Global) the precedence
     /// banner. NOTE: aislopdesk resolves a per-theme font OVER Global (scope-over-Global, see
     /// ``FontScopeResolver``), so the banner states the real precedence — Global applies only where a theme
-    /// sets no font of its own — rather than otty's "takes priority everywhere".
+    /// sets no font of its own, not "takes priority everywhere".
     @ViewBuilder private var scopeNote: some View {
         switch scope {
         case .computed:
@@ -130,8 +130,8 @@ struct FontSettingsView: View {
         case .computed:
             LabeledContent("Font Family") {
                 Text(computedFamily)
-                    .font(.system(size: Otty.Typeface.body, design: .monospaced))
-                    .foregroundStyle(Otty.Text.secondary)
+                    .font(.system(size: Slate.Typeface.body, design: .monospaced))
+                    .foregroundStyle(Slate.Text.secondary)
             }
         case .global:
             globalFamilyEditors
@@ -179,7 +179,7 @@ struct FontSettingsView: View {
     // MARK: - Text section (size + line height)
 
     private var textSection: some View {
-        ottyFormSection("Text") {
+        slateFormSection("Text") {
             Stepper(
                 "Size: \(Int(store.terminal.fontSize))",
                 value: $store.terminal.fontSize, in: 8...32, step: 1,
@@ -197,10 +197,10 @@ struct FontSettingsView: View {
             }
             if lineHeightChoiceBinding.wrappedValue == .custom {
                 LabeledContent("Multiplier") {
-                    HStack(spacing: Otty.Metric.space2) {
+                    HStack(spacing: Slate.Metric.space2) {
                         Slider(value: customMultiplierBinding, in: 0.8...2.0, step: 0.05)
                         Text(String(format: "%.2f×", customMultiplier))
-                            .foregroundStyle(Otty.Text.secondary)
+                            .foregroundStyle(Slate.Text.secondary)
                             .monospacedDigit()
                     }
                 }
@@ -212,7 +212,7 @@ struct FontSettingsView: View {
     // MARK: - Ligatures section
 
     private var ligaturesSection: some View {
-        ottyFormSection("Ligatures") {
+        slateFormSection("Ligatures") {
             Picker("Ligatures", selection: $store.terminal.fontLigatures) {
                 Text("Off").tag(FontLigatures.off)
                 Text("Standard (calt)").tag(FontLigatures.calt)
@@ -227,7 +227,7 @@ struct FontSettingsView: View {
     // MARK: - Style & Rendering section (bold / italic / underline / blink / blending + deferral notes)
 
     private var styleSection: some View {
-        ottyFormSection("Style & Rendering") {
+        slateFormSection("Style & Rendering") {
             Picker("Bold", selection: $store.terminal.fontBold) { styleModeOptions }
             Picker("Italic", selection: $store.terminal.fontItalic) { styleModeOptions }
 
@@ -354,33 +354,33 @@ struct FontSettingsView: View {
 
     // MARK: - Note helpers
 
-    /// A muted footnote note (otty's gray contextual line).
+    /// A muted footnote note (a gray contextual line).
     private func note(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: Otty.Typeface.footnote))
-            .foregroundStyle(Otty.Text.secondary)
+            .font(.system(size: Slate.Typeface.footnote))
+            .foregroundStyle(Slate.Text.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// The red/amber-tinted banner styling (otty's `font-setting-bold.png`), reused for the Global-scope
+    /// The red/amber-tinted banner styling (`font-setting-bold.png`), reused for the Global-scope
     /// precedence call-out (a per-theme font can override Global).
     private func warnNote(_ text: String) -> some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             Image(systemSymbol: .exclamationmarkTriangle)
             Text(text)
         }
-        .font(.system(size: Otty.Typeface.footnote))
-        .foregroundStyle(Otty.Status.warn)
-        .padding(.horizontal, Otty.Metric.space2)
-        .padding(.vertical, Otty.Metric.space1)
+        .font(.system(size: Slate.Typeface.footnote))
+        .foregroundStyle(Slate.Status.warn)
+        .padding(.horizontal, Slate.Metric.space2)
+        .padding(.vertical, Slate.Metric.space1)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall, style: .continuous)
-                .fill(Otty.Status.warn.opacity(0.12)),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall, style: .continuous)
+                .fill(Slate.Status.warn.opacity(0.12)),
         )
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall, style: .continuous)
-                .strokeBorder(Otty.Status.warn.opacity(0.4), lineWidth: 1),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusSmall, style: .continuous)
+                .strokeBorder(Slate.Status.warn.opacity(0.4), lineWidth: 1),
         )
     }
 }
@@ -423,7 +423,7 @@ private enum LineHeightChoice: Hashable {
 
 // MARK: - FontFamilyComboBox (free-text entry + "Aa" specimen dropdown)
 
-/// otty's Font Family combobox: an editable field bound to the scope value, with a trailing chevron that opens
+/// The Font Family combobox: an editable field bound to the scope value, with a trailing chevron that opens
 /// a searchable popover of this device's monospaced faces, each shown as an "Aa" specimen in its own face.
 /// Free-text (not a closed Picker) because the terminal renders on the HOST — any host-installed family can be
 /// typed even if this device lacks it.
@@ -435,30 +435,30 @@ private struct FontFamilyComboBox: View {
     @State private var query = ""
 
     var body: some View {
-        HStack(spacing: Otty.Metric.space1) {
+        HStack(spacing: Slate.Metric.space1) {
             TextField(placeholder, text: $selection)
                 .textFieldStyle(.plain)
-                .font(.system(size: Otty.Typeface.body))
+                .font(.system(size: Slate.Typeface.body))
                 .frame(minWidth: 150, alignment: .leading)
             Button {
                 showingList.toggle()
             } label: {
                 Image(systemSymbol: .chevronUpChevronDown)
-                    .font(.system(size: Otty.Typeface.small))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.small))
+                    .foregroundStyle(Slate.Text.tertiary)
             }
             .buttonStyle(.plain)
             .popover(isPresented: $showingList, arrowEdge: .bottom) { specimenList }
         }
-        .padding(.horizontal, Otty.Metric.space2)
-        .padding(.vertical, Otty.Metric.space1)
+        .padding(.horizontal, Slate.Metric.space2)
+        .padding(.vertical, Slate.Metric.space1)
         .background(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusControl, style: .continuous)
-                .fill(Otty.Surface.element),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusControl, style: .continuous)
+                .fill(Slate.Surface.element),
         )
         .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusControl, style: .continuous)
-                .strokeBorder(Otty.Line.subtle, lineWidth: 1),
+            RoundedRectangle(cornerRadius: Slate.Metric.radiusControl, style: .continuous)
+                .strokeBorder(Slate.Line.subtle, lineWidth: 1),
         )
     }
 
@@ -466,16 +466,16 @@ private struct FontFamilyComboBox: View {
     /// per-row "Aa" renders in the actual font (menu items flatten custom fonts).
     private var specimenList: some View {
         VStack(spacing: 0) {
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 Image(systemSymbol: .magnifyingglass)
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.tertiary)
                 TextField("Search fonts", text: $query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: Otty.Typeface.base))
+                    .font(.system(size: Slate.Typeface.base))
             }
-            .padding(Otty.Metric.space2)
-            Rectangle().fill(Otty.Line.divider).frame(height: Otty.Metric.hairline)
+            .padding(Slate.Metric.space2)
+            Rectangle().fill(Slate.Line.divider).frame(height: Slate.Metric.hairline)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(filtered, id: \.self) { family in
@@ -483,15 +483,15 @@ private struct FontFamilyComboBox: View {
                     }
                     if filtered.isEmpty {
                         Text("No matching fonts on this device.")
-                            .font(.system(size: Otty.Typeface.footnote))
-                            .foregroundStyle(Otty.Text.tertiary)
-                            .padding(Otty.Metric.space2)
+                            .font(.system(size: Slate.Typeface.footnote))
+                            .foregroundStyle(Slate.Text.tertiary)
+                            .padding(Slate.Metric.space2)
                     }
                 }
             }
         }
         .frame(width: 280, height: 320)
-        .background(Otty.Surface.window)
+        .background(Slate.Surface.window)
     }
 
     private func specimenRow(_ family: String) -> some View {
@@ -499,22 +499,22 @@ private struct FontFamilyComboBox: View {
             selection = family
             showingList = false
         } label: {
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 Text("Aa")
-                    .font(.custom(family, size: Otty.Typeface.body))
+                    .font(.custom(family, size: Slate.Typeface.body))
                     .frame(width: 28, alignment: .leading)
                 Text(family)
-                    .font(.system(size: Otty.Typeface.body))
-                    .foregroundStyle(Otty.Text.primary)
+                    .font(.system(size: Slate.Typeface.body))
+                    .foregroundStyle(Slate.Text.primary)
                 Spacer(minLength: 0)
                 if family == selection {
                     Image(systemSymbol: .checkmark)
-                        .font(.system(size: Otty.Typeface.footnote))
-                        .foregroundStyle(Otty.State.accent)
+                        .font(.system(size: Slate.Typeface.footnote))
+                        .foregroundStyle(Slate.State.accent)
                 }
             }
-            .padding(.horizontal, Otty.Metric.space2)
-            .padding(.vertical, Otty.Metric.space1)
+            .padding(.horizontal, Slate.Metric.space2)
+            .padding(.vertical, Slate.Metric.space1)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(.rect)
         }
@@ -544,30 +544,30 @@ private struct FallbackListEditor: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Otty.Metric.space2) {
+        VStack(alignment: .leading, spacing: Slate.Metric.space2) {
             if entries.isEmpty {
                 Text("No fallback fonts.")
-                    .font(.system(size: Otty.Typeface.footnote))
-                    .foregroundStyle(Otty.Text.tertiary)
+                    .font(.system(size: Slate.Typeface.footnote))
+                    .foregroundStyle(Slate.Text.tertiary)
             } else {
                 ForEach(Array(entries.enumerated()), id: \.offset) { index, family in
-                    HStack(spacing: Otty.Metric.space2) {
+                    HStack(spacing: Slate.Metric.space2) {
                         Text("Aa")
-                            .font(.custom(family, size: Otty.Typeface.body))
+                            .font(.custom(family, size: Slate.Typeface.body))
                             .frame(width: 28, alignment: .leading)
                         Text(family)
-                            .font(.system(size: Otty.Typeface.body))
+                            .font(.system(size: Slate.Typeface.body))
                         Spacer(minLength: 0)
                         Button { remove(at: index) } label: {
                             Image(systemSymbol: .minusCircle)
-                                .foregroundStyle(Otty.Text.tertiary)
+                                .foregroundStyle(Slate.Text.tertiary)
                         }
                         .buttonStyle(.plain)
                         .help("Remove fallback font")
                     }
                 }
             }
-            HStack(spacing: Otty.Metric.space2) {
+            HStack(spacing: Slate.Metric.space2) {
                 FontFamilyComboBox(selection: $draft, placeholder: "Add a fallback font")
                 Button("Add") { add() }
                     .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)

@@ -207,7 +207,7 @@ public protocol ClientControlBackend: AnyObject {
     /// Open a `view`/`edit` shim for `target` at `placement`. Returns `false` on failure.
     func open(target: String, mode: ClientControlOpenMode, placement: ClientControlProtocol.Placement) -> Bool
 
-    /// Open a recipe by `.ottyrecipe` path or saved-library name. Returns `false` on failure.
+    /// Open a recipe by `.aislopdeskrecipe` path or saved-library name. Returns `false` on failure.
     func openRecipe(reference: String) -> Bool
 
     /// Read one config key; `nil` when the key is unset.
@@ -231,7 +231,7 @@ public protocol ClientControlBackend: AnyObject {
     /// Themes filtered by color appearance.
     func listThemes(color: ClientControlProtocol.ThemeColorFilter) -> [ClientThemeInfo]
 
-    /// Import a theme file (Otty `.ottytheme` / iTerm2 / kitty / alacritty / ghostty). `activate` makes
+    /// Import a theme file (native `.aislopdesktheme` / iTerm2 / kitty / alacritty / ghostty). `activate` makes
     /// it the active theme; `overwrite` allows replacing an existing same-slug theme. Returns the
     /// imported slug, or `nil` when the file is missing / unreadable / unparseable.
     func themeImport(path: String, activate: Bool, overwrite: Bool) -> String?

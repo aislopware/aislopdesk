@@ -89,7 +89,7 @@ public struct CommandBlockSegmenter {
     private let clock: () -> Date
     private let outputCap: Int
 
-    /// K2 auto-progress (E14/WI-3): the configured slow-command PREFIX list (otty "Auto Progress-Bar
+    /// K2 auto-progress (E14/WI-3): the configured slow-command PREFIX list ("Auto Progress-Bar
     /// Commands"). EMPTY disables auto-progress entirely — no synthetic spinner is ever emitted, so the
     /// segmenter is byte-identical to the pre-E14 tap. Resolved by the owner from
     /// `AISLOPDESK_AUTO_PROGRESS_COMMANDS` (host) → ``AutoProgressMatcher/builtInPrefixes`` fallback.
@@ -463,7 +463,7 @@ public struct CommandBlockSegmenter {
             // K2 auto-progress (E14/WI-3): synthesize an INDETERMINATE OSC-9;4 spinner when the typed
             // command matches a configured slow-command prefix AND the program has not already driven its
             // OWN 9;4 in this block. An empty prefix list disables this (matches() → false). This is the
-            // host-side equivalent of otty's shell-integration auto-wrap of known slow commands.
+            // host-side shell-integration auto-wrap of known slow commands.
             if !syntheticSpinnerActive,
                !sawRealProgressThisBlock,
                AutoProgressMatcher.matches(
