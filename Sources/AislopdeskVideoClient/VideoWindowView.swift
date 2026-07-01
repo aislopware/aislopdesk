@@ -292,7 +292,17 @@ final class MetalLayerBackedView: NSView {
     /// Set by `MetalVideoLayerView` on every render (reactive to focus changes). On change it re-applies
     /// the local cursor — a pane losing focus must drop the host shape back to the arrow even if the
     /// pointer never moved.
-    var isActive: Bool = true { didSet { applyLocalCursor() } }
+    var isActive: Bool = true {
+        didSet {
+            applyLocalCursor()
+            // REFOCUS SHAPE RESYNC: when this pane REGAINS focus with the pointer already inside (e.g.
+            // the user clicked away to a terminal pane then tabbed/clicked back), the host cursor is
+            // frozen at its last-forwarded spot — hover moves aren't forwarded while inactive — so the
+            // remote SHAPE is stale (an I-beam sitting over a resize edge) until the user jiggles the
+            // mouse. Warp the host cursor to the LIVE pointer now so the correct shape ships next tick.
+            if isActive, !oldValue { resyncPointerToHost() }
+        }
+    }
 
     /// READ-ONLY INPUT GATE (E21 WI-3). `false` ⇒ this pane is read-only: every pointer/scroll/keycode relay
     /// to the host is suppressed (gated `isActive && inputEnabled`; a drag/up forward checks `inputEnabled`
@@ -549,6 +559,23 @@ final class MetalLayerBackedView: NSView {
         } else {
             NSCursor.arrow.set()
         }
+    }
+
+    /// Forward `winLoc` (window-space, as delivered by `NSEvent.locationInWindow`) to the host as a
+    /// bare mouse-move so the host cursor WARPS to the client pointer — resyncing the remote cursor
+    /// SHAPE without waiting for the next hover move. Gated exactly like `mouseMoved`.
+    private func forwardPointer(atWindowLocation winLoc: NSPoint) {
+        guard isActive, inputEnabled else { return }
+        let p = convert(winLoc, from: nil)
+        pipeline.mouseMove(VideoPoint(x: Double(p.x), y: Double(bounds.height - p.y)))
+    }
+
+    /// Resync WITHOUT an event (a tab/keyboard refocus where the pointer is already inside and never
+    /// moved): read the live pointer from the window and warp the host cursor to it, so a refocused
+    /// pane doesn't sit on a stale host cursor shape until the user jiggles the mouse.
+    private func resyncPointerToHost() {
+        guard pointerInside, let window else { return }
+        forwardPointer(atWindowLocation: window.mouseLocationOutsideOfEventStream)
     }
 
     override func layout() {
@@ -945,9 +972,13 @@ final class MetalLayerBackedView: NSView {
         trackingArea = area
     }
 
-    override func mouseEntered(with _: NSEvent) {
+    override func mouseEntered(with event: NSEvent) {
         pointerInside = true
         applyLocalCursor()
+        // Warp the host cursor to the entry point so its SHAPE resyncs immediately — a pointer that
+        // enters an active pane and stops on a resize edge would otherwise hold the stale pre-focus
+        // shape until the first hover move. Gated on active+writable inside `forwardPointer`.
+        forwardPointer(atWindowLocation: event.locationInWindow)
     }
 
     override func mouseExited(with _: NSEvent) {

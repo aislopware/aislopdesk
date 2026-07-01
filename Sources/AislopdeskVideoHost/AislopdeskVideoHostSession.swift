@@ -889,7 +889,9 @@ public actor AislopdeskVideoHostSession {
             // FIRE-AND-FORGET (the "click bị delay" fix): never AWAIT the AX raise. On an AX-slow target
             // it costs ≈1s, and the input path must not block on it. `raiseTargetWindow()` self-throttles
             // so this proactive raise + the imminent mouseDown raise coalesce to one bit of work.
-            Task { @MainActor in injector.raiseTargetWindow() }
+            // `raiseTargetWindow()` now hops the AX chain onto its own background queue and returns
+            // immediately, so there is no main-actor stall to fire-and-forget around.
+            injector.raiseTargetWindow()
             // A following move/scroll/key need not re-raise.
             inputNeedsRaise = false
             return

@@ -292,13 +292,20 @@ private final class FlatDividerSplitView: NSSplitView {
 @MainActor
 private func flatDividerTone() -> NSColor {
     let backdrop = NSColor(ottyHex6: Otty.theme.terminalBackgroundHex)
-    guard let base = backdrop.usingColorSpace(.sRGB),
-          let overlay = NSColor(Otty.theme.divider).usingColorSpace(.sRGB) else { return backdrop }
-    let a = overlay.alphaComponent
+    guard let base = backdrop.usingColorSpace(.sRGB) else { return backdrop }
+    // Resolve the hairline to concrete sRGB components via `Color.resolve(in:)`, NOT `NSColor(_: SwiftUI.Color)`:
+    // the bridge drops the `.opacity()` modifier on these `Color(ottyHex:).opacity(0.07)` hairlines, so the gap
+    // rendered with alpha=1 — the FULL near-white foreground on the dark Monokai default — a bright seam unlike
+    // the faint pane divider (which SwiftUI composites at the real 7% over the pane). `.resolve(in:)` carries the
+    // opacity faithfully and is appearance-stable for these concrete sRGB colours. Compositing base over the SAME
+    // pane backdrop (`terminalBackgroundHex` == `card` on every flat theme) makes the gap the SAME tone as the
+    // pane hairline.
+    let overlay = Otty.theme.divider.resolve(in: EnvironmentValues())
+    let a = CGFloat(overlay.opacity)
     return NSColor(
-        srgbRed: base.redComponent * (1 - a) + overlay.redComponent * a,
-        green: base.greenComponent * (1 - a) + overlay.greenComponent * a,
-        blue: base.blueComponent * (1 - a) + overlay.blueComponent * a,
+        srgbRed: base.redComponent * (1 - a) + CGFloat(overlay.red) * a,
+        green: base.greenComponent * (1 - a) + CGFloat(overlay.green) * a,
+        blue: base.blueComponent * (1 - a) + CGFloat(overlay.blue) * a,
         alpha: 1,
     )
 }

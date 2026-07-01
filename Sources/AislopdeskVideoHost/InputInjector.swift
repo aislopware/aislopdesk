@@ -54,22 +54,35 @@ public final class InputInjector: @unchecked Sendable {
     /// (so the self-inject filter still recognises them). Confined to `scrollQueue`.
     private var lastScrollTag: UInt32 = 0
 
+    /// Serial background queue for the window-raise AX chain. The chain is ~6–10 SYNCHRONOUS
+    /// cross-process AX IPC calls (each capped at the 0.08s messaging timeout) plus an
+    /// O(app-windows) match loop — MEASURED at 1–7s against a BACKGROUNDED target on the host (the
+    /// captured app is never frontmost while the remote user drives it from the client, so the
+    /// `frontmost == target` short-circuit never fires and every raise runs the full chain). Running
+    /// that on the MAIN ACTOR starved the cursor-SHAPE refresh — `NSCursor.currentSystem` is
+    /// main-only — for those whole seconds → the "cursor shape delay khi refocus" (HW-measured
+    /// `shape-refresh main-hop waited 7380ms`). The raise is BEST-EFFORT (posted CGEvents deliver
+    /// clicks regardless — proven on-device), and AX client APIs are thread-safe, so confining the
+    /// chain to this queue keeps the main actor free for the cursor stream at no input-path cost.
+    private let raiseQueue = DispatchQueue(label: "aislopdesk.window-raise", qos: .userInitiated)
+
     /// Whether the full AX raise chain has run at least once for this session (the CLICK-latency
-    /// fix). The first interaction always raises (to set `kAXMainWindow`/`kAXFocusedWindow`); after
-    /// that, `raiseTargetWindow()` skips the ~6–10 synchronous AX IPC calls whenever the target app
-    /// is already frontmost. Main-actor-confined: read/written only inside `@MainActor`
-    /// `raiseTargetWindow()`, so it needs no lock (the class's `@unchecked Sendable` contract).
-    @MainActor private var hasRaisedTargetOnce = false
+    /// fix). Now `raiseQueue`-confined (the raise moved off the main actor), so it needs no lock.
+    private var hasRaisedTargetOnce = false
 
     /// When the last raise actually ran (the CLICK-latency throttle). One click dispatches SEVERAL raise
     /// requests — the proactive `focusWindow` raise, the mouseDown's `alwaysRaises`, each loss-resilience
-    /// duplicate mouseUp re-arming the latch, and the first post-up move — and against an AX-slow target
-    /// each full chain costs ~1s of MAIN-ACTOR time. They are now fired async (off the input path), but
-    /// without a throttle they would still pile up back-to-back on the main actor. Coalesce them: skip a
-    /// raise that lands within ``raiseThrottle`` of the previous one. The raise is best-effort (clicks are
-    /// delivered by the posted CGEvent regardless), so coalescing is harmless. Main-actor-confined.
-    @MainActor private var lastRaiseAt: Date?
+    /// duplicate mouseUp re-arming the latch, and the first post-up move — so without a throttle they
+    /// would pile up back-to-back on ``raiseQueue``. Coalesce them: skip a raise that lands within
+    /// ``raiseThrottle`` of the previous one. Best-effort, so coalescing is harmless. `raiseQueue`-confined.
+    private var lastRaiseAt: Date?
     private static let raiseThrottle: TimeInterval = 0.5
+
+    /// The matched AX window element, cached after the first successful bounds-match so subsequent
+    /// raises SKIP the O(app-windows) AX iteration (the dominant cost). The `AXUIElement` identity is
+    /// stable across window move/resize (it names the same window), so it stays valid for the session;
+    /// a stale element (window closed) just makes the best-effort AX calls no-op. `raiseQueue`-confined.
+    private var cachedAXWindow: AXUIElement?
 
     /// Test-only same-machine seam (`AISLOPDESK_VIDEO_INJECT_TO_PID=1`): deliver events straight to
     /// the target PID via `postToPid` and SKIP the cursor warp, so a loopback host on the SAME
@@ -155,17 +168,22 @@ public final class InputInjector: @unchecked Sendable {
 
     /// Raises + focuses the target window so it is frontmost before posting events
     /// (doc 18 §A). Combines AX raise (reorders even when full app activation is
-    /// throttled on macOS 14+) with `activate()` (doc 05 §4 caveat).
-    @preconcurrency
-    @MainActor
+    /// throttled on macOS 14+) with `activate()` (doc 05 §4 caveat). NONISOLATED: the AX chain
+    /// now runs on ``raiseQueue`` (off the main actor), so callers no longer wrap it in a main hop.
     public func raiseTargetWindow() {
-        // CLICK-LATENCY: the AX chain below is ~6–10 SYNCHRONOUS cross-process IPC calls (each
-        // capped at the 0.25 s messaging timeout) that the input consumer AWAITS before the click is
-        // posted. Skip the whole chain when the target app is ALREADY frontmost and we have raised
-        // at least once — `NSWorkspace.frontmostApplication` is a cheap local query, NOT cross-process
-        // AX IPC. Errs toward raising (``InputInjectorRaisePolicy/shouldRaise(frontmostPID:targetPID:firstInteraction:)``):
-        // a click on a genuinely-backgrounded window, a different frontmost app, or an unreadable
-        // frontmost still runs the full raise, so activate-then-control focus correctness is preserved.
+        // OFF-MAIN: hop the whole AX chain onto ``raiseQueue`` and return IMMEDIATELY. The chain is
+        // best-effort (posted CGEvents deliver the click regardless) and AX client APIs are
+        // thread-safe, so running it here — instead of the caller's `Task { @MainActor }` — keeps the
+        // MAIN ACTOR free for the cursor-SHAPE refresh it was previously starving for whole seconds.
+        raiseQueue.async { [weak self] in self?.performRaise() }
+    }
+
+    /// The actual raise, CONFINED to ``raiseQueue`` (off the main actor). Serial + throttled so the
+    /// several raise requests one click fires coalesce.
+    private func performRaise() {
+        // Skip the whole chain when the target app is ALREADY frontmost and we have raised at least
+        // once. Errs toward raising (``InputInjectorRaisePolicy``): a backgrounded window, a different
+        // frontmost app, or an unreadable frontmost still runs the full raise.
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let willRaise = InputInjectorRaisePolicy.shouldRaise(
             frontmostPID: frontmostPID,
@@ -185,29 +203,35 @@ public final class InputInjector: @unchecked Sendable {
         guard willRaise else { return }
         // THROTTLE redundant back-to-back raises within one click (see ``lastRaiseAt``): the first raise
         // of a click runs; the rest (proactive focus + duplicate ups + the post-up move) return instantly,
-        // so the main actor is never churned by N futile ~1s AX chains per click.
+        // so ``raiseQueue`` is never churned by N futile AX chains per click.
         if let lastRaiseAt, Date().timeIntervalSince(lastRaiseAt) < Self.raiseThrottle { return }
         lastRaiseAt = Date()
         hasRaisedTargetOnce = true
         let appEl = AXUIElementCreateApplication(pid)
-        // Cap blocking AX IPC. `raiseTargetWindow` runs on the main actor and the input
-        // consumer AWAITS it before injecting the mouseDown (activate-then-control), so a
-        // hung/modal/beachballing target app would otherwise head-of-line-stall the WHOLE
-        // ordered input stream for the framework default (~6s) and let pointer datagrams pile
-        // up unbounded. A short timeout makes each AX call fail fast instead (the raise is
-        // best-effort: a missed raise just means the click lands on the already-frontmost
-        // window) without changing injection ordering.
+        // Cap each blocking AX IPC so a hung/modal/beachballing target app fails fast (0.08s) instead
+        // of the framework default (~6s) — best-effort, a missed raise just lands the click on the
+        // already-frontmost window.
         AXUIElementSetMessagingTimeout(appEl, 0.08)
+        // FAST PATH: reuse the cached window element — skips the O(app-windows) AX iteration that
+        // dominated the raise cost (the source of the multi-second main stalls before this went off-main).
+        if let cached = cachedAXWindow {
+            AXUIElementPerformAction(cached, kAXRaiseAction as CFString)
+            AXUIElementSetAttributeValue(appEl, kAXMainWindowAttribute as CFString, cached)
+            AXUIElementSetAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, cached)
+            NSRunningApplication(processIdentifier: pid)?.activate()
+            return
+        }
         var windowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute as CFString, &windowsRef) == .success,
               let axWindows = windowsRef as? [AXUIElement] else { return }
         // Heuristic match the AX window to the tracked CGWindowID by frame (no public
-        // map exists — doc 05 §4); defensive against same-title windows.
+        // map exists — doc 05 §4); defensive against same-title windows. Cache the match.
         let targetBounds = bounds
         for axWindow in axWindows where axWindowMatchesBounds(axWindow, targetBounds) {
             AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
             AXUIElementSetAttributeValue(appEl, kAXMainWindowAttribute as CFString, axWindow)
             AXUIElementSetAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, axWindow)
+            cachedAXWindow = axWindow
             break
         }
         NSRunningApplication(processIdentifier: pid)?.activate()
@@ -604,7 +628,8 @@ public final class InputInjector: @unchecked Sendable {
         return flags
     }
 
-    @MainActor
+    /// NONISOLATED: only thread-safe AX client reads (``AXUIElementCopyAttributeValue``), so it runs
+    /// on ``raiseQueue`` with the rest of ``performRaise``.
     private func axWindowMatchesBounds(_ element: AXUIElement, _ targetBounds: VideoRect) -> Bool {
         var posRef: CFTypeRef?
         var sizeRef: CFTypeRef?
