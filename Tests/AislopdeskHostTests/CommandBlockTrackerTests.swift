@@ -112,6 +112,25 @@ final class CommandBlockTrackerTests: XCTestCase {
         }
     }
 
+    // MARK: 3b. Prompt-redraw storm — no phantom "running" metadata on the control channel
+
+    func testPromptRedrawStormEmitsNoPhantomRunningBlocks() {
+        var tracker = CommandBlockTracker()
+        // An idle prompt whose B mark re-fires on three reset-prompt redraws (one per resize) must
+        // NOT emit ANY commandBlock metadata: nothing is running, and each redraw is the SAME prompt.
+        let idle = metas(a() + "$ " + b() + b() + b() + b(), &tracker)
+        XCTAssertTrue(idle.isEmpty, "an idle prompt + redraws must emit no phantom running blocks")
+
+        // Now a real command runs. It surfaces as running (at C) then completes (at D) — exactly one
+        // block, index 0 (the redraws never consumed an index).
+        let done = metas("ls" + c() + "x\n" + d(0), &tracker)
+        XCTAssertEqual(Set(done.map(\.index)), [0], "the real command keeps index 0 despite the redraws")
+        let complete = done.filter(\.complete)
+        XCTAssertEqual(complete.count, 1)
+        XCTAssertEqual(complete[0].cmd, "ls")
+        XCTAssertEqual(complete[0].exit, 0)
+    }
+
     // MARK: 4. Serve the retained output for a completed block (type 29)
 
     func testServeOutputReturnsRetainedBytes() {

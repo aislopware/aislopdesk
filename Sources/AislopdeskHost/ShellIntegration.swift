@@ -200,13 +200,47 @@ public enum ShellIntegration {
       0|false|no|off) ;;
       *)
         autoload -Uz add-zsh-hook
-        # preexec: a command line is about to run → C (command output start = command started).
-        # NOTE: the escapes are written with a DOUBLE backslash so this Swift string literal emits
-        # the LITERAL shell text backslash-033 / backslash-007 (a single backslash) — zsh's printf
-        # then turns those into the real ESC (0x1B) / BEL (0x07) bytes. A SINGLE backslash here
-        # would be a Swift octal/NUL escape, producing a corrupt non-OSC byte run the host parser
-        # never recognizes (the marks would silently never fire).
-        __aislopdesk_osc133_preexec() { printf '\\033]133;C\\007' }
+        # Escape a command line into ONE clean OSC-133 field: `;`, `\\`, ESC, BEL, CR, LF become `\\xNN`
+        # so the payload carries no field-separator or OSC-terminator byte; every other byte (incl.
+        # multi-byte UTF-8) passes through. Byte-wise under `LC_ALL=C` (VS Code's shell-integration
+        # approach) so a UTF-8 command round-trips exactly. POSIX `[ = ]` is used, NOT `[[ == ]]`, so the
+        # target bytes compare as LITERAL strings (no pattern interpretation of a lone backslash). The
+        # octal `$'\\NNN'` targets avoid an ambiguous literal `'\\'` in this Swift string. Result is left in
+        # the (global) `__aislopdesk_esc` to avoid a per-command command-substitution fork — this runs on
+        # EVERY command, so keep it allocation-cheap.
+        __aislopdesk_osc133_escape() {
+          emulate -L zsh
+          local LC_ALL=C in="$1" i c n
+          local bs=$'\\134' es=$'\\033' be=$'\\007' cr=$'\\015' lf=$'\\012'
+          n=${#in}
+          __aislopdesk_esc=''
+          for (( i = 1; i <= n; ++i )); do
+            c="${in[i]}"
+            if [ "$c" = "$bs" ]; then __aislopdesk_esc+='\\x5c'
+            elif [ "$c" = ';' ]; then __aislopdesk_esc+='\\x3b'
+            elif [ "$c" = "$es" ]; then __aislopdesk_esc+='\\x1b'
+            elif [ "$c" = "$be" ]; then __aislopdesk_esc+='\\x07'
+            elif [ "$c" = "$cr" ]; then __aislopdesk_esc+='\\x0d'
+            elif [ "$c" = "$lf" ]; then __aislopdesk_esc+='\\x0a'
+            else __aislopdesk_esc+="$c"
+            fi
+          done
+        }
+        # preexec: a command line is about to run → E (the EXACT typed command from $1, so the host does
+        # NOT reconstruct it from the redraw-polluted terminal echo — zsh-autosuggestions ghost text,
+        # zsh-syntax-highlighting re-colors, starship transient redraws all repaint the command region in
+        # place, and the echo-built commandText came out garbled) then C (command output start = command
+        # started). NOTE: the escapes are written with a DOUBLE backslash so this Swift string literal emits
+        # the LITERAL shell text backslash-033 / backslash-007 (a single backslash) — zsh's printf then
+        # turns those into the real ESC (0x1B) / BEL (0x07) bytes. A SINGLE backslash here would be a Swift
+        # octal/NUL escape, producing a corrupt non-OSC byte run the host parser never recognizes (the
+        # marks would silently never fire). `%s` (not the format string) carries the escaped command, so a
+        # literal `%` in it is never interpreted.
+        __aislopdesk_osc133_preexec() {
+          __aislopdesk_osc133_escape "$1"
+          printf '\\033]133;E;%s\\007' "$__aislopdesk_esc"
+          printf '\\033]133;C\\007'
+        }
         # precmd: a new prompt is about to be drawn. Capture $? FIRST (anything else clobbers it),
         # emit D;<exit> for the command that just finished, then A for the new prompt, then append
         # B to $PROMPT so it fires at the END of the rendered prompt — after the prompt text and

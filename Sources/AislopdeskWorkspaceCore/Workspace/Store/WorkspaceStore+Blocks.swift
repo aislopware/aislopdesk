@@ -61,17 +61,29 @@ public struct BlockBookmarkSeam {
 /// Pure over the ``TerminalSurfaceActions`` seam; `nonisolated` so both call sites reach it.
 enum BlockJump {
     /// The libghostty `jump_to_prompt` delta to reach newest-first navigator position `pos` (0 = newest)
-    /// AFTER the viewport has been re-anchored to the newest prompt (`scroll_to_bottom`). From the bottom
-    /// anchor the newest prompt is "0 prompts up", so target N is exactly N prompts UP → a delta of `-N`.
+    /// AFTER the viewport has been re-anchored to the bottom (`scroll_to_bottom`).
+    ///
+    /// libghostty counts ITS OWN OSC-133 prompt marks — one per `133;A`, which the shim's `precmd` emits
+    /// once per real prompt draw. That set INCLUDES the current, live, empty prompt the shell is idling at,
+    /// for which our block list has NO block (a block needs a `B→C` command; the idle prompt never ran
+    /// one). So counting prompts up from the bottom: the live prompt is "0 up", the NEWEST command's
+    /// prompt is "1 up", and newest-first block position `pos` sits `pos + 1` prompts up → a delta of
+    /// `-(pos + 1)`. The old `-pos` was off by one (it assumed the bottom anchor already sat on the newest
+    /// command's prompt), so clicking the newest command jumped to the empty prompt BELOW it. The offset is
+    /// a CONSTANT one, NOT resize-dependent: a re-fired `133;B` (which `zle reset-prompt` re-emits from
+    /// `$PROMPT` on every resize) marks INPUT state, not a prompt row — only `133;A` (which does NOT
+    /// re-fire on resize) adds a prompt mark — so the phantom `B`s never inflate ghostty's prompt count.
+    ///
     /// The SINGLE source of the delta math: ``toNavigatorPosition(_:using:)`` and the Command Navigator's
     /// per-row jump (``WorkspaceStore/jumpToNavigatorBlockInActivePane(index:)``, which the
     /// `CommandNavigatorView` row calls) both route through this so the two can't drift.
     nonisolated static func jumpDelta(toTargetPos pos: Int) -> Int {
-        -pos
+        -(pos + 1)
     }
 
     /// Re-anchors to the bottom then jumps `actions` to newest-first navigator position `pos` (0 = newest).
-    /// A `pos` of 0 leaves the viewport at the bottom (the step is a no-op, skipped for clarity).
+    /// The delta is always non-zero (``jumpDelta`` steps at least one prompt up, past the live empty
+    /// prompt), so a jump is always issued after the re-anchor.
     nonisolated static func toNavigatorPosition(_ pos: Int, using actions: TerminalSurfaceActions) {
         actions.performBindingAction("scroll_to_bottom")
         let delta = jumpDelta(toTargetPos: pos)

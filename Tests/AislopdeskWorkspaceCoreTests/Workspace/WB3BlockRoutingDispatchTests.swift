@@ -144,16 +144,25 @@ final class WB3BlockRoutingDispatchTests: XCTestCase {
         store.blockBookmarks.jumpCursor[session.id] = 3
 
         // navigatorBlocks newest-first: [5,4,3,2,1]. Block 5 is at pos 0; block 1 is at pos 4.
-        // .jumpNextFailed = forward:true = toward OLDER = block 1 (pos 4) → delta -4.
+        // .jumpNextFailed = forward:true = toward OLDER = block 1 (pos 4) → delta -(4+1) = -5 (the +1
+        // steps past the live empty prompt, which ghostty marks but our block list has no block for).
         WorkspaceBindingRegistry.route(.jumpNextFailed, to: store)
         XCTAssertEqual(store.blockBookmarks.jumpCursor[session.id], 1, "next-failed lands on the OLDER failure (1)")
-        XCTAssertEqual(recorder.actions, ["scroll_to_bottom", "jump_to_prompt:-4"], "older failure = 4 prompts up")
+        XCTAssertEqual(
+            recorder.actions,
+            ["scroll_to_bottom", "jump_to_prompt:-5"],
+            "older failure (pos 4) = 5 prompts up",
+        )
 
         recorder.resetActions()
         // From the cursor now on 1, .jumpPreviousFailed = forward:false = toward NEWER = block 3 (pos 2).
         WorkspaceBindingRegistry.route(.jumpPreviousFailed, to: store)
         XCTAssertEqual(store.blockBookmarks.jumpCursor[session.id], 3, "prev-failed steps to the NEWER failure (3)")
-        XCTAssertEqual(recorder.actions, ["scroll_to_bottom", "jump_to_prompt:-2"], "newer failure = 2 prompts up")
+        XCTAssertEqual(
+            recorder.actions,
+            ["scroll_to_bottom", "jump_to_prompt:-3"],
+            "newer failure (pos 2) = 3 prompts up",
+        )
     }
 
     /// `.jumpPreviousFailed` from the cursor on block 3 walks toward the NEWEST failure (5), not the oldest —
@@ -228,17 +237,35 @@ final class WB3BlockRoutingDispatchTests: XCTestCase {
         )
     }
 
+    // MARK: - BlockJump delta math (the shared re-anchor jump — Outline / navigator / jump-to-failed)
+
+    /// Bug-B regression. `jumpDelta` must account for the current live empty prompt, which ghostty marks
+    /// (its `133;A`) but our block list has NO block for: so newest-first block position `pos` sits
+    /// `pos + 1` prompts up from the bottom → delta `-(pos + 1)`. The old `-pos` was off by one (clicking
+    /// the newest command jumped to the empty prompt below it). Pure pin of the corrected contract; FAILS
+    /// on the pre-fix `-pos` at every position (0 → 0 vs -1, 1 → -1 vs -2, …).
+    func testBlockJumpDeltaAccountsForLiveEmptyPrompt() {
+        XCTAssertEqual(
+            BlockJump.jumpDelta(toTargetPos: 0),
+            -1,
+            "the NEWEST command is one prompt up from the live prompt",
+        )
+        XCTAssertEqual(BlockJump.jumpDelta(toTargetPos: 1), -2)
+        XCTAssertEqual(BlockJump.jumpDelta(toTargetPos: 4), -5)
+    }
+
     // MARK: - E9: Jump to a specific Outline block (jumpToNavigatorBlockInActivePane)
 
     /// E9 (ES-E9-2): clicking an Outline row jumps the scrollback to that block via
     /// `jumpToNavigatorBlockInActivePane(index:)` — the load-bearing half that had ZERO coverage. It must
     /// resolve the block's NEWEST-FIRST position in `navigatorBlocks` (not use the raw index as the delta)
-    /// and route through the shared absolute re-anchor (`scroll_to_bottom` then `jump_to_prompt:-pos`).
+    /// and route through the shared absolute re-anchor (`scroll_to_bottom` then `jump_to_prompt:-(pos+1)` —
+    /// the `+1` steps past the live empty prompt, which ghostty marks but our block list has no block for).
     ///
     /// ORDERING-ASYMMETRIC on its own: seed an ODD count of 7 and target an OFF-CENTRE index (3, not the
     /// pivot 4) so newest-first and oldest-first resolve to DIFFERENT positions. Blocks index-ascending →
-    /// navigatorBlocks newest-first `[7,6,5,4,3,2,1]`; block index 3 is at pos 4 → delta `-4`. Under a flipped
-    /// (oldest-first `[1,2,3,4,5,6,7]`) resolution index 3 would be at pos 2 → `-2`, so this case FAILS directly
+    /// navigatorBlocks newest-first `[7,6,5,4,3,2,1]`; block index 3 is at pos 4 → delta `-5`. Under a flipped
+    /// (oldest-first `[1,2,3,4,5,6,7]`) resolution index 3 would be at pos 2 → `-3`, so this case FAILS directly
     /// on a swapped ordering — it no longer relies on the separate ends test. (A regression that used the raw
     /// index as the delta would emit `jump_to_prompt:-3` and also FAIL here.)
     func testJumpToNavigatorBlockResolvesNewestFirstPositionForIndex() throws {
@@ -249,31 +276,31 @@ final class WB3BlockRoutingDispatchTests: XCTestCase {
         store.jumpToNavigatorBlockInActivePane(index: 3)
 
         XCTAssertEqual(
-            recorder.actions, ["scroll_to_bottom", "jump_to_prompt:-4"],
-            "block 3 is at newest-first pos 4 (delta -4); oldest-first would be pos 2 (-2), so a flipped "
-                + "ordering fails THIS case directly",
+            recorder.actions, ["scroll_to_bottom", "jump_to_prompt:-5"],
+            "block 3 is at newest-first pos 4 (delta -(4+1) = -5); oldest-first would be pos 2 (-3), so a "
+                + "flipped ordering fails THIS case directly",
         )
     }
 
-    /// The OLDEST block (index 1) is at the deepest newest-first position (pos 4) → delta `-4`; the NEWEST
-    /// (index 5) is at pos 0, so its jump leaves the viewport at the bottom (no `jump_to_prompt` step). Pins
+    /// The OLDEST block (index 1) is at the deepest newest-first position (pos 4) → delta `-5`; the NEWEST
+    /// (index 5) is at pos 0 → delta `-1` (one prompt up from the live empty prompt, NOT a no-op). Pins
     /// both ends of the position resolution so a swapped ordering (oldest-first) would fail.
     func testJumpToNavigatorBlockHandlesOldestAndNewestEnds() throws {
         let store = makeStore()
         let session = try seedBlocks(store, [ok(1), ok(2), ok(3), ok(4), ok(5)])
         let recorder = try XCTUnwrap(session.surfaceRecorder)
 
-        store.jumpToNavigatorBlockInActivePane(index: 1) // oldest → pos 4
+        store.jumpToNavigatorBlockInActivePane(index: 1) // oldest → pos 4 → -(4+1)
         XCTAssertEqual(
-            recorder.actions, ["scroll_to_bottom", "jump_to_prompt:-4"],
-            "the oldest block is the deepest newest-first position (4 prompts up)",
+            recorder.actions, ["scroll_to_bottom", "jump_to_prompt:-5"],
+            "the oldest block is the deepest newest-first position (5 prompts up, past the live prompt)",
         )
 
         recorder.resetActions()
-        store.jumpToNavigatorBlockInActivePane(index: 5) // newest → pos 0 (delta 0, the step is skipped)
+        store.jumpToNavigatorBlockInActivePane(index: 5) // newest → pos 0 → -(0+1)
         XCTAssertEqual(
-            recorder.actions, ["scroll_to_bottom"],
-            "the newest block is at the bottom anchor — re-anchor only, no jump_to_prompt step",
+            recorder.actions, ["scroll_to_bottom", "jump_to_prompt:-1"],
+            "the newest block is ONE prompt above the live empty prompt — re-anchor then a single step up",
         )
     }
 

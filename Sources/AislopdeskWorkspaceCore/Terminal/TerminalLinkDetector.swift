@@ -276,6 +276,16 @@ public enum TerminalLinkDetector {
         var pathPart = pathPart0
         while pathPart.hasSuffix(":") { pathPart.removeLast() } // e.g. a log "/path:" or "Error:"
         guard !pathPart.isEmpty, let shape = pathShape(pathPart) else { return nil }
+        // Decorative prompt art (starship cats, powerline glyphs) frequently begins with `/` — e.g. the
+        // `/ᐠ` in a `/ᐠ - ˕ -マ ≫` prompt — but is NOT a filesystem path. Such art is a SINGLE exotic glyph
+        // after the root; a real path is structured. So drop a candidate only when it is BOTH single-segment
+        // AND carries no ordinary path character (an ASCII letter or digit — dir/file names, extensions). A
+        // multi-segment path (`/дом/данные`, `~/デスクトップ` — the `~`/`.`/`..` anchor counts as a segment,
+        // and `/Users/名前/notes.txt`) or any path with an ASCII alnum still passes, so genuine non-Latin
+        // paths keep their ⌘-hover underline; only a lone-glyph decoration is validate-then-dropped.
+        let hasOrdinaryChar = pathPart.unicodeScalars.contains { $0.isASCIILetter || $0.isASCIIDigit }
+        let segmentCount = pathPart.split(separator: "/", omittingEmptySubsequences: true).count
+        guard hasOrdinaryChar || segmentCount >= 2 else { return nil }
         let hasLineCol = !suffix.isEmpty
         // A bare `dir/file` (no ./ ../ prefix) is only a link when it carries a line:col suffix —
         // otherwise prose like `and/or` or an SCP remote `git@host:org/repo` would falsely match.

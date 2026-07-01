@@ -147,6 +147,28 @@ final class TerminalLinkDetectorTests: XCTestCase {
         XCTAssertEqual(rescued?.raw, "src/lib.rs:42")
     }
 
+    /// Decorative prompt art (starship cats, powerline glyphs) is a SINGLE exotic glyph after the root —
+    /// `/ᐠ` in a `/ᐠ - ˕ -マ ≫` prompt — and must not be underlined on ⌘-hover. A candidate is dropped
+    /// only when it is single-segment AND carries no ordinary (ASCII alnum) char; a structured path — any
+    /// ASCII alnum, OR ≥2 segments — still matches, so genuine non-Latin paths keep the affordance.
+    func testDecorativePromptArtNotDetectedAsPath() {
+        // Dropped: lone exotic glyph after the root (single segment, no ordinary char).
+        XCTAssertTrue(detect("/ᐠ - ˕ -マ ≫").isEmpty, "a starship cat prompt is not a path")
+        XCTAssertTrue(detect("aislopdesk on  main via  v6.3.2").isEmpty, "prompt context line is not a path")
+        XCTAssertTrue(detect("/≫").isEmpty, "a lone exotic glyph after / is not a path")
+        XCTAssertTrue(detect("/ᐠ:42").isEmpty, "a lone exotic glyph + fake :line suffix is still not a path")
+
+        // Kept: any ASCII alnum present.
+        XCTAssertEqual(only("/Users/名前/notes.txt")?.kind, .absolutePath)
+        XCTAssertEqual(only("/usr/bin/foo")?.kind, .absolutePath)
+        XCTAssertEqual(only("~/プロジェクト/main.swift")?.kind, .tildePath)
+        // Kept: multi-segment paths even with NO ASCII anywhere (real localized/non-Latin directories) —
+        // the ≥2-segment structure (the `~` / leading `/` anchor counts) rescues them from the art guard.
+        XCTAssertEqual(only("/дом/данные")?.kind, .absolutePath)
+        XCTAssertEqual(only("~/デスクトップ")?.kind, .tildePath)
+        XCTAssertEqual(only("~/مجلد")?.kind, .tildePath)
+    }
+
     /// Wrapping brackets / quotes and trailing sentence punctuation are stripped, and `colStart`
     /// advances past the leading bracket — but the `:line:col` colon survives the trailing trim.
     func testWrappingPunctuationTrimmed() {

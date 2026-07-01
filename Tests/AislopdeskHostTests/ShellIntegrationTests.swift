@@ -176,6 +176,37 @@ final class ShellIntegrationTests: XCTestCase {
         XCTAssertTrue(zshrc.contains("133;B"), "precmd must emit OSC 133;B (end of prompt / start of input)")
     }
 
+    /// Bug-A fix: `preexec` must report the EXACT command line via `133;E;%s` (from `$1`) BEFORE `C`, so the
+    /// host does not reconstruct commandText from the redraw-polluted echo. Pins the escape helper is defined,
+    /// invoked with `$1`, and that the E mark's payload is the escaped command (`%s`), emitted before C.
+    func testZshrcPreexecEmitsExplicitCommandLineMark() throws {
+        let dir = try XCTUnwrap(ShellIntegration.writeShimDirectory(into: makeTempDir()))
+        let zshrc = try String(contentsOf: dir.appendingPathComponent(".zshrc"), encoding: .utf8)
+        XCTAssertTrue(
+            zshrc.contains("\\033]133;E;%s\\007"),
+            "preexec must printf the explicit command-line mark 133;E;<escaped> with literal octal escapes",
+        )
+        XCTAssertTrue(
+            zshrc.contains("__aislopdesk_osc133_escape \"$1\""),
+            "preexec must escape the exact typed command ($1) before emitting E",
+        )
+        XCTAssertTrue(
+            zshrc.contains("__aislopdesk_osc133_escape()"),
+            "the byte-wise command-line escape helper must be defined",
+        )
+        // The escape must map the dangerous bytes to \\xNN and NOTHING must let a raw ';' / ESC / BEL leak
+        // into the payload (they would split the field or terminate the OSC).
+        for token in ["\\x5c", "\\x3b", "\\x1b", "\\x07", "\\x0d", "\\x0a"] {
+            XCTAssertTrue(zshrc.contains(token), "escape must encode a special byte as \(token)")
+        }
+        // Byte-wise, locale-independent processing (VS Code's approach) so UTF-8 round-trips exactly.
+        XCTAssertTrue(zshrc.contains("local LC_ALL=C"), "the escape must process bytes under LC_ALL=C")
+        // E must precede C in the preexec body (the host opens the block, sets the command, THEN starts output).
+        let eRange = try XCTUnwrap(zshrc.range(of: "133;E;%s"))
+        let preexecTail = zshrc[eRange.upperBound...]
+        XCTAssertTrue(preexecTail.contains("133;C"), "the E mark must be emitted BEFORE the C mark")
+    }
+
     /// REGRESSION (live-host bug): the printf escapes must reach the shell as the LITERAL text
     /// `\033` / `\007` (backslash-zero-three-three), NOT as a Swift `\0` NUL escape + "33". If the
     /// source were written `\033` (single backslash) Swift would compile it to a NUL byte + "33",

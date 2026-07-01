@@ -22,6 +22,10 @@ final class CommandBlockSegmenterTests: XCTestCase {
         exit.map { "\(ESC)]133;D;\($0)\(BEL)" } ?? "\(ESC)]133;D\(BEL)"
     }
 
+    /// The EXPLICIT command-line mark `133;E;<escaped>` (the aislopdesk extension the shim's `preexec`
+    /// emits before `C`). `escaped` must already be the wire form (`;`, `\`, ESC, BEL, CR, LF as `\xNN`).
+    private func e(_ escaped: String) -> String { "\(ESC)]133;E;\(escaped)\(BEL)" }
+
     /// A full prompt→command→output→done cycle: `A` <prompt> `B` <cmd> `C` <output> `D;exit`.
     private func cycle(prompt: String, command: String, output: String, exit: Int) -> String {
         a() + prompt + b() + command + c() + output + d(exit)
@@ -267,6 +271,112 @@ final class CommandBlockSegmenterTests: XCTestCase {
         XCTAssertEqual(text(blocks[0].output), "partial\n")
         XCTAssertTrue(blocks[1].complete)
         XCTAssertEqual(blocks[1].commandText, "ls")
+    }
+
+    // MARK: 7b. Prompt REDRAW (reset-prompt on every resize) must not spawn phantom blocks
+
+    func testIdlePromptRedrawDoesNotSpawnPhantomBlocks() {
+        // The B mark lives INSIDE $PROMPT (a zero-width sequence), so zsh re-fires it on every
+        // `zle reset-prompt` — the shim's own TRAPWINCH runs one per SIGWINCH, and a remote pane
+        // resizes constantly. At an IDLE prompt (B fired, no command typed, no C yet) each redraw is
+        // the SAME prompt, NOT a new command. Three redraws before a single real command must yield
+        // exactly ONE block — not three phantom incomplete ("running" forever) blocks + the real one.
+        let stream =
+            a() + "$ " + b() // prompt shown, block opens
+                + b() + b() + b() // three reset-prompt redraws at the idle prompt (re-fired B marks)
+                + "ls" + c() + "hi\n" + d(0) // the user finally runs a command
+        let blocks = CommandBlockSegmenter.segment(bytes(stream))
+        XCTAssertEqual(blocks.count, 1, "prompt redraws must not create phantom blocks")
+        XCTAssertEqual(blocks[0].commandText, "ls")
+        XCTAssertTrue(blocks[0].complete)
+        XCTAssertEqual(blocks[0].exitCode, 0)
+    }
+
+    func testRedrawReprintedPromptDoesNotLeakIntoCommandText() {
+        // A `reset-prompt` reprints PROMPT (incl. the B mark) then the current input BUFFER. So a
+        // partial command typed before a resize is re-echoed after the re-fired B. The re-fired B in
+        // the command phase must RE-ARM the same block (discarding the pre-redraw partial + the
+        // reprinted prompt bytes), so the final commandText is the clean typed line — never
+        // "ec$ echo hi" with the reprinted prompt fused in.
+        let stream =
+            a() + "$ " + b() + "ec" // typed "ec"
+            + "$ " + b() // resize → reset-prompt reprints "$ " then the B mark
+            + "echo hi" + c() + "hi\n" + d(0) // buffer re-echoed as "echo hi", then run
+        let blocks = CommandBlockSegmenter.segment(bytes(stream))
+        XCTAssertEqual(blocks.count, 1, "a redraw mid-typing must not split the command into two blocks")
+        XCTAssertEqual(blocks[0].commandText, "echo hi", "reprinted prompt must not leak into commandText")
+        XCTAssertTrue(blocks[0].complete)
+    }
+
+    func testOpenBlockNotSurfacedUntilCommandExecutes() {
+        // `peekOpenBlock` drives the live "running command" surfaced to the client. A block still at
+        // the prompt (B fired, no C) is the CURRENT INPUT LINE, not a running command — surfacing it
+        // would show a spurious "(no command) running…" entry that sits forever at the top of the
+        // Commands/Outline panel. It must only surface once the command actually STARTS (its C mark).
+        var seg = CommandBlockSegmenter()
+        seg.ingest(bytes(a() + "$ " + b()))
+        XCTAssertNil(seg.peekOpenBlock(), "an idle prompt (pre-C) must not surface as a running block")
+        seg.ingest(bytes("echo hi"))
+        XCTAssertNil(seg.peekOpenBlock(), "a half-typed command (pre-C) is not yet running")
+        seg.ingest(bytes(c()))
+        let running = seg.peekOpenBlock()
+        XCTAssertNotNil(running, "a command that started executing (saw C) IS surfaced as running")
+        XCTAssertEqual(running?.commandText, "echo hi")
+        XCTAssertEqual(running?.complete, false)
+    }
+
+    // MARK: 7b. Explicit command-line mark (133;E) — immune to line-editor redraw pollution
+
+    /// THE Bug-A regression. Under zsh-autosuggestions + zsh-syntax-highlighting + starship, the command
+    /// region is repainted many times as the user types: ghost-suggestion text is printed, the line is
+    /// re-colored, the cursor jumps back — so the raw ECHO between `B` and `C` is a soup of every glyph ever
+    /// painted there (`ll ~/Library/Group\ Containers/... ll ll` etc.). The explicit `133;E` mark carries the
+    /// EXACT typed command, so `commandText` must be the clean command, NOT the echo soup. FAILS on the
+    /// pre-fix segmenter (which had no `E` arm and fell back to the polluted echo bytes).
+    func testExplicitCommandMarkOverridesGarbledEcho() {
+        // The echo between B and C is deliberate garbage (what a redraw-heavy line editor actually emits).
+        let garbage = "l l ll  ll ~/Library/Group\\ Containers ll ll  ec  ho SHIPPED"
+        let stream = a() + "$ " + b() + garbage + e("ll") + c() + "file listing\n" + d(0)
+        let blocks = CommandBlockSegmenter.segment(bytes(stream))
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(blocks[0].commandText, "ll", "the explicit E mark wins over the polluted echo bytes")
+        XCTAssertEqual(text(blocks[0].output), "file listing\n")
+        XCTAssertEqual(blocks[0].exitCode, 0)
+    }
+
+    /// The `\xNN` escaping round-trips: a command with a semicolon, a backslash, spaces and a non-Latin path
+    /// (all bytes the shim escapes or passes through) decodes back to the EXACT command. The escape covers
+    /// `;` (field separator) and `\` (escape lead-in); everything else — incl. multi-byte UTF-8 — is literal.
+    func testExplicitCommandUnescapesSpecialBytes() {
+        // Wire form: `echo "a; b" \ ~/Проект` with `;`→\x3b and `\`→\x5c.
+        let escaped = #"echo "a\x3b b" \x5c ~/Проект"#
+        let stream = a() + "$ " + b() + "echo …" + e(escaped) + c() + "out\n" + d(0)
+        let blocks = CommandBlockSegmenter.segment(bytes(stream))
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(blocks[0].commandText, #"echo "a; b" \ ~/Проект"#)
+    }
+
+    /// A `133;E` command longer than the 256-byte 133 cap is NOT dropped — that cap is a sniffer-parity guard
+    /// for the A/B/C/D marks; the explicit command legitimately runs long and is bounded only by the 4096-byte
+    /// OSC cap. (A `133;C;<257 junk bytes>` would still be dropped — pinned by the parity tests.) FAILS if the
+    /// cap were applied to `E`: the mark would vanish and `commandText` would fall back to the echo.
+    func testExplicitCommandLongerThan256BytesSurvivesCap() {
+        let long = String(repeating: "x", count: 400) // > cmdOscCap (256), < oscCap (4096)
+        let stream = a() + "$ " + b() + "typed" + e(long) + c() + "out\n" + d(0)
+        let blocks = CommandBlockSegmenter.segment(bytes(stream))
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(blocks[0].commandText, long, "the explicit command is exempt from the 256-byte 133 cap")
+    }
+
+    /// A re-fired `B` (prompt redraw on resize) that RE-ARMS the open block does not discard an explicit
+    /// command captured for THIS execution: E arrives after the FINAL B (at preexec), so the redraw B's
+    /// come before E and the explicit text still wins. Composes the Bug-A fix with the redraw-dedup fix.
+    func testExplicitCommandSurvivesPromptRedrawBeforeExecution() {
+        // Two redraw B's (resize) at the idle prompt, THEN the real preexec E + C.
+        let stream = a() + "$ " + b() + b() + "gar" + b() + e("git status") + c() + "clean\n" + d(0)
+        let blocks = CommandBlockSegmenter.segment(bytes(stream))
+        XCTAssertEqual(blocks.count, 1, "redraw B's don't spawn phantom blocks")
+        XCTAssertEqual(blocks[0].commandText, "git status")
     }
 
     // MARK: 8. Chunk-boundary invariance — split anywhere = same blocks

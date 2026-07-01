@@ -826,12 +826,31 @@ final class GhosttyLayerBackedView: NSView {
     /// libghostty installs its layer + spawns its renderer/io threads inside `ghostty_surface_new`,
     /// so the surface is created ONLY once the view is in a real window — never for SwiftUI's
     /// off-window probe pass (which would spawn a duplicate surface + thread set that busy-spins).
+    /// Observer token for the current window's ``NSWindow/didResignKeyNotification`` — clears the ⌘-hold
+    /// link underline when the window loses key (⌘-Tab away / clicking another app) while ⌘ is held, since
+    /// that path delivers NO ⌘-release `flagsChanged` and does NOT call `resignFirstResponder` (the view
+    /// stays first responder). Re-scoped to the live window on every `viewDidMoveToWindow`.
+    private var windowResignKeyObserver: NSObjectProtocol?
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        // Re-scope the window-resign-key observer to the CURRENT window (removed first so a moved/detached
+        // view never keeps a stale subscription to a window it left).
+        if let token = windowResignKeyObserver {
+            NotificationCenter.default.removeObserver(token)
+            windowResignKeyObserver = nil
+        }
         if window != nil {
             if let model { attach(model: model) }
             startRenderTickIfNeeded()
             requestPresent(8)   // prime the initial glyph flush
+            windowResignKeyObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification, object: window, queue: .main,
+            ) { [weak self] _ in
+                // On the main queue already (`queue: .main`); `MainActor.assumeIsolated` bridges the
+                // non-isolated notification block to this @MainActor view's `clearLinkHighlight()`.
+                MainActor.assumeIsolated { self?.clearLinkHighlight() }
+            }
             // Claim the keyboard ONLY if this is the workspace's focused pane. In a multi-pane split
             // every pane used to call `makeFirstResponder` on mount, so the LAST-mounted pane stole the
             // keyboard regardless of `store.focusedPane` (focus-stealing bug). Render focus now FOLLOWS the
@@ -970,6 +989,11 @@ final class GhosttyLayerBackedView: NSView {
     deinit {
         // @MainActor not available in deinit; the surface's own deinit frees the
         // ghostty_surface_t. We rely on detach() (dismantleNSView) as the explicit path.
+        // The window-resign-key observer is NOT dropped here — a nonisolated deinit can't touch the
+        // non-Sendable `(any NSObjectProtocol)?` token on this @MainActor view. It doesn't need to:
+        // AppKit always calls `viewDidMoveToWindow` with a nil window BEFORE a view deallocates (a view
+        // in a window is retained by it), and that teardown removes + nils the observer. So by deinit it
+        // is already gone.
     }
 
     // MARK: Resize → grid
@@ -2273,7 +2297,29 @@ final class GhosttyLayerBackedView: NSView {
         // surface when the whole window merely resigns key (⌘-Tab away), wrongly hollowing the active pane's
         // cursor. An unfocused pane still repaints via the content-driven present path, so it does NOT freeze
         // (a pane truly leaving the screen is `detach()`'d, which closes the surface).
+        //
+        // DO clear the ⌘-hold link underline, though. When a sibling pane grabs first responder (⌘T / any
+        // focus move that calls `makeFirstResponder`), a ⌘ that is still physically held will NEVER deliver
+        // its release `flagsChanged` to us, so `linkHighlightActive` (and the resolved hover path) would stay
+        // set and the ``LinkHighlightOverlay`` would keep every detected path underlined until this pane is
+        // re-focused and ⌘ is tapped again (the reported bug). Clearing it on resign fixes that. (The OTHER
+        // no-release path — the whole window resigning key on ⌘-Tab away, which does NOT call
+        // `resignFirstResponder` — is covered separately by the `didResignKeyNotification` observer in
+        // `viewDidMoveToWindow`.) Mutating the `@Observable` model here is safe — a responder-chain callback,
+        // NOT an `updateNSView`/AttributeGraph pass (same as `flagsChanged`).
+        clearLinkHighlight()
         return super.resignFirstResponder()
+    }
+
+    /// Clears the ⌘-hold link underline state (``TerminalViewModel/linkHighlightActive`` + the resolved
+    /// ``TerminalViewModel/hoveredLinkFullPath``). Called whenever this pane can no longer receive the ⌘
+    /// release `flagsChanged` — losing first responder (`resignFirstResponder`) or its window resigning key
+    /// (⌘-Tab away). Idempotent + a no-op when nothing is highlighted; safe on the main actor off any
+    /// AttributeGraph/`updateNSView` pass.
+    private func clearLinkHighlight() {
+        guard let model else { return }
+        if model.linkHighlightActive { model.linkHighlightActive = false }
+        if model.hoveredLinkFullPath != nil { model.hoveredLinkFullPath = nil }
     }
 
     /// Maps AppKit modifier flags → libghostty mods (header 100).

@@ -157,10 +157,17 @@ public struct CommandBlockSegmenter {
     /// The snapshot carries the index the block WILL receive when it closes (the next free index),
     /// `complete == false`, and a `nil` duration (it has not finished).
     public func peekOpenBlock() -> CommandBlock? {
-        guard hasOpenBlock else { return nil }
+        // Only surface a block that has actually STARTED EXECUTING — one that saw its `C` (preexec)
+        // mark and is in the `.output` phase. A block still in the `.command` phase is the CURRENT
+        // PROMPT waiting for input (the user is typing, or idling at the prompt), NOT a running
+        // command; surfacing it would show a spurious "(no command) running…" entry that sits forever
+        // at the top of the Commands / Outline panel — and, because the `B` mark re-fires on every
+        // prompt redraw (see the `B` arm), one such entry per resize. A real command's block is
+        // surfaced from its `C` onward, with its full `commandText` already captured.
+        guard hasOpenBlock, phase == .output else { return nil }
         return CommandBlock(
             index: nextIndex,
-            commandText: Self.decodeCommand(openCommandBytes),
+            commandText: Self.decodeCommand(currentCommandBytes()),
             output: openOutputBytes,
             exitCode: nil,
             durationMS: nil,
@@ -211,6 +218,13 @@ public struct CommandBlockSegmenter {
     // The block currently being assembled (opened at `B`, closed at `D`).
     private var nextIndex = 0
     private var openCommandBytes: [UInt8] = []
+    /// The EXPLICIT command line reported by the `133;E` preexec mark (unescaped raw bytes), or `nil`
+    /// when no explicit mark was seen for the open block — then `commandText` falls back to the echoed
+    /// ``openCommandBytes``. The explicit line is immune to the line-editor redraw pollution
+    /// (zsh-autosuggestions ghost text, zsh-syntax-highlighting re-colors, starship transient redraws)
+    /// that made the echo-reconstructed command a soup of every glyph ever painted in the prompt region.
+    /// See the `E` arm in ``finishOSC``.
+    private var openCommandExplicit: [UInt8]?
     private var openOutputBytes: [UInt8] = []
     private var openOutputTruncated = false
     private var hasOpenBlock = false
@@ -427,11 +441,18 @@ public struct CommandBlockSegmenter {
         }
         guard ps == "133" else { return } // only 133 marks segment; ignore titles / OSC 9 / 777.
 
-        // EXACT-PARITY guard: the live sniffer ignores a 133 payload over 256 bytes.
-        guard oscBuffer.count <= Self.cmdOscCap else { return }
         let payload = String(bytes: oscBuffer, encoding: .utf8) ?? ""
         let fields = payload.split(separator: ";", omittingEmptySubsequences: false)
         guard fields.count >= 2, fields[0] == "133" else { return }
+
+        // EXACT-PARITY guard: the live ``HostOutputSniffer`` ignores a 133 payload over 256 bytes, so a
+        // >256-byte A/B/C/D mark (hostile) is dropped here too. The EXPLICIT command-line mark
+        // (`133;E;<escaped-cmd>`) is the ONE exception — it legitimately carries a long command and the
+        // live sniffer does NOT act on it (its `E` arm is a no-op), so it is bounded only by the general
+        // 4096-byte OSC cap the `.osc` state already enforces before this point.
+        if fields[1] != "E" {
+            guard oscBuffer.count <= Self.cmdOscCap else { return }
+        }
 
         switch fields[1] {
         case "A":
@@ -443,13 +464,51 @@ public struct CommandBlockSegmenter {
             phase = .idle
 
         case "B":
-            // Command start. Open a fresh block; subsequent ground bytes are the typed line.
+            // Command start (prompt end). Distinguish a genuine NEW prompt from a PROMPT REDRAW.
+            //
+            // The `B` mark lives INSIDE `$PROMPT` as a zero-width sequence, so zsh reprints it on
+            // every `zle reset-prompt`: the shim's own `TRAPWINCH` fires one per SIGWINCH, and a
+            // remote pane resizes constantly (splits, sidebar toggles, window drags), plus starship /
+            // transient-prompt hooks fire more. Such a redraw re-fires `B` while we are STILL at the
+            // prompt — the open block never saw a `C`, so it is in the `.command` phase with no
+            // output. That is the SAME prompt, NOT a new command. Closing the empty block as an
+            // incomplete (forever-"running") phantom here is the bug that piled up "(no command)
+            // running…" blocks on every resize (wrong Outline, "all loading" Commands panel).
+            //
+            // So a re-fired `B` in the `.command` phase just RE-ARMS the open block: discard any
+            // partial command bytes (the redraw reprints PROMPT — captured as stray command bytes —
+            // then re-echoes the input BUFFER, which we recapture cleanly) and keep the SAME open
+            // block / index. Only a block that reached the `.output` phase (a real, executing command
+            // interrupted by a fresh prompt without a `D`) is closed as incomplete before a new block
+            // opens.
+            if hasOpenBlock, phase == .command {
+                openCommandBytes.removeAll(keepingCapacity: true)
+                return
+            }
             // (A `B` without a preceding `A` is tolerated — `A` only set phase to idle.)
             if hasOpenBlock, let open = takeOpenBlock(complete: false) {
                 completed.append(open)
             }
             startOpenBlock()
             phase = .command
+
+        case "E":
+            // EXPLICIT command line (aislopdesk extension). The shim's `preexec` hook reports the exact
+            // typed command from `$1` as `133;E;<escaped>` right BEFORE `C`, so the host does NOT
+            // reconstruct it from the terminal ECHO. Echo reconstruction is unreliable under a line editor
+            // that repaints the command region in place — zsh-autosuggestions ghost text, zsh-syntax-
+            // highlighting re-colors, starship transient redraws — which the CSI stripper cannot undo (it
+            // removes the escape sequences but keeps every printed glyph), so the echo-built commandText
+            // came out as a soup of every character ever painted there. The explicit mark is immune.
+            // `<escaped>` escapes `;`, `\`, ESC, BEL, CR, LF as `\xNN`, so it is a single clean field with
+            // no separator / OSC-terminator bytes; ``unescapeCommand`` restores the exact command bytes.
+            // Normally `E` arrives with the block already open (from `B`); tolerate a mid-stream join by
+            // opening one so the following `C` still captures output against the reported command.
+            if !hasOpenBlock {
+                startOpenBlock()
+                phase = .command
+            }
+            openCommandExplicit = fields.count >= 3 ? Self.unescapeCommand(fields[2]) : []
 
         case "C":
             // Output start. A `C` with no `B` (e.g. the very first prompt, or a stream that
@@ -467,7 +526,7 @@ public struct CommandBlockSegmenter {
             if !syntheticSpinnerActive,
                !sawRealProgressThisBlock,
                AutoProgressMatcher.matches(
-                   commandLine: Self.decodeCommand(openCommandBytes),
+                   commandLine: Self.decodeCommand(currentCommandBytes()),
                    prefixes: autoProgressPrefixes,
                )
             {
@@ -500,6 +559,7 @@ public struct CommandBlockSegmenter {
 
     private mutating func startOpenBlock() {
         openCommandBytes.removeAll(keepingCapacity: true)
+        openCommandExplicit = nil
         openOutputBytes.removeAll(keepingCapacity: true)
         openOutputTruncated = false
         hasOpenBlock = true
@@ -529,7 +589,7 @@ public struct CommandBlockSegmenter {
         nextIndex += 1
         let block = CommandBlock(
             index: index,
-            commandText: Self.decodeCommand(openCommandBytes),
+            commandText: Self.decodeCommand(currentCommandBytes()),
             output: openOutputBytes,
             exitCode: exitCode,
             durationMS: durationMS,
@@ -539,12 +599,59 @@ public struct CommandBlockSegmenter {
         hasOpenBlock = false
         runningSince = nil
         openCommandBytes.removeAll(keepingCapacity: true)
+        openCommandExplicit = nil
         openOutputBytes.removeAll(keepingCapacity: true)
         openOutputTruncated = false
         return block
     }
 
     // MARK: Decoding helpers
+
+    /// The command bytes to surface for the OPEN block: the EXPLICIT preexec-reported command
+    /// (``openCommandExplicit``, from the `133;E` mark) when present, else the raw echoed B→C bytes
+    /// (``openCommandBytes``) as a fallback for a non-zsh shell, an older shim, or a dropped `E`.
+    private func currentCommandBytes() -> [UInt8] {
+        openCommandExplicit ?? openCommandBytes
+    }
+
+    /// Unescapes a `133;E` command-line field: each `\xNN` two-hex-digit escape → that byte; every other
+    /// byte passes through. The shim escapes exactly `;`, `\`, ESC, BEL, CR, LF this way, so the field
+    /// carries no separator / OSC-terminator bytes — here we invert it to recover the exact command bytes
+    /// (multi-byte UTF-8 rides through untouched, since none of its bytes match the escaped set). Defensive:
+    /// a `\` not followed by `xHH` is emitted literally (the shim never produces one, but a hostile stream
+    /// might).
+    private static func unescapeCommand(_ field: Substring) -> [UInt8] {
+        let bytes = Array(field.utf8)
+        var out: [UInt8] = []
+        out.reserveCapacity(bytes.count)
+        var i = 0
+        while i < bytes.count {
+            let b = bytes[i]
+            if b == 0x5C, // '\'
+               i + 3 < bytes.count,
+               bytes[i + 1] == 0x78, // 'x'
+               let hi = hexNibble(bytes[i + 2]),
+               let lo = hexNibble(bytes[i + 3])
+            {
+                out.append(UInt8((hi << 4) | lo))
+                i += 4
+            } else {
+                out.append(b)
+                i += 1
+            }
+        }
+        return out
+    }
+
+    /// One hex nibble (0–15) for an ASCII hex digit, or `nil` for a non-hex byte.
+    private static func hexNibble(_ byte: UInt8) -> Int? {
+        switch byte {
+        case 0x30...0x39: Int(byte - 0x30) // 0-9
+        case 0x41...0x46: Int(byte - 0x41) + 10 // A-F
+        case 0x61...0x66: Int(byte - 0x61) + 10 // a-f
+        default: nil
+        }
+    }
 
     /// Decodes the typed command line: strict UTF-8 (drops a hostile non-UTF-8 line to "",
     /// matching the live sniffer's `String(bytes:encoding:) ?? ""` idiom) with the
