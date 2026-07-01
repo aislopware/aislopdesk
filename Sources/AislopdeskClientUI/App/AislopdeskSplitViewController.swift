@@ -109,13 +109,14 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         let contentItem = NSSplitViewItem(viewController: content)
         contentItem.minimumThickness = 420
 
-        // 3) Inspector — the Session + Commands navigator (host/ping/agent status + the active pane's
-        //    command blocks). HIDDEN by default so the resting window is a two-column (sidebar | content)
+        // 3) Inspector — the working-directory + Commands navigator (the active pane's cwd, ports, and
+        //    command blocks; host/ping/agent status live in the sidebar status line). HIDDEN by default so
+        //    the resting window is a two-column (sidebar | content)
         //    silhouette; revealed from the toolbar (L4a) or ⌘⇧R.
         let inspector = NSHostingController(
             rootView: InspectorColumn(
                 store: store, connection: connection, details: details,
-                onConnect: onConnect, onSendToChat: onSendToChat,
+                onSendToChat: onSendToChat,
             ),
         )
 

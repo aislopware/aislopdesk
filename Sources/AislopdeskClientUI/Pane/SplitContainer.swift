@@ -1,4 +1,7 @@
-// SplitContainer — renders the active tab's pane tree (REBUILD-V2, L2). The IDENTITY-PRESERVING compositor.
+// SplitContainer — renders EVERY tab's pane tree, revealing only the active one (REBUILD-V2, L2). The
+// IDENTITY-PRESERVING compositor. Keeping all tabs mounted at opacity(0) (never unmounting an inactive tab's
+// subtree) is the documented invariant that keeps a libghostty surface ALIVE across a tab switch — so
+// switching tabs shows each pane's CURRENT screen with no teardown / soft-reset / lossy ring-replay.
 //
 // It reads the PURE render model `SplitTreeRenderModel.layout(for: tab, in: bounds)` (the same solver the
 // FocusResolver uses) which turns the tab's `SplitNode` tree into placed leaf rects + divider handle rects.
@@ -25,50 +28,78 @@ struct SplitContainer: View {
     /// terminal-grid / remote-window redraw fires once on commit, not per drag frame.
     @State private var move: PaneMoveDrag?
 
-    private var tab: AislopdeskWorkspaceCore.Tab? { store.tree.activeSession?.activeTab }
+    /// EVERY tab of the active session, in tab-bar order. We render ALL of them (see `body`), not just the
+    /// selected one, so a tab switch never unmounts a pane subtree.
+    private var tabs: [AislopdeskWorkspaceCore.Tab] { store.tree.activeSession?.tabs ?? [] }
 
-    /// The active tab's focused pane (drives the focus ring / renderer first-responder).
-    private var focusedPane: PaneID? { tab?.activePane }
+    /// The selected tab's id — the ONE tab shown + interactive; every other tab is mounted but hidden.
+    private var activeTabID: TabID? { store.tree.activeSession?.activeTab?.id }
 
     var body: some View {
         GeometryReader { geo in
             let bounds = CGRect(origin: .zero, size: geo.size)
-            content(in: bounds)
+            // KEEP-ALL-MOUNTED (restores the documented "all tabs mounted at opacity(0), never tear down the
+            // libghostty surface" invariant the L2 rebuild silently dropped): render a layer for EVERY tab of
+            // the active session, but reveal + hit-test only the selected one. A hidden tab's panes stay
+            // on-window, so their ghostty surfaces keep ticking + repainting from live host output — switching
+            // to a tab shows its CURRENT screen with NO teardown/soft-reset/ring-replay (the replay is a lossy
+            // re-feed that dropped an unfocused pane's prompt). PaneIDs are unique across a session's tabs, so
+            // one ZStack keyed per-tab (and per-`PaneID` within) has no identity collision.
+            ZStack {
+                ForEach(tabs) { tab in
+                    let isActive = tab.id == activeTabID
+                    tabLayer(tab, isActive: isActive, in: bounds)
+                        .opacity(isActive ? 1 : 0)
+                        .allowsHitTesting(isActive)
+                        .accessibilityHidden(!isActive)
+                        .id(tab.id) // OUTER key only — inner CompositorPaneCards stay keyed by PaneID
+                }
+            }
+            .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
+            // Report the TRUE float viewport (the full container bounds) so the store's commit-clamp shares
+            // one coordinate space with the render model's place-clamp (no edge discrepancy). View-only — never
+            // reconciles. Skipped on the static snapshot path. Fires ONCE at the container level, not per tab.
+            .onAppear { if !staticMirror { store.updateFloatingBounds(bounds) } }
+            .onChange(of: bounds) { _, newBounds in if !staticMirror { store.updateFloatingBounds(newBounds) } }
         }
         .background(NativePaneColor.window)
     }
 
+    /// One tab's pane tree, placed absolutely in a ZStack. Rendered for EVERY tab; the caller hides +
+    /// disables all but the active one. Interaction chrome (dividers, move handles, drop) is drawn only for
+    /// the active tab — a hidden tab is non-interactive, so it needs none.
     @ViewBuilder
-    private func content(in bounds: CGRect) -> some View {
-        if let tab {
-            // E21 WI-6: feed the FLOATING overlay. The store's `floatingPanePairs(for:)` reads
-            // `tab.floatingPanes` × each spec's persisted `floatingFrame`; the render model clamps them into
-            // `bounds` and emits `floatingLeaves` (z-ordered, last = topmost), merged with the tiled `leaves`
-            // into `compositorLeaves` so ONE `ForEach` draws every pane as a `CompositorPaneCard` (F4 — the
-            // float↔embed move preserves the hosted surface). `floatingLeaves` is empty for a zoomed /
-            // float-less tab, so the non-floating path is byte-identical to before.
-            let layout = SplitTreeRenderModel.layout(for: tab, in: bounds, floating: store.floatingPanePairs(for: tab))
-            let frames = Dictionary(layout.leaves.map { ($0.id, $0.rect) }, uniquingKeysWith: { a, _ in a })
-            ZStack(alignment: .topLeading) {
-                // F4 / WI-6: EVERY pane — tiled AND floating — renders from ONE `ForEach` over
-                // ``SplitTreeRenderModel/Layout/compositorLeaves`` (tiled first, floating last). `.id` only
-                // dedups WITHIN one `ForEach`, so a pane in two sibling loops was handed a NEW identity on a
-                // float↔embed move → its hosted terminal / `.remoteGUI` video surface was torn down + rebuilt
-                // (the stream reconnected + black-flashed). One keyed list keeps the move within one collection,
-                // so the surface survives; the per-leaf `isFloating` flag switches only the chrome + placement +
-                // z-order inside ``CompositorPaneCard``.
-                ForEach(layout.compositorLeaves, id: \.id) { entry in
-                    CompositorPaneCard(
-                        store: store,
-                        paneID: entry.id,
-                        frame: entry.leaf.rect,
-                        isFloating: entry.isFloating,
-                        isFocused: entry.id == focusedPane,
-                        containerBounds: bounds,
-                        staticMirror: staticMirror,
-                    )
-                    .id(entry.id) // identity hazard: never reuse a surface across panes
-                }
+    private func tabLayer(_ tab: AislopdeskWorkspaceCore.Tab, isActive: Bool, in bounds: CGRect) -> some View {
+        // E21 WI-6: feed the FLOATING overlay. The store's `floatingPanePairs(for:)` reads
+        // `tab.floatingPanes` × each spec's persisted `floatingFrame`; the render model clamps them into
+        // `bounds` and emits `floatingLeaves` (z-ordered, last = topmost), merged with the tiled `leaves`
+        // into `compositorLeaves` so ONE `ForEach` draws every pane as a `CompositorPaneCard` (F4 — the
+        // float↔embed move preserves the hosted surface). `floatingLeaves` is empty for a zoomed /
+        // float-less tab, so the non-floating path is byte-identical to before.
+        let layout = SplitTreeRenderModel.layout(for: tab, in: bounds, floating: store.floatingPanePairs(for: tab))
+        let frames = Dictionary(layout.leaves.map { ($0.id, $0.rect) }, uniquingKeysWith: { a, _ in a })
+        ZStack(alignment: .topLeading) {
+            // F4 / WI-6: EVERY pane — tiled AND floating — renders from ONE `ForEach` over
+            // ``SplitTreeRenderModel/Layout/compositorLeaves`` (tiled first, floating last). `.id` only
+            // dedups WITHIN one `ForEach`, so a pane in two sibling loops was handed a NEW identity on a
+            // float↔embed move → its hosted terminal / `.remoteGUI` video surface was torn down + rebuilt
+            // (the stream reconnected + black-flashed). One keyed list keeps the move within one collection,
+            // so the surface survives; the per-leaf `isFloating` flag switches only the chrome + placement +
+            // z-order inside ``CompositorPaneCard``.
+            ForEach(layout.compositorLeaves, id: \.id) { entry in
+                CompositorPaneCard(
+                    store: store,
+                    paneID: entry.id,
+                    frame: entry.leaf.rect,
+                    isFloating: entry.isFloating,
+                    isFocused: Self.isPaneFocused(entry.id, in: tab, activeTabID: activeTabID),
+                    containerBounds: bounds,
+                    staticMirror: staticMirror,
+                )
+                .id(entry.id) // identity hazard: never reuse a surface across panes
+            }
+            // Interaction chrome only for the active tab (a hidden tab is non-interactive anyway).
+            if isActive {
                 // Dividers + the grab-handles / live drag overlay sit ABOVE the tiled panes (z 0) but
                 // BELOW the floating cards (`floatZBase`). With one mixed `ForEach` above, declaration order no
                 // longer keeps floats on top, so these layers carry an explicit z-index band.
@@ -80,16 +111,9 @@ struct SplitContainer: View {
                 moveLayer(leaves: layout.leaves, frames: frames, container: bounds)
                     .zIndex(Self.moveZ)
             }
-            .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
-            .coordinateSpace(name: PaneMoveSpace.name)
-            // Report the TRUE float viewport (the full container bounds) so the store's commit-clamp shares
-            // one coordinate space with the render model's place-clamp (no edge discrepancy). View-only — never
-            // reconciles. Skipped on the static snapshot path.
-            .onAppear { if !staticMirror { store.updateFloatingBounds(bounds) } }
-            .onChange(of: bounds) { _, newBounds in if !staticMirror { store.updateFloatingBounds(newBounds) } }
-        } else {
-            Color.clear
         }
+        .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
+        .coordinateSpace(name: PaneMoveSpace.name)
     }
 
     /// The z-index band the compositor ZStack stacks by (F4): tiled panes at the base (0, set inside
@@ -101,6 +125,15 @@ struct SplitContainer: View {
     static let dividerZ: Double = 10
     static let moveZ: Double = 20
     static let floatZBase: Double = 30
+
+    /// Whether pane `paneID` (in `tab`) should own the renderer's keyboard focus — the guard that makes
+    /// keep-all-mounted safe. TRUE only when `tab` is the ACTIVE tab AND `paneID` is that tab's `activePane`.
+    /// Every mounted background tab still carries its own `activePane`, but it must NOT claim first responder
+    /// (`GhosttyLayerBackedView.applyKeyboardFocus` acts only when `isFocusedPane`), or the last-mounted hidden
+    /// tab would steal the keyboard from the visible one. Pure + static so it is headlessly testable.
+    static func isPaneFocused(_ paneID: PaneID, in tab: AislopdeskWorkspaceCore.Tab, activeTabID: TabID?) -> Bool {
+        tab.id == activeTabID && paneID == tab.activePane
+    }
 
     /// One divider, placed at its LIVE solved seam (`handle.rect.mid`, which the solver re-emits as the panes
     /// resize each drag frame). The view sits at its solved position the whole time — moving `.position` does

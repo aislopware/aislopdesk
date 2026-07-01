@@ -89,4 +89,39 @@ final class BlockOutputSanitizerTests: XCTestCase {
         let input = "\u{1B}[01;34mdir\u{1B}[0m  file.txt\n"
         XCTAssertEqual(strip(input), "dir  file.txt\n")
     }
+
+    // MARK: - zsh PROMPT_EOL_MARK (reverse-video trailing "%")
+
+    func testZshEolMarkStripped() {
+        // When a command's last output line lacks a trailing newline, zsh prints a reverse-video `%`
+        // padded with spaces + a bare CR before the prompt. It lands inside the captured C→D bytes; once
+        // the SGR is stripped it would survive as a bogus trailing "%". It must be dropped.
+        XCTAssertEqual(strip("output\u{1B}[7m%\u{1B}[27m       \r"), "output")
+    }
+
+    func testZshEolMarkWithBoldStandoutStripped() {
+        // The zsh DEFAULT mark `%B%S%#%s%b` → bold + standout + `%` + end-standout + end-bold, then pad + CR.
+        XCTAssertEqual(strip("foo\u{1B}[1m\u{1B}[7m%\u{1B}[27m\u{1B}[22m      \r"), "foo")
+    }
+
+    func testZshEolMarkForRootStripped() {
+        // A root shell's mark is `#` (from `%#`) rather than `%` — also dropped when reverse-video.
+        XCTAssertEqual(strip("done\u{1B}[7m#\u{1B}[0m    \r"), "done")
+    }
+
+    func testZshEolMarkWithLeadingCRStripped() {
+        // Some configs emit a leading CR too (`\r` + mark + pad + `\r`). The lone CRs drop, the mark chops.
+        XCTAssertEqual(strip("hello\r\u{1B}[7m%\u{1B}[27m         \r"), "hello")
+    }
+
+    func testOrdinaryTrailingPercentPreserved() {
+        // A NON-reverse-video trailing "%" is real output (e.g. a progress "100%") — must NOT be stripped.
+        XCTAssertEqual(strip("progress 100%"), "progress 100%")
+        XCTAssertEqual(strip("50%\n"), "50%\n")
+    }
+
+    func testReverseVideoPercentMidOutputPreserved() {
+        // A reverse-video "%" FOLLOWED by real content is not a trailing EOL mark — keep it.
+        XCTAssertEqual(strip("\u{1B}[7m%\u{1B}[27m done"), "% done")
+    }
 }

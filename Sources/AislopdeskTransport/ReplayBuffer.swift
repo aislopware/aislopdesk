@@ -137,14 +137,25 @@ public struct ReplayBuffer: Sendable {
     /// contributes to ``retainedBytes`` or the offline-gate / 64 MiB live-tail guarantees.
     public let scrollbackBytesCap: Int
 
+    /// Optional COLD-reattach scrollback cleaner (injected by the host as an OSC-133 distiller). When
+    /// present, ``replay(after:)`` runs it over the scrollback-ring portion of a cold replay to collapse
+    /// the transient B→C line-editor churn (tab-completion menus, autosuggestions, per-keystroke redraws)
+    /// to the committed command line — see ``ScrollbackDistiller``. `nil` ⇒ the ring replays raw (the
+    /// pre-distiller behaviour; all transport tests default to this). NEVER touches the un-acked live tail
+    /// (byte-exact resume) or ``messages(after:)`` (the raw primitive used for control-channel snapshots).
+    public let scrollbackDistiller: (@Sendable (Data) -> Data)?
+
+    @preconcurrency
     public init(
         maxBackupBytes: Int = Self.maxBackupBytes,
         offlineGateBytes: Int = Self.offlineGateBytes,
         scrollbackBytes: Int = Self.defaultScrollbackBytes,
+        scrollbackDistiller: (@Sendable (Data) -> Data)? = nil,
     ) {
         maxBackupBytesCap = max(0, maxBackupBytes)
         offlineGateBytesCap = max(0, offlineGateBytes)
         scrollbackBytesCap = max(0, scrollbackBytes)
+        self.scrollbackDistiller = scrollbackDistiller
     }
 
     // MARK: Derived signals
@@ -313,10 +324,56 @@ public struct ReplayBuffer: Sendable {
         ack(upTo: seq)
     }
 
-    /// Returns the retained `output` messages with `seq > lastReceivedSeq`, in order,
-    /// already wrapped as ``WireMessage/output(seq:bytes:)`` ready to re-send.
+    /// Returns the retained `output` messages with `seq > lastReceivedSeq`, in order, already wrapped as
+    /// ``WireMessage/output(seq:bytes:)`` ready to re-send — the reconnect/reattach replay.
+    ///
+    /// When a ``scrollbackDistiller`` is injected AND this replay reaches into the scrollback ring (a COLD
+    /// reattach — `lastReceivedSeq` below the acked frontier), the scrollback portion is DISTILLED (the
+    /// transient B→C editing churn collapsed to the committed command) and RE-CHUNKED across the same seq
+    /// range it occupied (distilled bytes ≤ raw, so the chunk count never exceeds the entry count → seqs
+    /// stay ascending and strictly below the un-acked tail). The un-acked live tail is ALWAYS re-sent RAW
+    /// (byte-exact resume). Without a distiller, or on a warm reconnect (no scrollback entries pass the
+    /// filter), this is byte-identical to `messages(after:)` mapped to `.output`.
     public func replay(after lastReceivedSeq: Int64) -> [WireMessage] {
-        messages(after: lastReceivedSeq).map { WireMessage.output(seq: $0.seq, bytes: $0.bytes) }
+        let scrollback = scrollbackRing.filter { $0.seq > lastReceivedSeq }
+        var result: [WireMessage] = []
+        if let scrollbackDistiller, !scrollback.isEmpty {
+            var raw = Data()
+            for entry in scrollback { raw.append(entry.bytes) }
+            let cleaned = scrollbackDistiller(raw)
+            result.append(contentsOf: Self.rechunk(cleaned, across: scrollback.map(\.seq)))
+        } else {
+            for entry in scrollback { result.append(.output(seq: entry.seq, bytes: entry.bytes)) }
+        }
+        // Un-acked live tail — never distilled (byte-exact resume of in-flight output).
+        for entry in entries where entry.seq > lastReceivedSeq {
+            result.append(.output(seq: entry.seq, bytes: entry.bytes))
+        }
+        return result
+    }
+
+    /// Splits `data` (the distilled scrollback) into at most `seqs.count` `.output` messages, assigning
+    /// the scrollback seqs in ascending order. `data.count <= sum(original entry sizes)`, so at a chunk
+    /// size of `max(32 KiB, ceil(count / maxChunks))` the chunk count is `<= maxChunks`; the LAST allowed
+    /// chunk absorbs any remainder so every byte is emitted and no seq is reused. Empty `data` ⇒ no
+    /// messages (the client's forward-jump tolerance in `deliverOutput` handles the resulting seq gap).
+    private static func rechunk(_ data: Data, across seqs: [Int64]) -> [WireMessage] {
+        guard !data.isEmpty, !seqs.isEmpty else { return [] }
+        let maxChunks = seqs.count
+        let chunkSize = max(32 * 1024, (data.count + maxChunks - 1) / maxChunks)
+        var result: [WireMessage] = []
+        var start = data.startIndex
+        var k = 0
+        while start < data.endIndex, k < maxChunks {
+            let isLast = k == maxChunks - 1
+            let end = isLast
+                ? data.endIndex
+                : (data.index(start, offsetBy: chunkSize, limitedBy: data.endIndex) ?? data.endIndex)
+            result.append(.output(seq: seqs[k], bytes: Data(data[start..<end])))
+            start = end
+            k += 1
+        }
+        return result
     }
 
     // MARK: Test seams (scrollback ring inspection)

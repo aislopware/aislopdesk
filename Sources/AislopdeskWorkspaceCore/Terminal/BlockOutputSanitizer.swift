@@ -26,13 +26,23 @@ public enum BlockOutputSanitizer {
         out.reserveCapacity(input.count)
         var i = 0
         let n = input.count
+        // Reverse-video (SGR 7) tracking so a trailing zsh PROMPT_EOL_MARK can be dropped. zsh prints a
+        // reverse-video `%` (or `#` for root) padded with spaces + a bare CR when the command's last output
+        // line lacks a trailing newline — it lands INSIDE the captured C→D bytes and, once the SGR is
+        // stripped, would otherwise survive as a bare trailing "%". `eolMark` remembers the `out` offset of
+        // a reverse-video `%`/`#` that is followed only by pad whitespace; it is chopped after the scan.
+        var reverseOn = false
+        var eolMark: Int?
         while i < n {
             let byte = input[i]
             switch byte {
             case 0x1B: // ESC — start of an escape sequence
-                i = skipEscapeSequence(input, from: i)
+                let end = skipEscapeSequence(input, from: i)
+                if let effect = sgrReverseEffect(input, from: i, upTo: end) { reverseOn = effect }
+                i = end
             case 0x0A: // LF — keep (a real newline)
                 out.append(0x0A)
+                eolMark = nil // real content follows/precedes → not a trailing EOL mark
                 i += 1
             case 0x09: // HT — keep (a tab; meaningful whitespace in pasted output)
                 out.append(0x09)
@@ -40,9 +50,10 @@ public enum BlockOutputSanitizer {
             case 0x0D: // CR — collapse `\r\n` → `\n`; drop a lone `\r` (overwrite motion)
                 if i + 1 < n, input[i + 1] == 0x0A {
                     out.append(0x0A)
+                    eolMark = nil
                     i += 2
                 } else {
-                    i += 1
+                    i += 1 // lone CR terminates the EOL mark's pad — leave any pending mark intact
                 }
             case 0x00...0x08,
                  0x0B,
@@ -51,13 +62,26 @@ public enum BlockOutputSanitizer {
                  0x7F:
                 // Other C0 controls + DEL — drop (BS/VT/FF/SI/SO/etc. are formatting noise for a paste).
                 i += 1
+            case 0x23,
+                 0x25: // '#' / '%' — candidate zsh EOL mark iff currently reverse-video
+                eolMark = reverseOn ? out.count : nil
+                out.append(byte)
+                i += 1
+            case 0x20: // space — pad after the EOL mark; keep it AND any pending mark candidate
+                out.append(byte)
+                i += 1
             default:
                 // Printable ASCII or a UTF-8 continuation/lead byte (≥ 0x80) — keep verbatim; the final
-                // lossy UTF-8 decode reassembles multi-byte scalars (and replaces any broken ones).
+                // lossy UTF-8 decode reassembles multi-byte scalars (and replaces any broken ones). Any
+                // ordinary printable invalidates a pending EOL-mark candidate.
+                eolMark = nil
                 out.append(byte)
                 i += 1
             }
         }
+        // Chop a trailing zsh PROMPT_EOL_MARK: the reverse-video `%`/`#` at `eolMark` plus the pad
+        // whitespace after it (everything from the mark to end-of-buffer is `%`/`#` + spaces by construction).
+        if let eolMark { out.removeLast(out.count - eolMark) }
         // LOSSY by design: a clipboard paste is best-effort — a broken UTF-8 byte in the captured output
         // becomes U+FFFD rather than dropping the whole copy. `String(decoding:as:)` is the non-failable
         // lossy initializer; the failable `String(bytes:encoding:)` the lint rule prefers would return nil
@@ -103,5 +127,40 @@ public enum BlockOutputSanitizer {
             }
             return next + 1 // ESC X → 2 bytes total
         }
+    }
+
+    /// Interprets the escape sequence `input[start..<end]` (where `input[start] == ESC`) as an SGR and
+    /// returns its effect on the reverse-video (standout) state, used ONLY to detect a zsh EOL mark:
+    ///   • `true`  — the SGR turns reverse-video ON (a `7` parameter);
+    ///   • `false` — the SGR turns it OFF (a `0`/empty reset, or an explicit `27`);
+    ///   • `nil`   — not an SGR, or an SGR that doesn't touch reverse-video (leave the state unchanged).
+    /// Only a CSI ending in `m` is an SGR; parameters are `;`-separated decimal runs between `ESC [` and `m`.
+    private static func sgrReverseEffect(_ input: [UInt8], from start: Int, upTo end: Int) -> Bool? {
+        guard end - start >= 3, input[start + 1] == 0x5B, input[end - 1] == 0x6D else { return nil } // `ESC [ … m`
+        // Empty params (`ESC [ m`) == `ESC [ 0 m` == a full reset → reverse OFF.
+        guard end - 1 > start + 2 else { return false }
+        var result: Bool?
+        var value = 0
+        var sawDigit = false
+        func commit() {
+            if !sawDigit { result = false } // an empty field is a `0` reset → reverse OFF
+            else if value == 7 { result = true }
+            else if value == 0 || value == 27 { result = false }
+            sawDigit = false
+            value = 0
+        }
+        for j in (start + 2)..<(end - 1) {
+            let b = input[j]
+            if b == 0x3B { // ';' — parameter separator
+                commit()
+            } else if (0x30...0x39).contains(b) { // '0'…'9'
+                value = value * 10 + Int(b - 0x30)
+                sawDigit = true
+            } else {
+                return nil // an intermediate byte (e.g. `ESC [ ? … m`) — not a plain SGR we interpret
+            }
+        }
+        commit()
+        return result
     }
 }

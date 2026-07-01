@@ -221,7 +221,7 @@ public struct WorkspaceRootView: View {
             ContentColumn(store: store, connection: connection, chrome: chrome)
         } detail: {
             InspectorColumn(
-                store: store, connection: connection, details: details, onConnect: openConnect,
+                store: store, connection: connection, details: details,
                 onSendToChat: { [overlay] ctx in overlay.openSendToChat(context: ctx) },
             )
         }

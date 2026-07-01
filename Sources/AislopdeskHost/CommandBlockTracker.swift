@@ -96,6 +96,28 @@ struct CommandBlockTracker {
         return messages
     }
 
+    /// RE-EMITS the current metadata for EVERY block this tracker still knows about — the `lastEmitted`
+    /// set (retained completed blocks + the open running block, pruned alongside the ring) — as a burst
+    /// of type-28 `commandBlock` messages in ASCENDING index order. Used to BACKFILL a client that
+    /// (re)attaches to an already-running session: block metadata rides the CONTROL channel and is NEVER
+    /// replayed by the ReplayBuffer (only raw `.output` is sequenced), so a returning client would
+    /// otherwise show an empty Commands/Outline even though the host still holds every block. Output
+    /// bytes are NOT included (they are fetched on demand via ``serveOutput``); this restores the
+    /// navigator, and a later type-15 fetch resolves any block's body. Never traps (no force-unwrap).
+    func snapshotForResync() -> [WireMessage] {
+        lastEmitted.keys.sorted().compactMap { index -> WireMessage? in
+            guard let meta = lastEmitted[index] else { return nil }
+            return .commandBlock(
+                index: index,
+                exitCode: meta.exitCode,
+                durationMS: meta.durationMS,
+                complete: meta.complete,
+                outputLen: meta.outputLen,
+                commandText: meta.commandText,
+            )
+        }
+    }
+
     /// Serves a ``WireMessage/blockOutput`` (type 29) for `index` from the ring — the retained
     /// output bytes, or an EMPTY output if that block was evicted or never existed (never traps).
     func serveOutput(index: UInt32) -> WireMessage {

@@ -423,4 +423,93 @@ final class ReplayBufferTests: XCTestCase {
             .output(seq: 2, bytes: Data("y".utf8)),
         ])
     }
+
+    // MARK: Scrollback distiller injection (cold-reattach cleanup)
+
+    /// A synthetic "distiller" that drops every `-` byte — stands in for the OSC-133 churn collapse so the
+    /// transport-layer wiring is tested independently of ``ScrollbackDistiller``'s algorithm (host layer).
+    private static let dropDashes: @Sendable (Data) -> Data = { Data($0.filter { $0 != UInt8(ascii: "-") }) }
+
+    /// Destructures a `.output` wire message into its `(seq, bytes)` (WireMessage is an enum).
+    private func output(_ message: WireMessage) -> (seq: Int64, bytes: Data) {
+        guard case let .output(seq, bytes) = message else {
+            XCTFail("expected .output, got \(message)")
+            return (0, Data())
+        }
+        return (seq, bytes)
+    }
+
+    func testColdReplayDistillsScrollbackPortion() {
+        var buf = ReplayBuffer(scrollbackBytes: 256, scrollbackDistiller: Self.dropDashes)
+        buf.append(bytes: Data("a-b".utf8)) // seq 1 → will be acked into the ring
+        buf.append(bytes: Data("c-d".utf8)) // seq 2 → ring
+        buf.append(bytes: Data("tail-raw".utf8)) // seq 3 → un-acked live tail
+        buf.ack(upTo: 2) // seqs 1,2 move to scrollback
+        let replayed = buf.replay(after: 0)
+        // Scrollback bytes are distilled (dashes dropped); the un-acked tail is RAW (dash preserved).
+        var scrollbackText = ""
+        var tailText = ""
+        for m in replayed {
+            let (seq, bytes) = output(m)
+            let s = String(bytes: bytes, encoding: .utf8) ?? ""
+            if seq <= 2 { scrollbackText += s } else { tailText += s }
+        }
+        XCTAssertEqual(scrollbackText, "abcd", "scrollback churn (dashes) collapsed")
+        XCTAssertEqual(tailText, "tail-raw", "un-acked tail replayed byte-exact (never distilled)")
+        // Seqs remain ascending and the distilled scrollback stays strictly below the un-acked tail seq.
+        let seqs = replayed.map { output($0).seq }
+        XCTAssertEqual(seqs, seqs.sorted())
+        XCTAssertTrue(seqs.filter { $0 <= 2 }.allSatisfy { $0 < 3 })
+        XCTAssertTrue(seqs.contains(3), "tail seq present")
+    }
+
+    func testWarmReconnectNeverDistills() {
+        // A warm reconnect (lastReceivedSeq at the frontier) selects no scrollback entries, so the
+        // distiller never runs — only the raw un-acked tail is returned.
+        var buf = ReplayBuffer(scrollbackBytes: 256, scrollbackDistiller: Self.dropDashes)
+        buf.append(bytes: Data("a-b".utf8)) // seq 1
+        buf.ack(upTo: 1) // → ring
+        buf.append(bytes: Data("live-tail".utf8)) // seq 2 un-acked
+        let replayed = buf.replay(after: 1) // client already has up to seq 1
+        XCTAssertEqual(replayed, [.output(seq: 2, bytes: Data("live-tail".utf8))])
+    }
+
+    func testDistilledScrollbackRechunkSeqsStayBelowTail() {
+        // Many tiny scrollback entries + a distiller that passes the (dash-free) bytes through unchanged:
+        // the re-chunker must assign only scrollback seqs, ascending, each strictly below the un-acked tail
+        // seq, and the concatenated distilled bytes must equal the distiller output.
+        var buf = ReplayBuffer(scrollbackBytes: 4096, scrollbackDistiller: Self.dropDashes)
+        var expected = ""
+        for i in 0..<50 {
+            let s = "L\(i)\n" // no dashes → dropDashes is a no-op here (effective identity)
+            expected += s
+            buf.append(bytes: Data(s.utf8)) // seqs 1...50
+        }
+        buf.ack(upTo: 50) // all → scrollback ring
+        buf.append(bytes: Data("TAIL".utf8)) // seq 51 un-acked
+        let replayed = buf.replay(after: 0)
+        let sbSeqs = replayed.map { output($0).seq }.filter { $0 <= 50 }
+        XCTAssertEqual(sbSeqs, sbSeqs.sorted(), "scrollback chunk seqs ascending")
+        XCTAssertTrue(sbSeqs.allSatisfy { $0 >= 1 && $0 <= 50 }, "chunk seqs drawn from the scrollback range")
+        XCTAssertEqual(Set(sbSeqs).count, sbSeqs.count, "no seq reused across chunks")
+        XCTAssertTrue(sbSeqs.allSatisfy { $0 < 51 }, "distilled scrollback stays below the un-acked tail seq")
+        let sbText = replayed
+            .filter { output($0).seq <= 50 }
+            .map { String(bytes: output($0).bytes, encoding: .utf8) ?? "" }
+            .joined()
+        XCTAssertEqual(sbText, expected, "distilled bytes preserved across the re-chunk")
+        XCTAssertEqual(replayed.last, .output(seq: 51, bytes: Data("TAIL".utf8)))
+    }
+
+    func testNilDistillerIsRawByteIdentical() {
+        // With no distiller, replay(after:) is byte-identical to the pre-distiller behaviour.
+        var buf = ReplayBuffer(scrollbackBytes: 256) // distiller defaults to nil
+        buf.append(bytes: Data("a-b".utf8))
+        buf.append(bytes: Data("c-d".utf8))
+        buf.ack(upTo: 1)
+        XCTAssertEqual(buf.replay(after: 0), [
+            .output(seq: 1, bytes: Data("a-b".utf8)),
+            .output(seq: 2, bytes: Data("c-d".utf8)),
+        ])
+    }
 }

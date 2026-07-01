@@ -466,6 +466,34 @@ public final class ConnectionViewModel {
         }
     }
 
+    /// The LAZY connect-on-appear entry point — a pane's SwiftUI `.task(id:)` action, which SwiftUI
+    /// RE-FIRES on every view MOUNT. Crucially that includes a mere pane REMOUNT: switching TABS unmounts
+    /// the inactive tab's pane subtree and remounts it on return, so `.task` restarts even though the live
+    /// session never changed. Unlike ``connect()`` — which deliberately TEARS DOWN the current session and
+    /// wipes the terminal replay ring to dial a (possibly new) target — this MUST be IDEMPOTENT: a healthy
+    /// or in-flight channel is left completely untouched, so the retained ``TerminalViewModel/ring``
+    /// survives the remount and ``TerminalViewModel/attachSurface(_:)`` can repaint the prior screen. Only a
+    /// genuinely idle/dead channel actually dials. `.reconnecting` is owned by the supervisor (its own
+    /// backoff campaign is mid-flight), so it is left alone too — a remount must not short-circuit it.
+    ///
+    /// Regression guard (the "switch tab thì mất toàn bộ history" report): before this, the leaf's `.task`
+    /// called ``connect()`` unconditionally on every remount, so a tab switch tore down a perfectly healthy
+    /// session and `terminal.reset()` emptied the ring → the pane came back blank + fully re-dialed a fresh
+    /// host shell. The explicit reconnect paths (the "Reconnect Pane" command, the connect-gate) still call
+    /// ``connect()`` directly, so their force-redial semantics are unaffected.
+    public func connectIfNeeded() async {
+        switch status {
+        case .disconnected,
+             .failed,
+             .unreachable:
+            await connect()
+        case .connecting,
+             .connected,
+             .reconnecting:
+            return // already live / in-flight / supervised — a remount must not disturb it
+        }
+    }
+
     /// The user-facing `.failed` reason for a thrown error. A `LocalizedError` (e.g.
     /// ``AislopdeskTransportError``) yields its clean `errorDescription` ("Connection timed out — host
     /// unreachable?"); ANY OTHER error falls back to `String(describing:)`, which preserves the readable

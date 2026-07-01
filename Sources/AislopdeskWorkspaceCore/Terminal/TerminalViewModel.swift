@@ -1831,6 +1831,19 @@ public final class TerminalViewModel {
     /// sink is `nil`; ``TerminalBlockModel/requestOutput(index:send:completion:)`` still registers the
     /// pending request, so we resolve it immediately as unavailable rather than leaving it stranded.
     public func copyBlockOutput(index: UInt32, onResult: @escaping (String?) -> Void) {
+        // Empty/nil reply == evicted/unknown → "output unavailable". Otherwise strip VT → plain text.
+        requestBlockOutputBytes(index: index) { result in
+            onResult(result.map { BlockOutputSanitizer.plainText(from: $0) })
+        }
+    }
+
+    /// Requests block `index`'s RAW captured VT output bytes (wire type 15 → 29) — the colour-preserving
+    /// sibling of ``copyBlockOutput(index:onResult:)``, used by the inspector output pane to render the SGR
+    /// runs (the "block output has no colour, just white text" report) via `ANSIOutputStyler`. `onResult`
+    /// gets the raw bytes on success or `nil` when the block was evicted / unavailable / disconnected (so
+    /// the caller shows a brief "output unavailable" and NEVER hangs). The clipboard/composer path strips
+    /// these bytes through ``BlockOutputSanitizer``; here they stay raw so the colours survive.
+    public func requestBlockOutputBytes(index: UInt32, onResult: @escaping (Data?) -> Void) {
         // No live connection → resolve as unavailable without sending (the request would never get a reply).
         guard let sink = requestBlockOutputSink else {
             onResult(nil)
@@ -1839,10 +1852,7 @@ public final class TerminalViewModel {
         let generation = blocks.requestOutput(
             index: index,
             send: { idx in sink(idx) },
-            completion: { result in
-                // Empty/nil reply == evicted/unknown → "output unavailable". Otherwise strip VT → plain text.
-                onResult(result.map { BlockOutputSanitizer.plainText(from: $0) })
-            },
+            completion: { result in onResult(result) },
         )
         // Belt-and-braces timeout: if the host never replies, resolve the request as unavailable so the
         // copy UI's spinner can't spin forever. A no-op once the real reply resolves it. The captured

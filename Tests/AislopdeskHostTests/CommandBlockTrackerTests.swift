@@ -131,6 +131,46 @@ final class CommandBlockTrackerTests: XCTestCase {
         XCTAssertEqual(complete[0].exit, 0)
     }
 
+    // MARK: 3c. Reattach backfill — snapshotForResync re-emits every held block's metadata in order
+
+    func testSnapshotForResyncReEmitsAllHeldBlocksInIndexOrder() {
+        var tracker = CommandBlockTracker()
+        // Three completed commands + one still-running command (index 3, no D).
+        _ = tracker.ingest(bytes(cycle(prompt: "$ ", command: "cmd0", output: "a\n", exit: 0)))
+        _ = tracker.ingest(bytes(cycle(prompt: "$ ", command: "cmd1", output: "b\n", exit: 1)))
+        _ = tracker.ingest(bytes(cycle(prompt: "$ ", command: "cmd2", output: "c\n", exit: 0)))
+        _ = tracker.ingest(bytes(a() + "$ " + b() + "cmd3-running" + c() + "partial\n"))
+
+        let snap = commandBlocks(tracker.snapshotForResync())
+        // One metadata per known block (0..3), ASCENDING index order — this is what rebuilds a
+        // reattaching client's navigator.
+        XCTAssertEqual(snap.map(\.index), [0, 1, 2, 3])
+        // Pinned to the literal commands + exit codes (never to the tracker's own output).
+        XCTAssertEqual(snap.map(\.cmd), ["cmd0", "cmd1", "cmd2", "cmd3-running"])
+        XCTAssertEqual(snap[0].exit, 0)
+        XCTAssertEqual(snap[1].exit, 1)
+        XCTAssertEqual(snap[2].exit, 0)
+        // The completed blocks are complete; the still-running block is NOT.
+        XCTAssertEqual(snap.map(\.complete), [true, true, true, false])
+        XCTAssertNil(snap[3].exit, "a running block carries no exit code in the backfill")
+    }
+
+    func testSnapshotForResyncOmitsEvictedBlocks() {
+        var tracker = CommandBlockTracker(maxBlocks: 2)
+        for i in 0..<4 {
+            _ = tracker.ingest(bytes(cycle(prompt: "$ ", command: "cmd\(i)", output: "o\n", exit: 0)))
+        }
+        // Only the last two blocks survive the ring; the backfill must not resurrect evicted ones.
+        let snap = commandBlocks(tracker.snapshotForResync())
+        XCTAssertEqual(snap.map(\.index), [2, 3])
+        XCTAssertEqual(snap.map(\.cmd), ["cmd2", "cmd3"])
+    }
+
+    func testSnapshotForResyncEmptyWhenNoBlocks() {
+        var tracker = CommandBlockTracker()
+        XCTAssertTrue(tracker.snapshotForResync().isEmpty, "a tracker that saw no commands backfills nothing")
+    }
+
     // MARK: 4. Serve the retained output for a completed block (type 29)
 
     func testServeOutputReturnsRetainedBytes() {

@@ -634,7 +634,12 @@ struct TerminalLeafView: View {
 
     private func connectIfNeeded() async {
         guard !staticMirror else { return }
-        await live?.connection?.connect()
+        // IDEMPOTENT: SwiftUI re-fires this `.task` on every remount — including a pane REMOUNT when the
+        // user switches TABS (the inactive tab's subtree is unmounted, then remounted on return). Route
+        // through the model's `connectIfNeeded()`, which no-ops on a live/in-flight/supervised channel, so
+        // a tab switch never tears down a healthy session or wipes the replay ring (the "switch tab mất
+        // history" regression). A genuinely idle/dead channel still dials.
+        await live?.connection?.connectIfNeeded()
     }
 
     // MARK: - Hint Mode actuation (E10 WI-9 / ES-E10-6)

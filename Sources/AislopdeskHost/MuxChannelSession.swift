@@ -818,6 +818,12 @@ final class MuxChannelSession: @unchecked Sendable {
         // continuation). See ``reestablishEchoOnReattach(echoOn:)`` for the full rationale.
         reestablishEchoOnReattach(echoOn: PTYEchoProbe.echoEnabled(masterFD: pty.masterFD))
 
+        // WB / reattach — RE-SEND the held blocks' metadata so the returning client rebuilds its
+        // Commands/Outline navigator (block metadata rides the control channel and is not in the replayed
+        // output byte stream). Done AFTER the `controlOut.removeAll()` and control-sender rebuild above so
+        // the backfill is enqueued onto the live wake continuation, mirroring the echo re-assert.
+        resendBlocksOnReattach()
+
         // Restart the input task (reads from the NEW data sub-channel).
         let masterFD = pty.masterFD
         let localChannelID = channelID
@@ -1376,6 +1382,23 @@ final class MuxChannelSession: @unchecked Sendable {
         if !messages.isEmpty { enqueueControl(messages) }
     }
 
+    /// WB / reattach — RE-SENDS every block the tracker still holds (its metadata) as a burst of type-28
+    /// `commandBlock` messages on the CONTROL channel, so a client that (re)attaches to an already-running
+    /// session rebuilds its Commands/Outline navigator. Block metadata rides the control channel and is
+    /// NEVER replayed by the ReplayBuffer (only raw `.output` is sequenced), so a returning client — e.g.
+    /// the user quitting the app and reopening it onto the still-alive detached session — would otherwise
+    /// show an EMPTY navigator even though the host still holds every block. Mirrors
+    /// ``reestablishEchoOnReattach`` (echo truth is likewise carried only on the control channel and so is
+    /// re-anchored on reattach). A no-op when blocks are disabled. Output bytes are fetched on demand
+    /// (type 15 → 29); this restores the list only.
+    private func resendBlocksOnReattach() {
+        guard blocksEnabled else { return }
+        blocksLock.lock()
+        let messages = blockTracker?.snapshotForResync() ?? []
+        blocksLock.unlock()
+        if !messages.isEmpty { enqueueControl(messages) }
+    }
+
     /// WB1 — serves a `requestBlockOutput(index)` by enqueueing the block's retained output (type
     /// 29) from the ring on the CONTROL sender. Always replies (an EMPTY `blockOutput` when the
     /// block was evicted / never existed / blocks are disabled) so the client never hangs waiting.
@@ -1539,6 +1562,11 @@ final class MuxChannelSession: @unchecked Sendable {
     ///   ring is disabled (cap = 0), disabling cold-reattach scrollback replay.
     /// - `AISLOPDESK_SCROLLBACK_BYTES` — integer byte cap for the ring. Defaults to
     ///   `ReplayBuffer.defaultScrollbackBytes` (4 MiB). Ignored when scrollback persist is off.
+    /// - `AISLOPDESK_SCROLLBACK_DISTILL` — default-ON (`env != "0"`). When ON, a ``ScrollbackDistiller``
+    ///   is injected so a COLD-reattach scrollback replay collapses the transient B→C line-editor churn
+    ///   (tab-completion menus, autosuggestions, per-keystroke redraws) to the committed OSC-133 command
+    ///   line — the fresh terminal then re-renders a clean transcript instead of raw editing artifacts.
+    ///   Set `"0"` to replay the raw scrollback bytes (the pre-distiller behaviour).
     static func makeReplayBuffer() -> ReplayBuffer {
         let env = ProcessInfo.processInfo.environment
         let persist = env["AISLOPDESK_SCROLLBACK_PERSIST"] != "0"
@@ -1550,7 +1578,10 @@ final class MuxChannelSession: @unchecked Sendable {
             } else {
                 ReplayBuffer.defaultScrollbackBytes
             }
-        return ReplayBuffer(scrollbackBytes: scrollbackCap)
+        let distill = env["AISLOPDESK_SCROLLBACK_DISTILL"] != "0"
+        let distiller: (@Sendable (Data) -> Data)? =
+            distill ? { @Sendable in ScrollbackDistiller.distill($0) } : nil
+        return ReplayBuffer(scrollbackBytes: scrollbackCap, scrollbackDistiller: distiller)
     }
 
     // MARK: - Test seams (replay-backpressure wiring, R5 rank 2)

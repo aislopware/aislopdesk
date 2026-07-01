@@ -11,6 +11,7 @@
 // SYSTEM colours + monospaced/system fonts only.
 
 #if canImport(SwiftUI)
+import AislopdeskWorkspaceCore
 import SFSafeSymbols
 import SwiftUI
 #if canImport(AppKit)
@@ -18,9 +19,10 @@ import AppKit
 #endif
 
 struct BlockOutputView: View {
-    /// The fetched, VT-stripped output text. `nil` while still being fetched OR when the host reported the
-    /// block unavailable — disambiguated by `isFetching`.
-    let text: String?
+    /// The fetched, RAW captured VT output bytes. `nil` while still being fetched OR when the host reported
+    /// the block unavailable — disambiguated by `isFetching`. The SGR colour runs are rendered by
+    /// `ANSIOutputStyler`; the copy / Markdown paths strip them through `BlockOutputSanitizer`.
+    let bytes: Data?
     /// Whether a `blockOutput` request is currently in flight (drives the spinner vs. the unavailable note).
     let isFetching: Bool
     /// The host's byte-count hint for the block — `0` means "command produced no output" (a distinct empty
@@ -30,6 +32,22 @@ struct BlockOutputView: View {
     /// Opt-in Markdown rendering of the output (default OFF — terminal output is plain by default so it is
     /// never misinterpreted as Markdown; the user flips this per-block when the output IS Markdown).
     @State private var renderRich = false
+
+    /// The VT-stripped plain text (for the Markdown toggle, the copy button, and the empty checks) — derived
+    /// from the raw `bytes` on demand.
+    private var plainText: String? { bytes.map { BlockOutputSanitizer.plainText(from: $0) } }
+
+    /// The COLOURED render of the raw bytes, mapped to the active terminal theme's ANSI palette.
+    private var coloured: AttributedString? {
+        guard let bytes else { return nil }
+        let theme = Slate.theme
+        return ANSIOutputStyler.attributed(
+            from: bytes,
+            palette: theme.ansiPalette.map { UInt32(hex6: $0) },
+            defaultFg: UInt32(hex6: theme.terminalForegroundHex),
+            defaultBg: UInt32(hex6: theme.terminalBackgroundHex),
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -47,15 +65,17 @@ struct BlockOutputView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 8)
-        } else if let text, !text.isEmpty {
+        } else if let text = plainText, !text.isEmpty {
             ScrollView([.vertical, .horizontal]) {
                 Group {
                     if renderRich {
                         MarkdownText(markdown: text)
                     } else {
-                        Text(text)
+                        // Render the COLOURED bytes (SGR → theme ANSI palette) — falls back to the plain
+                        // text if the styler produced nothing. The base monospaced font applies to any run
+                        // the styler did not override (bold/italic runs carry their own font).
+                        Text(coloured ?? AttributedString(text))
                             .font(.system(.callout, design: .monospaced))
-                            .foregroundStyle(Slate.Text.primary)
                             .textSelection(.enabled)
                     }
                 }
@@ -85,7 +105,7 @@ struct BlockOutputView: View {
             }
             .buttonStyle(.borderless)
             .help(renderRich ? "Show raw text" : "Render as Markdown")
-            .disabled((text ?? "").isEmpty)
+            .disabled((plainText ?? "").isEmpty)
             Button {
                 copy()
             } label: {
@@ -94,7 +114,7 @@ struct BlockOutputView: View {
             }
             .buttonStyle(.borderless)
             .help("Copy output")
-            .disabled((text ?? "").isEmpty)
+            .disabled((plainText ?? "").isEmpty)
         }
     }
 
@@ -108,7 +128,7 @@ struct BlockOutputView: View {
     }
 
     private func copy() {
-        guard let text, !text.isEmpty else { return }
+        guard let text = plainText, !text.isEmpty else { return }
         #if canImport(AppKit)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)

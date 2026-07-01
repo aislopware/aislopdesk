@@ -27,10 +27,6 @@ struct InspectorColumn: View {
     /// view installs a `selectDetailsTab` closure that writes `details.selected` (and reveals the panel). Both
     /// inspector mounts (macOS split item + iOS detail) share ONE instance, so the active tab is one truth.
     let details: DetailsPanelState
-    /// Opens the Connect-to-Host editor (ES-E2-6). Bound to `overlay.openConnect()` by the shell so the
-    /// macOS Details panel's Status row is a GUI-verifiable connect affordance (the iOS toolbar pill is the
-    /// other entry point). No-op default keeps the column standalone-mountable (previews / tests).
-    var onConnect: () -> Void = {}
     /// Opens the Send-to-Chat dialog pre-loaded with a transcript context (wired to
     /// `overlay.openSendToChat(context:)` by the root view). No-op default keeps the column
     /// standalone-mountable (previews / tests).
@@ -61,7 +57,6 @@ struct InspectorColumn: View {
     }
 
     private var terminalModel: TerminalViewModel? { activeLive?.terminalModel }
-    private var activePingMS: Double? { activeLive?.connection?.latencyMS }
     private var activeAgentStatus: ClaudeStatus { activeLive?.claudeStatus ?? .none }
 
     /// Whether the focused pane is a LIVE agent pane (a non-`.none` Claude status) — the gate for the Info-tab
@@ -245,8 +240,6 @@ struct InspectorColumn: View {
 
     private var infoContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            sessionSection
-            sectionDivider
             workingDirectorySection
             sectionDivider
             ProcessPortsView(model: activeModel)
@@ -386,59 +379,12 @@ struct InspectorColumn: View {
         Rectangle().fill(Slate.Line.divider).frame(height: 1).padding(.horizontal, Slate.Metric.space3)
     }
 
-    private var sessionSection: some View {
-        let status = connection.status
-        return VStack(alignment: .leading, spacing: 8) {
-            SlateSectionHeader("Session")
-            // The Status row is a button: tapping it opens the Connect-to-Host editor (ES-E2-6) — the
-            // GUI-verifiable macOS connect affordance, pre-seeded with the current (possibly failing) host.
-            Button(action: onConnect) {
-                SlateKeyValueRow(label: "Status") {
-                    HStack(spacing: 6) {
-                        SlateStatusDot(
-                            color: StatusPresentation.connectionColor(status),
-                            glowKey: StatusPresentation.connectionLabel(status),
-                        )
-                        Text(StatusPresentation.connectionLabel(status))
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: Slate.Typeface.small))
-                            .foregroundStyle(Slate.Text.tertiary)
-                    }
-                }
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .help("Connect to a host…")
-            .accessibilityLabel("Connection status — tap to connect to a host")
-            SlateKeyValueRow(label: "Host") {
-                Text("\(connection.target.host):\(String(connection.target.port))")
-                    .lineLimit(1).truncationMode(.middle)
-            }
-            if case .connected = status, let activePingMS {
-                SlateKeyValueRow(label: "Ping") {
-                    Text("\(Int(activePingMS.rounded())) ms").monospacedDigit()
-                }
-            }
-            if let symbol = StatusPresentation.agentSymbol(activeAgentStatus) {
-                SlateKeyValueRow(label: "Agent") {
-                    HStack(spacing: 6) {
-                        Image(systemName: symbol).foregroundStyle(StatusPresentation.agentTint(activeAgentStatus))
-                        Text(StatusPresentation.agentLabel(activeAgentStatus))
-                    }
-                }
-            }
-        }
-        .font(.system(size: Slate.Typeface.base))
-        .padding(.horizontal, Slate.Metric.space3)
-        .padding(.vertical, Slate.Metric.space2 + 2)
-    }
-
     @ViewBuilder private var commandsSection: some View {
         if let terminalModel {
             BlockHistoryView(
                 model: terminalModel.blocks,
                 requestOutput: { index, completion in
-                    terminalModel.copyBlockOutput(index: index, onResult: completion)
+                    terminalModel.requestBlockOutputBytes(index: index, onResult: completion)
                 },
             )
         } else {

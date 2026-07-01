@@ -14,6 +14,7 @@
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
+import Foundation
 import SwiftUI
 #if canImport(AppKit)
 import AppKit
@@ -22,10 +23,12 @@ import AppKit
 struct BlockHistoryView: View {
     /// The active pane's pure block store (newest-first `navigatorBlocks`, bookmarks API).
     let model: TerminalBlockModel
-    /// Fires the output-request flow for a block index, calling back with the VT-stripped plain text
+    /// Fires the output-request flow for a block index, calling back with the RAW captured VT bytes
     /// (`nil` when evicted / unavailable / disconnected). Injected from the active pane's
-    /// `TerminalViewModel.copyBlockOutput(index:onResult:)` so this view stays free of the client actor.
-    let requestOutput: (UInt32, @escaping (String?) -> Void) -> Void
+    /// `TerminalViewModel.requestBlockOutputBytes(index:onResult:)` so this view stays free of the client
+    /// actor. The bytes keep their SGR colour runs — `BlockOutputView` renders them coloured; the copy path
+    /// strips them through `BlockOutputSanitizer`.
+    let requestOutput: (UInt32, @escaping (Data?) -> Void) -> Void
 
     @State private var selection: UInt32?
     @State private var failedOnly = false
@@ -33,9 +36,9 @@ struct BlockHistoryView: View {
     /// while the inspector list is focused — otherwise the window-global `.keyboardShortcut` would swallow
     /// ⌘↑/⌘↓ even when a terminal pane is focused (a disabled control does not fire its shortcut).
     @FocusState private var listFocused: Bool
-    /// The fetched plain-text output per block index. A present key = fetch resolved (value may be `nil`
+    /// The fetched RAW output bytes per block index. A present key = fetch resolved (value may be `nil`
     /// for unavailable); an absent key + `fetching` membership = a request is in flight.
-    @State private var outputCache: [UInt32: String?] = [:]
+    @State private var outputCache: [UInt32: Data?] = [:]
     @State private var fetching: Set<UInt32> = []
 
     /// The currently-displayed blocks: newest-first, optionally filtered to failures.
@@ -115,7 +118,7 @@ struct BlockHistoryView: View {
 
     private func detail(for block: CommandBlock) -> some View {
         BlockOutputView(
-            text: cachedText(for: block.index),
+            bytes: cachedBytes(for: block.index),
             isFetching: fetching.contains(block.index),
             outputLen: block.outputLen,
         )
@@ -171,10 +174,10 @@ struct BlockHistoryView: View {
         return blocks.first { $0.index == selection }
     }
 
-    /// The resolved output text for a cached index. The cache value is itself optional (`nil` = fetched
+    /// The resolved output bytes for a cached index. The cache value is itself optional (`nil` = fetched
     /// but unavailable), so a `case let` unwraps the OUTER optional (present = resolved) and yields the
     /// inner value; an absent key (not yet fetched) is `nil`.
-    private func cachedText(for index: UInt32) -> String? {
+    private func cachedBytes(for index: UInt32) -> Data? {
         if case let .some(value) = outputCache[index] { return value }
         return nil
     }
@@ -205,15 +208,16 @@ struct BlockHistoryView: View {
         }
     }
 
-    /// Copies a block's output to the pasteboard, fetching it first if not cached.
+    /// Copies a block's output to the pasteboard as VT-stripped plain text, fetching the raw bytes first if
+    /// not cached (the clipboard always gets clean text — the SGR colour runs are for the on-screen render).
     private func copyOutput(for index: UInt32) {
         if let cached = outputCache[index] {
-            if let text = cached { copyToPasteboard(text) }
+            if let bytes = cached { copyToPasteboard(BlockOutputSanitizer.plainText(from: bytes)) }
             return
         }
         requestOutput(index) { result in
             outputCache[index] = result
-            if let text = result { copyToPasteboard(text) }
+            if let bytes = result { copyToPasteboard(BlockOutputSanitizer.plainText(from: bytes)) }
         }
     }
 
