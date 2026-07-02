@@ -141,6 +141,10 @@ public enum RecipeLibrary {
     /// deterministic file-name order. A missing / unreadable directory yields `[]` (validate-then-drop).
     public static func scan(directory: URL) -> [RecipeFile] {
         let manager = FileManager.default
+        // Slate rename (37d65f2) changed the on-disk extension `.ottyrecipe` → `.aislopdeskrecipe` with no
+        // migration, stranding every pre-rename saved recipe (gone from the Open-Recipe picker). Rename
+        // legacy files in place, one-time + best-effort (NOT a migration framework), so they scan again.
+        renameLegacyExtension(in: directory, from: "ottyrecipe", to: fileExtension, manager: manager)
         guard let entries = try? manager.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles],
         ) else { return [] }
@@ -150,6 +154,20 @@ public enum RecipeLibrary {
         }
         files.sort { $0.url.lastPathComponent < $1.url.lastPathComponent }
         return files
+    }
+
+    /// Renames every `.<oldExt>` file in `directory` to `.<newExt>` (best-effort, one-time) so the Slate
+    /// rename's on-disk extension change doesn't strand pre-rename user files. Never clobbers an existing
+    /// new-extension file (a re-saved recipe wins). A no-op for a directory without legacy files.
+    static func renameLegacyExtension(in directory: URL, from oldExt: String, to newExt: String, manager: FileManager) {
+        guard let entries = try? manager.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles],
+        ) else { return }
+        for url in entries where url.pathExtension.lowercased() == oldExt {
+            let renamed = url.deletingPathExtension().appendingPathExtension(newExt)
+            guard !manager.fileExists(atPath: renamed.path) else { continue }
+            try? manager.moveItem(at: url, to: renamed)
+        }
     }
 
     /// The set of slugs (file basenames) already present in `directory` — feeds ``uniqueSlug(_:existing:)``

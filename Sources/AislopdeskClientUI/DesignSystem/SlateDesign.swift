@@ -31,7 +31,7 @@ import AislopdeskVideoProtocol
 import SwiftUI
 
 /// A full colour theme (every chrome role). Two instances ship: `.paper` (light, default) and `.dark`.
-struct SlateTheme {
+struct SlateTheme: Equatable {
     // Surfaces (back → front)
     let window: Color // titlebar + margin backdrop (the "bg")
     let sidebar: Color // navigator / tabs panel

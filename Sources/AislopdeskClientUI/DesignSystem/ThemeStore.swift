@@ -111,11 +111,13 @@ final class ThemeStore {
         }
     }
 
-    /// Repoint ``active`` and post the cross-boundary repaint notification on a theme IDENTITY change (not just
-    /// `isLight`) — so a SAME-lightness variant switch (e.g. Classic → Spectrum) still re-pins the AppKit
-    /// columns, while an idempotent re-apply of the SAME theme posts nothing.
+    /// Repoint ``active`` and post the cross-boundary repaint notification on any theme CONTENT change (not
+    /// just the `id`) — so a SAME-lightness variant switch (e.g. Classic → Spectrum) re-pins the AppKit
+    /// columns AND an in-place edit of the ACTIVE custom theme (same slug ⇒ same id, changed colours) re-pins
+    /// the NSWindow backdrop / appearance / divider seam (`AislopdeskSplitViewController.pinWindowAppearance`
+    /// is notification-driven). An idempotent re-apply of an identical theme still posts nothing.
     private func setActive(_ resolved: SlateTheme) {
-        let changed = resolved.id != active.id
+        let changed = resolved != active
         active = resolved
         if changed {
             NotificationCenter.default.post(name: Self.didChangeNotification, object: self)

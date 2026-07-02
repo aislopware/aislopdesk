@@ -349,6 +349,12 @@ public final class PreferencesStore {
         Defaults.reset(Self.tabReachableDefaultsKeys)
         Defaults.reset(Self.advancedOnlyDefaultsKeys)
         defaults.removeObject(forKey: SettingsKey.density)
+        // The typed-model `didSet`s above ran `applyTerminal()` BEFORE the `Defaults.reset(...)`, so the last
+        // libghostty config still carried the PRE-reset fire-time Controls (`copy-on-select` / `clipboard-*` /
+        // `mouse-*` / scroll-multiplier / option-as-alt); and if a typed model was already default, no
+        // re-publish happened at all. Rebuild from the now-DEFAULT Controls so the live terminal reflects the
+        // reset immediately (not only after the next settings change / relaunch).
+        refreshTerminalControls()
     }
 
     /// Reset the ADVANCED-ONLY settings — the keys with NO dedicated settings tab (the "Reset Advanced Only"

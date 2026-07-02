@@ -195,6 +195,11 @@ public enum ThemeLibrary {
     /// drops malformed files, and assigns collision-free slugs in a deterministic (file-name) order.
     public static func scan(directory: URL, builtins: [ThemeDocument] = []) -> [ThemeDocument] {
         let manager = FileManager.default
+        // Slate rename (37d65f2) changed the on-disk extension `.ottytheme` → `.aislopdesktheme` with no
+        // migration, so every pre-rename custom theme became unreachable (silent fallback to the default).
+        // Rename legacy files in place, one-time + best-effort (NOT a migration framework), so they scan
+        // again. A directory with no legacy files (tests, fresh installs) is untouched.
+        renameLegacyExtension(in: directory, from: "ottytheme", to: "aislopdesktheme", manager: manager)
         guard let entries = try? manager.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles],
         ) else { return [] }
@@ -253,6 +258,20 @@ public enum ThemeLibrary {
         // DE-COLLISION: two distinct files whose base names slug to the same value get `-1`/`-2` (deterministic,
         // file-name-sorted order), but each slug otherwise passes through the parser's value unchanged.
         return resolveCollisions(resolved)
+    }
+
+    /// Renames every `.<oldExt>` file in `directory` to `.<newExt>` (best-effort, one-time) so the Slate
+    /// rename's on-disk extension change doesn't strand pre-rename user files. Never clobbers an existing
+    /// new-extension file (a re-saved theme wins). A no-op for a directory without legacy files.
+    static func renameLegacyExtension(in directory: URL, from oldExt: String, to newExt: String, manager: FileManager) {
+        guard let entries = try? manager.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles],
+        ) else { return }
+        for url in entries where url.pathExtension.lowercased() == oldExt {
+            let renamed = url.deletingPathExtension().appendingPathExtension(newExt)
+            guard !manager.fileExists(atPath: renamed.path) else { continue }
+            try? manager.moveItem(at: url, to: renamed)
+        }
     }
 
     /// Serialise `document` to `<directory>/<slug>.aislopdesktheme`, creating the directory if needed. Returns the

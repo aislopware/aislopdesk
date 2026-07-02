@@ -176,6 +176,43 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(store.active.terminalBackgroundHex, "282A36", "the custom doc drives the terminal cells")
     }
 
+    /// Editing the ACTIVE custom theme IN PLACE (same slug ⇒ same id, changed colours) must re-post the
+    /// cross-boundary repaint so the NSWindow backdrop / appearance / divider seam re-pin — before the fix
+    /// setActive posted ONLY on an id change, so an in-place edit left the window chrome at the old colours.
+    func testInPlaceCustomThemeEditRePostsOnContentChange() {
+        let store = ThemeStore()
+        store.osIsDark = { false }
+        let palette = Array(repeating: "112233", count: 16)
+        var doc = ThemeDocument(
+            displayName: "Mine", slug: "mine", mode: .dark,
+            foreground: "F8F8F2", background: "282A36", palette: palette,
+        )
+        store.resolveCustomDocument = { slug in slug == "mine" ? doc : nil }
+        let appearance = AppearancePreferences(theme: .paper, customLightSlug: "mine")
+        store.apply(appearance: appearance)
+        XCTAssertEqual(store.active.terminalBackgroundHex, "282A36")
+
+        var posts = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: ThemeStore.didChangeNotification, object: store, queue: nil,
+        ) { _ in posts += 1 }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        // Re-apply the SAME slug with UNCHANGED content → no post (idempotent).
+        store.apply(appearance: appearance)
+        XCTAssertEqual(posts, 0, "an idempotent re-apply of the same custom theme posts nothing")
+
+        // Edit the background in place (same slug ⇒ same id "custom-mine") → must post so the chrome re-pins.
+        doc = ThemeDocument(
+            displayName: "Mine", slug: "mine", mode: .dark,
+            foreground: "F8F8F2", background: "101010", palette: palette,
+        )
+        store.apply(appearance: appearance)
+        XCTAssertEqual(store.active.terminalBackgroundHex, "101010", "the edited background resolved")
+        XCTAssertEqual(store.active.id, "custom-mine", "the id is unchanged (same slug)")
+        XCTAssertEqual(posts, 1, "the in-place edit re-posts the cross-boundary repaint")
+    }
+
     /// CROSS-MODULE PIN: every concrete ``ThemeChoice``'s `builtinID` (in the leaf) round-trips to a built-in
     /// ``SlateTheme`` whose `id` matches (in ClientUI). Catches a drift between the leaf's id strings
     /// (``ThemeResolution`` / ``ThemeChoice/builtinID``) and the SwiftUI `SlateTheme.id` halves.

@@ -148,6 +148,35 @@ final class ThemeLibraryTests: XCTestCase {
         XCTAssertEqual(scanned.first, original)
     }
 
+    func testScanRenamesAndReadsLegacyOttythemeFiles() throws {
+        // Slate rename (37d65f2): a pre-rename custom theme was written as `.ottytheme`. Scan must rename it
+        // in place to `.aislopdesktheme` and return it — else the theme silently vanishes from the picker.
+        let legacyURL = tempDir.appendingPathComponent("my-theme.ottytheme", isDirectory: false)
+        let text = ThemeLibrary.serialize(Self.minimalDocument(name: "my-theme"))
+        try text.write(to: legacyURL, atomically: true, encoding: .utf8)
+
+        let scanned = ThemeLibrary.scan(directory: tempDir)
+        XCTAssertEqual(scanned.map(\.slug), ["my-theme"], "the legacy .ottytheme file is scanned again")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: legacyURL.path),
+            "the legacy file was renamed in place (not left as a dead duplicate)",
+        )
+        let newURL = tempDir.appendingPathComponent("my-theme.aislopdesktheme")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: newURL.path), "it now carries the new extension")
+    }
+
+    func testScanDoesNotClobberAnExistingNewExtensionFile() throws {
+        // If both the legacy and the re-saved file exist, the new-extension file wins (no clobber).
+        try writeFile("my-theme", ThemeLibrary.serialize(Self.minimalDocument(name: "kept")))
+        let legacyURL = tempDir.appendingPathComponent("my-theme.ottytheme", isDirectory: false)
+        let stale = ThemeLibrary.serialize(Self.minimalDocument(name: "stale"))
+        try stale.write(to: legacyURL, atomically: true, encoding: .utf8)
+
+        let scanned = ThemeLibrary.scan(directory: tempDir)
+        XCTAssertEqual(scanned.map(\.slug), ["my-theme"], "one theme (the new-extension file), legacy not clobbered")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacyURL.path), "the legacy file is left intact")
+    }
+
     func testScanMissingDirectoryReturnsEmpty() {
         let missing = tempDir.appendingPathComponent("does-not-exist", isDirectory: true)
         XCTAssertTrue(ThemeLibrary.scan(directory: missing).isEmpty)

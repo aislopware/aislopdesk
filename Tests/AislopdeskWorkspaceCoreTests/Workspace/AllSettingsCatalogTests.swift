@@ -289,6 +289,34 @@ final class AllSettingsCatalogTests: XCTestCase {
         )
     }
 
+    /// "Reset All Settings" must propagate the reset Controls to the LIVE terminal immediately — not only
+    /// after the next settings change / relaunch. Copy-on-Select ON (`copy-on-select = clipboard`) must flip
+    /// to the default (`false`) in the re-published libghostty config, and the broadcaster must re-publish.
+    /// Revert-to-confirm-fail: without the trailing `refreshTerminalControls()`, the typed-model `didSet`s ran
+    /// `applyTerminal()` BEFORE `Defaults.reset(...)` (so the config still carried the OLD Controls) and, with
+    /// default typed models, no re-publish fired at all — so both assertions below fail.
+    func testResetAllRepublishesTerminalControlsToLiveTerminal() {
+        let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil, applyOnInit: false)
+        Defaults[.copyOnSelect] = true // ON → libghostty `copy-on-select = clipboard`
+        store.refreshTerminalControls()
+        XCTAssertTrue(
+            TerminalConfigBroadcaster.shared.configString.contains("copy-on-select = clipboard"),
+            "precondition: the live config reflects Copy-on-Select ON",
+        )
+        let genBefore = TerminalConfigBroadcaster.shared.generation
+
+        store.resetAll()
+
+        XCTAssertGreaterThan(
+            TerminalConfigBroadcaster.shared.generation, genBefore,
+            "resetAll re-publishes the terminal config",
+        )
+        XCTAssertTrue(
+            TerminalConfigBroadcaster.shared.configString.contains("copy-on-select = false"),
+            "the live terminal reflects the reset (default-OFF) Copy-on-Select immediately",
+        )
+    }
+
     /// "Reset Advanced Only" now clears the genuinely advanced-only privilege/IPC/auto-progress keys it sits
     /// beside in the Advanced panel — `title*`, the OSC-52 master (`clipboardShellControlled`) + read/write
     /// tri-state, the IPC guards, and the auto-progress list — while STILL leaving every tab-reachable choice
