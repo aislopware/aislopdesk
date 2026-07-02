@@ -248,6 +248,93 @@ final class AislopdeskClientDetachResumeTests: XCTestCase {
         await client2.close()
     }
 
+    // MARK: - SessionResumeOutcome (fresh-shell vs reattach, derived from the first output seq)
+
+    /// PATH-A reattach: the client presented `lastReceivedSeq = N > 0` and the first delivered
+    /// output continues the retained seq stream (`seq > N`) → `.resumedSession`. This is the
+    /// signal `TerminalViewModel.observe` uses to SKIP the fresh-session surface wipe on a warm
+    /// reconnect (the host never re-sends the surviving screen, so wiping would lose it).
+    func testFirstOutputContinuingSeqStreamResolvesResumedSession() async throws {
+        let recording = RecordingTransport(resumeFromSeq: 0, returningClient: true)
+        let client = AislopdeskClient(makeTransport: { recording })
+
+        await client.seedResumeIdentity(sessionID: UUID(), seq: 5)
+        try await client.connect(host: "h", port: 1)
+        let beforeOutput = await client.sessionResumeOutcome
+        XCTAssertEqual(beforeOutput, .undetermined, "no output yet → the verdict is open")
+
+        // The host reattached the SAME shell: its live drain continues at seq 6 (> presented 5).
+        await client.handleInboundForTesting(.output(seq: 6, bytes: Data("prompt".utf8)))
+        let outcome = await client.sessionResumeOutcome
+        XCTAssertEqual(
+            outcome, .resumedSession,
+            "seq continuing past the presented lastReceivedSeq means the SAME shell resumed (PATH A)",
+        )
+
+        await client.close()
+    }
+
+    /// PATH-B/C fresh shell: the client presented `lastReceivedSeq = N > 0` but the first output
+    /// restarted at seq 1 (a new ReplayBuffer) → `.freshShell` (the wipe MUST fire).
+    func testFirstOutputRestartingSeqStreamResolvesFreshShell() async throws {
+        let recording = RecordingTransport(resumeFromSeq: 0, returningClient: true)
+        let client = AislopdeskClient(makeTransport: { recording })
+
+        await client.seedResumeIdentity(sessionID: UUID(), seq: 5)
+        try await client.connect(host: "h", port: 1)
+
+        // The host spawned a FRESH shell: its ReplayBuffer restarts the stream at seq 1.
+        await client.handleInboundForTesting(.output(seq: 1, bytes: Data("$ ".utf8)))
+        let outcome = await client.sessionResumeOutcome
+        XCTAssertEqual(
+            outcome, .freshShell,
+            "a seq restart at/below the presented lastReceivedSeq means a fresh shell (PATH B/C)",
+        )
+
+        await client.close()
+    }
+
+    /// First-ever connect (`lastReceivedSeq == 0` — nothing to resume): always `.freshShell`.
+    func testFirstConnectWithNothingToResumeResolvesFreshShell() async throws {
+        let recording = RecordingTransport(resumeFromSeq: 0, returningClient: false)
+        let client = AislopdeskClient(makeTransport: { recording })
+
+        try await client.connect(host: "h", port: 1)
+        await client.handleInboundForTesting(.output(seq: 1, bytes: Data("$ ".utf8)))
+        let outcome = await client.sessionResumeOutcome
+        XCTAssertEqual(outcome, .freshShell, "with nothing presented to resume, any output is a fresh shell")
+
+        await client.close()
+    }
+
+    /// A drop invalidates the verdict: the resolved outcome is re-armed to `.undetermined` when
+    /// the inbound stream ends, so a stale `.resumedSession` from the dead link can never gate
+    /// the NEXT session's wipe decision.
+    func testStreamEndResetsResumeOutcome() async throws {
+        let recording = RecordingTransport(resumeFromSeq: 0, returningClient: true)
+        let client = AislopdeskClient(makeTransport: { recording })
+
+        await client.seedResumeIdentity(sessionID: UUID(), seq: 5)
+        try await client.connect(host: "h", port: 1)
+        await client.handleInboundForTesting(.output(seq: 6, bytes: Data("x".utf8)))
+        let resolved = await client.sessionResumeOutcome
+        XCTAssertEqual(resolved, .resumedSession, "precondition: verdict resolved on the live link")
+
+        await client.forceDropForTesting() // the transport's inbound stream ends (link drop)
+        // The pump's stream-end handling is async — poll briefly for the reset.
+        var afterDrop = await client.sessionResumeOutcome
+        for _ in 0..<200 where afterDrop != .undetermined {
+            await Task.yield()
+            afterDrop = await client.sessionResumeOutcome
+        }
+        XCTAssertEqual(
+            afterDrop, .undetermined,
+            "a stream end must re-arm the verdict — a dead link's outcome is stale for the next session",
+        )
+
+        await client.close()
+    }
+
     // MARK: - Helpers
 
     /// A minimal `ClientTransporting` stub that records the `connect()` call args and returns

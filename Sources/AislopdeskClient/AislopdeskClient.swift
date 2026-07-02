@@ -129,6 +129,28 @@ public actor AislopdeskClient {
         case reconnected(sessionID: UUID, resumeFromSeq: Int64)
     }
 
+    /// What the CURRENT connection turned out to be, derived from the first `output` seq it
+    /// delivers — the only reliable fresh-shell-vs-reattach signal on the mux path, where the
+    /// `channelOpenAck` carries no host-authoritative `resumeFromSeq` (the transport hardcodes 0).
+    ///
+    /// The host's per-channel seq stream is monotonic across a PATH-A reattach (the ReplayBuffer
+    /// survives with the shell, and `replay(after: lastReceivedSeq)` only ever emits
+    /// `seq > lastReceivedSeq`), while a PATH-B/C FRESH shell mints a new ReplayBuffer whose first
+    /// output is seq 1. So, having presented `lastReceivedSeq = N` in the channelOpen preamble:
+    /// first delivered `seq > N` (with `N > 0`) ⇒ the SAME shell resumed; first delivered
+    /// `seq <= N` (or `N == 0` — nothing to resume) ⇒ a fresh shell. Consumed by
+    /// `TerminalViewModel.observe` to gate the one-shot fresh-session surface wipe: a warm
+    /// reattach must NOT wipe the surviving screen/scrollback the host never re-sends.
+    public enum SessionResumeOutcome: Sendable, Equatable {
+        /// No output delivered on the current connection yet (or the link is down).
+        case undetermined
+        /// The seq stream restarted — the host spawned a FRESH shell (PATH B/C).
+        case freshShell
+        /// The seq stream continued past the presented `lastReceivedSeq` — the host
+        /// reattached the SAME live shell (PATH A) and resumes byte-exact.
+        case resumedSession
+    }
+
     /// How often the coalesced ack ticker may flush a pending ack. Correctness does not
     /// depend on this value (we never ack an undelivered seq); it only bounds how stale
     /// the host's view of our progress can get.
@@ -214,6 +236,18 @@ public actor AislopdeskClient {
     /// bound — any inbound `output` with `seq <= highestSeqFed` is a replay duplicate and
     /// is dropped.
     private var highestSeqFed: Int64 = 0
+
+    /// Fresh-shell-vs-reattach verdict for the CURRENT connection (see ``SessionResumeOutcome``).
+    /// Re-armed to `.undetermined` on every adopted `connect(...)` and on a stream end (so a
+    /// stale verdict from a dead link can never gate the NEXT session's wipe), then resolved by
+    /// ``deliverOutput(seq:bytes:wireBytes:)`` from the first `output` seq it sees.
+    public private(set) var sessionResumeOutcome: SessionResumeOutcome = .undetermined
+
+    /// The `lastReceivedSeq` this client presented in the most recently ADOPTED connect's
+    /// channelOpen preamble — the reference point ``sessionResumeOutcome`` is resolved against.
+    /// (Captured separately because `connect` resets ``highestContiguousSeq`` right after
+    /// presenting it — the mux transport reports no host-authoritative resume seq.)
+    private var presentedResumeSeq: Int64 = 0
 
     // MARK: Internals
 
@@ -435,6 +469,12 @@ public actor AislopdeskClient {
             return
         }
 
+        // Arm the resume-outcome probe for THIS adopted connection, strictly BEFORE the pump can
+        // deliver its first output: `deliverOutput` resolves ``sessionResumeOutcome`` against the
+        // `lastReceivedSeq` we presented (captured pre-handshake — the marks above were reset since).
+        presentedResumeSeq = lastSeq
+        sessionResumeOutcome = .undetermined
+
         startInboundPump(transport)
         startAckTicker()
         startPingTicker()
@@ -557,6 +597,16 @@ public actor AislopdeskClient {
     /// guarantees ascending in-order delivery (replay tail then live, `docs/20` §8.3), so
     /// in practice every accepted output advances the counter by exactly one.
     private func deliverOutput(seq: Int64, bytes: Data, wireBytes: Int) async {
+        // First output on the CURRENT connection resolves the fresh-shell-vs-reattach verdict
+        // (see ``SessionResumeOutcome``): a PATH-A reattach continues the retained seq stream
+        // strictly past the presented `lastReceivedSeq`; a fresh shell restarts at seq 1. The
+        // verdict is re-armed to `.undetermined` only by an adopted connect (before its pump
+        // starts) or a stream end (after its pump's last delivery), so an OLD connection's late
+        // delivery can never resolve the NEW connection's probe — the resolve is per-connection.
+        if sessionResumeOutcome == .undetermined {
+            sessionResumeOutcome =
+                (presentedResumeSeq > 0 && seq > presentedResumeSeq) ? .resumedSession : .freshShell
+        }
         guard seq > highestSeqFed else {
             // Duplicate (replayed) — drop, but still CREDIT it: the bytes crossed the wire
             // and were fully processed (by discarding); withholding the credit would leak
@@ -585,6 +635,11 @@ public actor AislopdeskClient {
     }
 
     private func handleStreamEnded(error: Error?) {
+        // The link is gone: the dead connection's resume verdict must not survive it — a stale
+        // `.resumedSession` read between the drop and the next connect would let the UI skip the
+        // fresh-session wipe the NEXT session may need. Reset unconditionally (before the guards:
+        // a deliberate close / self-inflicted teardown end invalidates the verdict just the same).
+        sessionResumeOutcome = .undetermined
         // Surface a disconnect (unless we are closing on purpose, or we ourselves are
         // tearing the old transport down to reconnect — in which case this end is
         // self-inflicted and a real `.disconnected` would queue a redundant reconnect).

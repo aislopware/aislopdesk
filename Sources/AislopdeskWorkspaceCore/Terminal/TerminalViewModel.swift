@@ -331,6 +331,27 @@ public final class TerminalViewModel {
         (surface as? TerminalSurfaceActions)?.performBindingAction(action) ?? false
     }
 
+    /// The live grid COLUMN count, used to map an unwrapped LOGICAL scrollback line index (into
+    /// ``searchScrollbackLines()``) to the PHYSICAL grid row `scroll_to_row:` addresses (soft-wrap
+    /// continuations count). `0` on a headless / preview surface (no conformer / grid not yet laid out) →
+    /// the caller (``ScrollbackWrapMapper``) then treats the mapping as the identity.
+    public func searchGridColumns() -> Int {
+        (surface as? TerminalSurfaceActions)?.scrollbackGridColumns() ?? 0
+    }
+
+    /// E5 (find bar close → return keyboard focus to the surface): the renderer wires this in `attach(model:)`
+    /// so the pane's ghostty NSView re-claims the window's first responder. Needed because closing the find bar
+    /// tears down the focused query `TextField` WITHOUT any workspace-focus change — the surface's own reclaim
+    /// paths (the `isFocusedPane` didSet, mount, mouseDown, focus-follows-mouse) are all gated on a focus
+    /// TRANSITION or a click, none of which fire here, so the window would otherwise stay first responder and
+    /// keystrokes go nowhere until the pane is clicked. `nil` for headless / preview callers (no renderer) →
+    /// ``reclaimKeyboardFocus()`` is a no-op. `@ObservationIgnored`: wiring, not view state.
+    @ObservationIgnored public var onReclaimKeyboardFocus: (() -> Void)?
+
+    /// Ask the live surface to re-claim the keyboard first responder (the find bar just closed without a
+    /// workspace-focus change). No-op on a headless / preview model (``onReclaimKeyboardFocus`` unset).
+    public func reclaimKeyboardFocus() { onReclaimKeyboardFocus?() }
+
     /// E13 WI-5 (Send to Chat): the active mouse-made libghostty selection text, or `nil` when there is no
     /// selection (or it is empty). Reads libghostty truth ONLY through the same ``TerminalSurfaceActions``
     /// seam copy-mode uses (``copyCurrentSelectionOrScrollback``) — never a client-guessed range, never a
@@ -946,6 +967,23 @@ public final class TerminalViewModel {
     /// tap-on-label / long-press in WI-9, not ⌘-hold).
     public var linkHighlightActive = false
 
+    /// A monotonic tick bumped whenever the LOCAL viewport scrolls (mouse-wheel / trackpad scrollback
+    /// navigation) WITHOUT any new wire bytes — the reactive signal the ``LinkHighlightOverlay`` observes so
+    /// its ⌘-hold underlines RE-DETECT against the post-scroll `viewportTextRows()` instead of clinging to
+    /// the pre-scroll rows at fixed screen positions. libghostty owns the viewport internally, so a local
+    /// scrollback scroll bumps no ``bytesReceived`` (the only other viewport-change signal); the renderer's
+    /// `scrollWheel` / pan handler calls ``noteViewportScrolled()`` after forwarding the delta to fire this.
+    /// OBSERVABLE (a normal `@Observable` stored property) so the overlay body re-evaluates; the value's
+    /// MAGNITUDE is never read (it is a pure change-signal), so a wrap is harmless. Always inert on a pane
+    /// with no ⌘-hold underline active.
+    public private(set) var viewportRevision: Int = 0
+
+    /// Bumps ``viewportRevision`` — called by the renderer AFTER forwarding a LOCAL scroll to libghostty so
+    /// the ⌘-hold link overlay re-detects against the moved viewport. `&+` wrap: a pure change-signal whose
+    /// value is never read for magnitude. WRITTEN from the renderer's event handler (NOT from inside an
+    /// `updateNSView` / AttributeGraph pass), so there is no infinite-render hazard.
+    public func noteViewportScrolled() { viewportRevision &+= 1 }
+
     /// The resolved absolute path (or raw text, when it cannot be resolved purely — a `~`-path, a bare URL)
     /// of the detected link the pointer is ⌘-hovering (ES-E10-4), or `nil` when not hovering one. Set by the
     /// macOS renderer's `mouseMoved`/`flagsChanged` hit-test; cleared on ⌘ release / pointer-exit / a move off
@@ -1146,16 +1184,28 @@ public final class TerminalViewModel {
     /// Set when a reconnect campaign begins (``markReconnecting``); consumed by the NEXT
     /// ``ingestOutput`` to wipe the dead session's screen before the fresh shell paints.
     ///
-    /// The mux transport has NO server-side resume — a real drop kills the host shell and the
-    /// reconnect spawns a BRAND-NEW one whose output restarts at seq 1 (see `AislopdeskClient.connect`).
-    /// Without this, the fresh shell's prompt is fed on top of the previous session's still-resident
-    /// framebuffer + scrollback (the "old screen with a new prompt grafted on" artifact). We cannot
-    /// key the wipe off `connectionStatus` because the `.reconnected` EVENT (a separate stream) flips
-    /// it to `.connected` and could race the first output; a flag set on the reconnect boundary and
-    /// consumed in the OUTPUT path is order-deterministic (both run on the main actor, and the wipe
-    /// happens inline immediately before the first fresh chunk is fed). `@ObservationIgnored`: control
-    /// flag, not view state.
+    /// A reconnect can land on EITHER a fresh host shell (PATH B/C — output restarts at seq 1;
+    /// the wipe must fire or the new prompt grafts onto the dead session's still-resident
+    /// framebuffer + scrollback) OR a PATH-A reattach of the SAME live shell
+    /// (`AISLOPDESK_DETACH_ENABLED`, default-ON — the host replays only the un-acked tail and
+    /// never re-sends the surviving screen, so the wipe must NOT fire). Which one it was is only
+    /// knowable from the first post-reconnect output seq (``AislopdeskClient/SessionResumeOutcome``),
+    /// so the boundary ARMS this flag pessimistically and the output pump (``observe(client:)``)
+    /// resolves it against the client's verdict strictly BEFORE the first post-reconnect batch is
+    /// ingested — see ``awaitingResumeOutcome``. We cannot key the wipe off `connectionStatus`
+    /// because the `.reconnected` EVENT (a separate stream) flips it to `.connected` and could
+    /// race the first output; a flag consumed in the OUTPUT path is order-deterministic (both run
+    /// on the main actor, and the wipe happens inline immediately before the first fresh chunk is
+    /// fed). `@ObservationIgnored`: control flag, not view state.
     @ObservationIgnored private var pendingFreshSessionReset = false
+
+    /// Armed alongside ``pendingFreshSessionReset`` at a session boundary; tells the output pump
+    /// that the fresh-session wipe still needs its fresh-vs-resumed verdict. The pump resolves it
+    /// from ``AislopdeskClient/sessionResumeOutcome`` at the first non-empty, current-epoch batch:
+    /// `.resumedSession` DISARMS the wipe (warm PATH-A reattach — the screen survives and must not
+    /// be erased), `.freshShell` leaves it armed for the ingest pass to consume, `.undetermined`
+    /// (pre-reconnect leftovers) defers to a later batch. `@ObservationIgnored`: control flag.
+    @ObservationIgnored private var awaitingResumeOutcome = false
 
     public init(surface: (any TerminalSurface)? = nil) {
         self.surface = surface
@@ -1294,6 +1344,13 @@ public final class TerminalViewModel {
     /// enqueued while the shell already sits at its prompt fires immediately — `LivePaneSession` injects it
     /// into ``ComposerModel/isIdleNow``.
     public var isAtShellPrompt: Bool { modeTracker.mode == .shellPrompt }
+
+    /// TRUE while the foreground program has bracketed-paste mode (DECSET `?2004h`) enabled — the real
+    /// parse from the host output stream (the same bracketed state libghostty's surface derives). The E8
+    /// paste-protection pre-check reads this as `programAdvertisedBracketed`: with the "Paste Bracketed
+    /// Safe" setting on, a program that frames the paste as an inert bracketed block does not trip the
+    /// sheet, matching libghostty's own `clipboard-paste-bracketed-safe` gate that the embedder preempts.
+    public var isBracketedPasteActive: Bool { modeTracker.bracketedPasteActive }
 
     private var glitchCaretArmed: Bool {
         guard connectionStatus == .connected, modeTracker.mode == .shellPrompt else { return false }
@@ -1482,6 +1539,7 @@ public final class TerminalViewModel {
             // sub-µs `takeOutputBatch` actor hop, which cannot happen.)
             let epoch = sessionEpoch
             let batch = await client.takeOutputBatch()
+            await resolveResumeOutcomeIfNeeded(client: client, epoch: epoch, batchIsEmpty: batch.isEmpty)
             await ingestBatch(batch, epoch: epoch)
         }
         // FINAL DRAIN: a tail appended just before the wake stream finished (exit/close)
@@ -1492,7 +1550,35 @@ public final class TerminalViewModel {
         guard !Task.isCancelled else { return }
         let tailEpoch = sessionEpoch
         let tail = await client.takeOutputBatch()
+        await resolveResumeOutcomeIfNeeded(client: client, epoch: tailEpoch, batchIsEmpty: tail.isEmpty)
         await ingestBatch(tail, epoch: tailEpoch)
+    }
+
+    /// Resolves the armed fresh-session wipe against the client's fresh-vs-resumed verdict
+    /// (``AislopdeskClient/SessionResumeOutcome``), strictly BEFORE the batch in hand is ingested —
+    /// the wipe decision rides the OUTPUT path so it can never race the first post-reconnect paint.
+    ///
+    /// Only a non-empty batch tagged with the CURRENT epoch may resolve (a dead session's in-hand
+    /// batch is dropped by `ingestBatch` and must not decide the new session's wipe), and the epoch
+    /// is re-checked after the cross-actor read (a newer boundary can interleave at the await).
+    /// `.undetermined` — output delivered by the OLD link before the drop — defers resolution to a
+    /// later (post-reconnect) batch. `.freshShell` keeps the wipe armed (the ingest pass consumes
+    /// it exactly as before); `.resumedSession` disarms it — a PATH-A reattach resumes the SAME
+    /// shell byte-exactly and the host never re-sends the surviving screen, so wiping would erase
+    /// it permanently (the "every network blip clears the terminal" bug).
+    private func resolveResumeOutcomeIfNeeded(client: AislopdeskClient, epoch: Int, batchIsEmpty: Bool) async {
+        guard awaitingResumeOutcome, !batchIsEmpty, epoch == sessionEpoch else { return }
+        let outcome = await client.sessionResumeOutcome
+        guard epoch == sessionEpoch else { return } // a newer session boundary interleaved at the hop
+        switch outcome {
+        case .resumedSession:
+            awaitingResumeOutcome = false
+            pendingFreshSessionReset = false
+        case .freshShell:
+            awaitingResumeOutcome = false // leave the armed wipe for the ingest pass to consume
+        case .undetermined:
+            break // pre-reconnect leftovers — the verdict arrives with a later batch
+        }
     }
 
     /// Monotonic SESSION boundary counter, bumped by ``markReconnecting()`` and
@@ -1874,9 +1960,14 @@ public final class TerminalViewModel {
         // (the C→D pair would straddle the disconnect); clear to idle so the indicator does
         // not get stuck "running" across a reconnect.
         shellActivity = .idle
-        // The reconnect will bring a FRESH host shell (no mux resume) — arm the one-shot wipe so the
-        // next output clears the dead session's screen/scrollback before painting the new prompt.
+        // The reconnect may bring a FRESH host shell (PATH B/C — the wipe must clear the dead
+        // session's screen/scrollback before the new prompt paints) or REATTACH the same live
+        // shell (PATH A, detach default-ON — the wipe must NOT erase the surviving screen). Arm
+        // the one-shot wipe pessimistically and let the output pump resolve it against the
+        // client's ``AislopdeskClient/SessionResumeOutcome`` before the first post-reconnect
+        // batch is ingested (see ``resolveResumeOutcomeIfNeeded(client:epoch:batchIsEmpty:)``).
         pendingFreshSessionReset = true
+        awaitingResumeOutcome = true
         sessionEpoch += 1 // in-hand batches taken from the dead session stop painting
         // The fresh shell will re-segment its own blocks from index 0 — drop the dead session's blocks (and
         // resolve any in-flight copy-output request as unavailable) so the navigator/header don't show stale
@@ -1921,8 +2012,11 @@ public final class TerminalViewModel {
         // reconnect (⇧⌘R / the recovery banner's Retry) of an exited/failed pane keeps the dead session's
         // framebuffer on screen — the new shell's prompt would graft onto the old screen. Arming the wipe
         // makes the first fresh output RIS-clear the surface first. Harmless on a first-ever connect (the
-        // surface is already empty), and the deliberate path now matches the transient-reconnect path.
+        // surface is already empty), and the deliberate path now matches the transient-reconnect path —
+        // including the resume-outcome resolution (a deliberate retry that lands on a PATH-A reattach
+        // must not wipe the surviving screen either).
         pendingFreshSessionReset = true
+        awaitingResumeOutcome = true
         sessionEpoch += 1
         clearGlitchCaret()
         endAwaitingReflow() // a fresh session has nothing pending to reflow

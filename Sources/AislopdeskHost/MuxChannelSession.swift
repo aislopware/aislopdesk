@@ -34,9 +34,10 @@ import Foundation
 /// instead of ``shutdown()``. It cancels the relay tasks and engages the ReplayBuffer's offline
 /// gate so the PTY drain pauses, but it does NOT stop or close the ``PTYReadLoop`` — `stop()` is
 /// irreversible. The shell (and the read loop, in its paused state) survive. When the client
-/// returns, ``rebindRelay(data:control:)`` replaces the stale sub-channels, clears the stale
-/// out-FIFO/control-out (bytes already in the ReplayBuffer — re-sending would double-replay),
-/// rebuilds the wake streams, and restarts the relay tasks.
+/// returns, ``rebindRelay(data:control:)`` replaces the stale sub-channels, KEEPS the out-FIFO
+/// (its chunks were never sequenced into the ReplayBuffer — they are the detached-window output
+/// the restarted drain must ship), clears the stateless control-out, rebuilds the wake streams,
+/// and restarts the relay tasks.
 ///
 /// `@unchecked Sendable`: mutable state is touched under `taskLock` / `replayLock` / the
 /// ``PausableQueueGate``'s own lock; the PTY/channels are themselves thread-safe.
@@ -72,6 +73,12 @@ final class MuxChannelSession: @unchecked Sendable {
     /// The interval between foreground-process samples (~1 Hz; injected so a future test could
     /// drive it, though the poll itself is never run in a unit test — hang-safety).
     private let agentPollInterval: Duration
+
+    /// LIVE probe of the host's agent-hook listener bind state (queue-safety cluster, 2026-07-02),
+    /// injected by ``HostServer`` (`{ agentHookListener?.isListening ?? false }`). Read per
+    /// `agentHookStatus` (verb 13) request so the reply reports whether hooks are ACTUALLY flowing,
+    /// not just installed on disk. Defaults `false` (no listener wired — the honest answer).
+    private let agentHookListenerActive: @Sendable () -> Bool
 
     /// WB1 — whether the additive "Blocks" tap runs for this channel. When false the byte pipeline
     /// + the live ``HostOutputSniffer`` are byte-identical (the segmenter is never instantiated, no
@@ -321,6 +328,7 @@ final class MuxChannelSession: @unchecked Sendable {
         shimDir: URL? = nil,
         agentDetectEnabled: Bool = false,
         agentPollInterval: Duration = .seconds(1),
+        agentHookListenerActive: @escaping @Sendable () -> Bool = { false },
         blocksEnabled: Bool = true,
     ) {
         self.channelID = channelID
@@ -333,6 +341,7 @@ final class MuxChannelSession: @unchecked Sendable {
         self.shimDir = shimDir
         self.agentDetectEnabled = agentDetectEnabled
         self.agentPollInterval = agentPollInterval
+        self.agentHookListenerActive = agentHookListenerActive
         self.blocksEnabled = blocksEnabled
         // WB1: instantiate the per-channel Blocks tracker only when enabled — otherwise the byte
         // pipeline + sniffer stay byte-identical (no segmenter touches the stream, no emit). E14/K2:
@@ -717,11 +726,13 @@ final class MuxChannelSession: @unchecked Sendable {
 
     /// Rebinds the relay to a fresh pair of sub-channels from a returning client.
     ///
-    /// **C3 — clears the stale out-FIFO and control-out** before restarting the relay.
-    /// Those queues still hold bytes that are also in the ReplayBuffer. Re-sending them would
-    /// double-replay: the replayTail pump below ships the ReplayBuffer tail to the client, so
-    /// anything already in the FIFO is already covered. Clearing prevents the drain picking
-    /// them up again after restart.
+    /// **C3 (revised) — keeps the out-FIFO, clears only control-out.** FIFO chunks are never in
+    /// the ReplayBuffer (seq assignment happens at drain time, AFTER the pop), so the FIFO holds
+    /// exactly the output produced WHILE DETACHED — the restarted drain ships it after the
+    /// caller's `replayTail` (fresh seqs above every replayed seq → byte order preserved) and
+    /// dequeues its ``PausableQueueGate`` accounting as it sends, un-pausing a read loop the
+    /// detached backlog parked. Control-out IS cleared: control is stateless/re-derived (the
+    /// echo truth and block metadata are re-asserted below).
     ///
     /// **onExit atomicity**: `onExit` is assigned INSIDE `taskLock`, BEFORE the new `exitTask`
     /// is started, so the handler installed by `detach()` (which routes to `shutdownDetached`)
@@ -759,11 +770,17 @@ final class MuxChannelSession: @unchecked Sendable {
         // assignment could fire the stale detached-exit handler and kill the just-reattached PTY.
         onExit = newOnExit
 
-        // C3: clear the stale queues — bytes already in ReplayBuffer; the replayTail pump
-        // ships them; don't send them again from these queues.
-        fifoLock.lock()
-        outFIFO.removeAll()
-        fifoLock.unlock()
+        // C3 (revised): the out-FIFO is KEPT, not cleared. Seq assignment / ReplayBuffer retention
+        // happens at DRAIN time (`takeMergedFrame` POPS a frame BEFORE `nextSeq` appends it), so no
+        // FIFO byte is ever in the ReplayBuffer — the FIFO holds exactly the DETACHED-WINDOW output
+        // the read loop kept producing after detach() cancelled the drain. `replayTail` cannot replay
+        // those bytes; clearing them here dropped them permanently (a silent transcript gap) AND
+        // leaked their PausableQueueGate accounting (no matching dequeue → a ≥64 KiB detached burst
+        // left the read loop paused FOREVER — a permanently frozen pane). The restarted drain below
+        // ships them with fresh seqs (> every replayed seq, so byte order is preserved: replay tail
+        // first, then the detached-window bytes) and dequeues their gate accounting as it sends,
+        // which is what rebalances a gate-paused read loop. Only `controlOut` is cleared — control
+        // is stateless/re-derived (echo truth + block metadata are re-asserted right below).
         controlOutLock.lock()
         controlOut.removeAll(keepingCapacity: false)
         controlOutLock.unlock()
@@ -791,6 +808,17 @@ final class MuxChannelSession: @unchecked Sendable {
                 }
             }
         }
+
+        // Kick the restarted drain ONCE if detached-window chunks are already waiting: their
+        // producer-side wakes landed on the FINISHED old continuation (detach() nil'd it), and a
+        // shell that has gone idle since produces no future chunk to re-wake the drain — without
+        // this the retained backlog (and its gate accounting) would sit undelivered until the next
+        // PTY read. bufferingNewest(1) holds the yield until the drain task starts its for-await.
+        fifoLock.lock()
+        let hasDetachedBacklog = !outFIFO.isEmpty
+        let backlogWake = outputWakeContinuation
+        fifoLock.unlock()
+        if hasDetachedBacklog { backlogWake?.yield(()) }
 
         // Rebuild the control wake stream and restart the control sender.
         let (controlWakeups, controlWake) =
@@ -1433,10 +1461,15 @@ final class MuxChannelSession: @unchecked Sendable {
             }
             // E13 WI-1: the agent-hooks verbs (installAgentHooks = 11 / uninstallAgentHooks = 12 write or
             // strip our entries in ~/.claude/settings.json via `AgentInstaller`; agentHookStatus = 13 is a
-            // pure read of the install marker returning a 1-byte flag). Handled HERE — BEFORE, and never
-            // reaching, the read-only `MetadataResponseBuilder`. `response` returns nil for every OTHER
-            // verb, so the read verbs fall through to the pure builder unchanged.
-            if let response = HostAgentActionPerformer.response(requestID: requestID, verb: verb, payload: payload) {
+            // pure read returning the 2-byte `[installed][listenerActive]` flags — the second byte is the
+            // LIVE hook-listener bind state so the client can show installed-but-inactive, queue-safety
+            // cluster 2026-07-02). Handled HERE — BEFORE, and never reaching, the read-only
+            // `MetadataResponseBuilder`. `response` returns nil for every OTHER verb, so the read verbs
+            // fall through to the pure builder unchanged.
+            if let response = HostAgentActionPerformer.response(
+                requestID: requestID, verb: verb, payload: payload,
+                hookListenerActive: agentHookListenerActive(),
+            ) {
                 enqueueControl([response])
                 return
             }
