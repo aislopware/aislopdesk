@@ -25,7 +25,7 @@ final class MuxBugFixRegressionTests: XCTestCase {
         // Drive TWO identical channelOpen frames for the SAME id straight onto the host's DATA link
         // (a retransmit / duplicate). The first registers + spawns; the second must be suppressed.
         let frame = MuxEnvelopeCodec.encode(
-            .channelOpen(channelID: 1, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0),
+            .channelOpen(channelID: 1, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0, initialCwd: nil),
         )
         try await clientData.send(frame)
         try await clientData.send(frame)
@@ -48,7 +48,7 @@ final class MuxBugFixRegressionTests: XCTestCase {
 
         // An open then a close for the same id arrive in the accept→install gap (NO handler yet).
         try await clientData.send(MuxEnvelopeCodec.encode(
-            .channelOpen(channelID: 1, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0),
+            .channelOpen(channelID: 1, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0, initialCwd: nil),
         ))
         try await clientData.send(MuxEnvelopeCodec.encode(.channelClose(channelID: 1)))
         try await Task.sleep(for: .milliseconds(80)) // let the receive loop route both frames
@@ -117,7 +117,7 @@ final class MuxBugFixRegressionTests: XCTestCase {
         // Storm distinct channelOpen ids straight onto the host's CONTROL link.
         for id in UInt32(1)...50 {
             try await clientControl.send(MuxEnvelopeCodec.encode(
-                .channelOpen(channelID: id, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0),
+                .channelOpen(channelID: id, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0, initialCwd: nil),
             ))
         }
         try await Task.sleep(for: .milliseconds(120)) // let the control receive loop route them all
@@ -147,7 +147,7 @@ final class MuxBugFixRegressionTests: XCTestCase {
         // control-link close), with a fresh distinct id every cycle.
         for id in stride(from: UInt32(2), through: 4000, by: 2) {
             try await clientData.send(MuxEnvelopeCodec.encode(
-                .channelOpen(channelID: id, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0),
+                .channelOpen(channelID: id, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0, initialCwd: nil),
             ))
             try await clientData.send(MuxEnvelopeCodec.encode(.channelClose(channelID: id)))
         }
@@ -155,7 +155,7 @@ final class MuxBugFixRegressionTests: XCTestCase {
         // before it goes live, so observing it bounds the whole burst as drained.
         let sentinel: UInt32 = 99999
         try await clientData.send(MuxEnvelopeCodec.encode(
-            .channelOpen(channelID: sentinel, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0),
+            .channelOpen(channelID: sentinel, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0, initialCwd: nil),
         ))
         try await Self.waitUntil(timeout: 20) { await host.hasLiveChannels }
 

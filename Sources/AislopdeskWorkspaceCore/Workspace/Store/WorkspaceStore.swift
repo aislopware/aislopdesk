@@ -2536,23 +2536,23 @@ public final class WorkspaceStore {
         splitActivePane(axis: axis, kind: kind, leading: leading, launchGrace: .milliseconds(1400))
     }
 
-    /// The `launchGrace`-parameterized core of ``splitActivePane(axis:kind:leading:)`` — a test injects a
-    /// `0`ms grace to observe the A26 cwd-inheritance `cd` send without a 1.4 s wall-clock wait. Production
-    /// callers use the public overload (the SAME 1400 ms `applyLaunchPreset` / template apply uses).
-    func splitActivePane(axis: SplitAxis, kind: PaneKind, leading: Bool, launchGrace: Duration) {
+    /// Core of ``splitActivePane(axis:kind:leading:)``. `launchGrace` is retained for call-site + overload
+    /// parity with the launch-preset / template / drop paths that still schedule a deferred send, but this
+    /// path no longer types a startup `cd` — the inherited cwd rides `channelOpen` (host-side spawn), so the
+    /// grace is unused here (`_`).
+    func splitActivePane(axis: SplitAxis, kind: PaneKind, leading: Bool, launchGrace _: Duration) {
         guard let active = tree.activeSession?.activeTab?.activePane else { return }
         // A26 cwd-inheritance: resolve the new pane's initial cwd from the NEW-SPLIT working-directory policy
-        // against the active pane's last-known cwd, stamp it on the new spec (so the subtitle reflects it
-        // immediately), and — terminal only — schedule a deferred `cd` once its PTY is live.
+        // against the active pane's last-known cwd and stamp it on the new spec. The live session factory
+        // sends that cwd in the mux `channelOpen`, so the host spawns the PTY there directly.
         let activeCwd = tree.spec(for: active)?.lastKnownCwd
         let inheritedCwd = SettingsKey.workingDirectoryNewSplit.resolve(activePaneCwd: activeCwd)
         var spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
         spec.lastKnownCwd = inheritedCwd
         // `splitPane` already makes the new leaf the active pane, so an in-pane `.chooser` split lands focused.
-        let (next, newPane) = WorkspaceTreeOps.splitPane(active, axis: axis, newSpec: spec, before: leading, in: tree)
+        let (next, _) = WorkspaceTreeOps.splitPane(active, axis: axis, newSpec: spec, before: leading, in: tree)
         tree = next
         reconcileTree()
-        deferInheritedCwd(inheritedCwd, into: newPane, kind: kind, launchGrace: launchGrace)
     }
 
     /// Splits the specific pane `target` along `axis`, inserting a new leaf of `kind` (focused).
@@ -2663,25 +2663,24 @@ public final class WorkspaceStore {
         newTab(kind: kind, launchGrace: .milliseconds(1400))
     }
 
-    /// The `launchGrace`-parameterized core of ``newTab(kind:)`` — a test injects a `0`ms grace to observe
-    /// the A26 cwd-inheritance `cd` send without a 1.4 s wall-clock wait. Production callers use the public
-    /// overload.
-    func newTab(kind: PaneKind, launchGrace: Duration) {
+    /// Core of ``newTab(kind:)``. `launchGrace` is retained for call-site + overload parity with the paths
+    /// that still schedule a deferred send (chat / agent-resume call this then defer their OWN command), but
+    /// this path types no startup `cd` — the inherited cwd rides `channelOpen`, so the grace is unused (`_`).
+    func newTab(kind: PaneKind, launchGrace _: Duration) {
         // A26 cwd-inheritance: resolve the new tab's initial cwd from the NEW-TAB working-directory policy
-        // against the active pane's last-known cwd (none when there is no active pane), stamp it on the new
-        // spec, and — terminal only — schedule a deferred `cd` once its PTY is live.
+        // against the active pane's last-known cwd (none when there is no active pane) and stamp it on the
+        // new spec. The host starts the PTY in that cwd; no visible startup `cd` is sent.
         let activeCwd = tree.activeSession?.activeTab?.activePane.flatMap { tree.spec(for: $0)?.lastKnownCwd }
         let inheritedCwd = SettingsKey.workingDirectoryNewTab.resolve(activePaneCwd: activeCwd)
         var spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
         spec.lastKnownCwd = inheritedCwd
-        let (next, newPane) = WorkspaceTreeOps.newTab(in: tree, spec: spec, at: SettingsKey.newTabPosition)
+        let (next, _) = WorkspaceTreeOps.newTab(in: tree, spec: spec, at: SettingsKey.newTabPosition)
         tree = next
         // E6 WI-6: a new tab is created AND selected (`WorkspaceTreeOps.newTab` sets `activeTabIndex`), so
         // stamp its recency (parity with `selectTab` / `breakPaneToTab`) — otherwise the tab the user just
         // opened sorts LAST under `.updated` (nil recency) and lands in "Earlier" under By-Date.
         if let newTabID = tree.activeSession?.activeTab?.id { stampTabActivity(newTabID) }
         reconcileTree()
-        deferInheritedCwd(inheritedCwd, into: newPane, kind: kind, launchGrace: launchGrace)
     }
 
     /// Closes tab `tabID` (dropping its panes) and cascades like ``closePaneTree(_:)``.
@@ -2740,23 +2739,21 @@ public final class WorkspaceStore {
         newSession(name: name, kind: kind, launchGrace: .milliseconds(1400))
     }
 
-    /// The `launchGrace`-parameterized core of ``newSession(name:kind:)`` — a test injects a `0`ms grace to
-    /// observe the A26 cwd-inheritance `cd` send without a 1.4 s wall-clock wait. Production callers use the
-    /// public overload (the SAME 1400 ms grace `newTab` / `splitActivePane` use).
-    func newSession(name: String, kind: PaneKind, launchGrace: Duration) {
+    /// Core of ``newSession(name:kind:)``. `launchGrace` is retained for call-site + overload parity with
+    /// `newTab` / `splitActivePane`, but this path types no startup `cd` — the inherited cwd rides
+    /// `channelOpen` (host-side spawn), so the grace is unused here (`_`).
+    func newSession(name: String, kind: PaneKind, launchGrace _: Duration) {
         // E7 carry-over #7 (the "New Window" working-directory setting — previously a DEAD accessor read nowhere):
         // resolve the new window's initial cwd from the NEW-WINDOW policy against the active pane's last-known
-        // cwd (none when there is no active pane), stamp it on the new spec, and — terminal only — schedule a
-        // deferred `cd` once its PTY is live. Mirrors `newTab` / `splitActivePane`; `WorkspaceTreeOps.newSession`
-        // returns the new leaf id for the defer.
+        // cwd (none when there is no active pane), stamp it on the new spec, and let the host spawn the PTY
+        // directly in that cwd. Mirrors `newTab` / `splitActivePane`.
         let activeCwd = tree.activeSession?.activeTab?.activePane.flatMap { tree.spec(for: $0)?.lastKnownCwd }
         let inheritedCwd = SettingsKey.workingDirectoryNewWindow.resolve(activePaneCwd: activeCwd)
         var spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
         spec.lastKnownCwd = inheritedCwd
-        let (next, newPane) = WorkspaceTreeOps.newSession(in: tree, name: name, spec: spec)
+        let (next, _) = WorkspaceTreeOps.newSession(in: tree, name: name, spec: spec)
         tree = next
         reconcileTree()
-        deferInheritedCwd(inheritedCwd, into: newPane, kind: kind, launchGrace: launchGrace)
     }
 
     /// Closes session `sessionID` (dropping all its tabs/panes) and selects another (or re-seeds a default
@@ -3439,6 +3436,10 @@ public final class WorkspaceStore {
         connection?.onProgressUpdate = { [weak self] progress in
             self?.handleProgress(progress, for: id)
         }
+        // OSC 7 cwd edge: keep the spec's inheritance source fresh as soon as the shell reports `cd`.
+        connection?.onWorkingDirectoryChanged = { [weak self] cwd in
+            self?.setLastKnownCwd(cwd, for: id)
+        }
         // COMMAND-START STALE-BADGE CLEAR (progress-state.md): a new command beginning (OSC 133;C) clears this
         // pane's stale completion ✓/✗ so a busy background pane resolves to the running spinner, not the prior
         // run's exit badge.
@@ -3457,9 +3458,9 @@ public final class WorkspaceStore {
             // inject the held commands back into the LOCAL shell (wrong host). The replay's shell-handoff resume
             // is driven instead by the inner shell's OSC-133;A prompt-START edge (`terminal.onPromptReturn`,
             // wired below) so the held queue lands INSIDE the inner session. See `recipeReplayPromptReturned`.
-            // A26 cwd-freshness (OSC-7 equivalent): refresh this pane's last-known cwd from the host `cwd`
-            // RPC on each command completion, so a `cd` here updates the inherit source for the next new
-            // tab / split. `[weak connection]` avoids a retain cycle (the closure is owned by `connection`).
+            // A26 cwd-freshness fallback: refresh this pane's last-known cwd from the host `cwd` RPC on
+            // command completion too, so shells without OSC 7 still update the inherit source for the next
+            // new tab / split. `[weak connection]` avoids a retain cycle (the closure is owned by `connection`).
             refreshCwd(for: id, from: connection)
         }
         // LIVE TITLE PERSISTENCE (Goal A): persist the shell's live OSC title into lastKnownTitle so a
@@ -3829,6 +3830,9 @@ public final class WorkspaceStore {
                     guard let self else { return }
                     let title = spec(for: id)?.title ?? ""
                     handleCommandCompleted(id: id, exitCode: exitCode, durationMS: durationMS, paneTitle: title)
+                }
+                connection?.onWorkingDirectoryChanged = { [weak self] cwd in
+                    self?.setLastKnownCwd(cwd, for: id)
                 }
                 // LIVE TITLE PERSISTENCE (Goal A, canvas path): same lastKnownTitle wire as wireMaterializedLeaf.
                 connection?.onTitleChanged = { [weak self] title in
@@ -4300,9 +4304,13 @@ public extension WorkspaceStore {
         { @Sendable in
             AislopdeskClient(makeTransport: {
                 MuxClientTransport(
-                    acquire: { host, port, sessionID, lastReceivedSeq in
+                    acquire: { host, port, sessionID, lastReceivedSeq, initialCwd in
                         try await registry.acquire(
-                            host: host, port: port, sessionID: sessionID, lastReceivedSeq: lastReceivedSeq,
+                            host: host,
+                            port: port,
+                            sessionID: sessionID,
+                            lastReceivedSeq: lastReceivedSeq,
+                            initialCwd: initialCwd,
                         )
                     },
                     release: { host, port, channelID in
@@ -4489,31 +4497,21 @@ public extension WorkspaceStore {
         choosePaneKind(paneID, kind: kind, launchGrace: .milliseconds(1400))
     }
 
-    /// The `launchGrace`-parameterized core of ``choosePaneKind(_:kind:)`` — a test injects a `0`ms grace to
-    /// observe the A26 cwd-inheritance `cd` send without a 1.4 s wall-clock wait. Production callers use the
-    /// public overload (the SAME 1400 ms the direct-terminal `newTab` / `splitActivePane` paths use).
+    /// The `launchGrace`-parameterized core of ``choosePaneKind(_:kind:)``. Kept for tests and call-site
+    /// parity with the direct-terminal `newTab` / `splitActivePane` paths.
     ///
     /// ES-E3-2 (cwd-inheritance on the PRIMARY ⌘T / ⌘D flow): those chords route through the chooser
-    /// (`openChooserPane(.newTab)` → `newTab(kind: .chooser)`, etc.), so `deferInheritedCwd` was SKIPPED at
-    /// creation (`kind != .terminal`) even though the resolved cwd was stamped on the spec's `lastKnownCwd`.
-    /// When the user now picks Terminal we re-issue that deferred `cd` against the stamped hint, so the
-    /// chooser-resolved terminal lands in the inherited directory — not just the direct-terminal palette /
-    /// context-menu paths.
-    func choosePaneKind(_ paneID: PaneID, kind: PaneKind, launchGrace: Duration) {
+    /// (`openChooserPane(.newTab)` → `newTab(kind: .chooser)`, etc.). The chooser carries the resolved cwd
+    /// on its spec's `lastKnownCwd`; when the user picks Terminal, reconcile materializes the terminal
+    /// session and that cwd is sent in `channelOpen` so the host spawns the PTY there directly.
+    func choosePaneKind(_ paneID: PaneID, kind: PaneKind, launchGrace _: Duration) {
         guard tree.spec(for: paneID)?.kind == .chooser else { return }
-        // Capture the inherited cwd hint BEFORE the flip (the flip preserves `lastKnownCwd`, but reading it
-        // up front keeps the deferred-`cd` source explicit). `nil` ⇒ the `.home` policy / no inherit source,
-        // and `deferInheritedCwd` then sends nothing.
-        let inheritedCwd = tree.spec(for: paneID)?.lastKnownCwd
         let title = defaultTitle(for: kind)
         updateSpecLive(paneID) { spec in
             spec.kind = kind
             spec.title = title
         }
         focusPaneTree(paneID)
-        // The leaf has now materialized its real session (the reconcile in `updateSpecLive`), so deliver the
-        // deferred inheritance `cd`. Terminal-only + empty-cwd no-ops are handled inside `deferInheritedCwd`.
-        deferInheritedCwd(inheritedCwd, into: paneID, kind: kind, launchGrace: launchGrace)
     }
 
     /// Persists the host-resolved working directory of a pane into ``PaneSpec/lastKnownCwd`` (E4): the
@@ -4542,37 +4540,7 @@ public extension WorkspaceStore {
         }
     }
 
-    /// A26 cwd-inheritance: after a new TERMINAL pane materializes, type a deferred `cd <cwd>\n` into it so
-    /// it lands in the inherited / configured working directory. REUSES the SAME deferred-keystroke route +
-    /// 1400 ms launch grace as the session-template / launch-preset apply (the remote shell prompt must come
-    /// up first), and the SAME SAFE-literal `cd` builder (``SessionTemplateEngine/launchBytes(cwd:command:)``,
-    /// `command: nil`) so a quote / `<Enter>` in a path can't inject a command. A `nil`/empty cwd (the
-    /// ``WorkingDirectoryPolicy/home`` policy, or a non-terminal kind) sends NOTHING — `launchBytes` returns
-    /// `nil` for an empty cwd, and `.home` must not emit a redundant `cd` into a login shell that already
-    /// starts at `$HOME`. `launchGrace`-parameterized so a test injects `0` ms. Internal (not `private`) so the
-    /// recipe-restore path (`WorkspaceStore+Recipes`) reuses the SAME safe-literal `cd` route to restore each
-    /// recipe pane's captured working directory (ES-E16-2). Returns `true` iff a `cd` was actually scheduled (a
-    /// terminal pane with a non-empty cwd) — the recipe restore folds that typed-ahead completion into the
-    /// replay handoff-absorb count; every other caller discards it.
-    @discardableResult
-    func deferInheritedCwd(
-        _ cwd: String?,
-        into paneID: PaneID,
-        kind: PaneKind,
-        launchGrace: Duration,
-    ) -> Bool {
-        // Only a text-funnel terminal pane can take a `cd`; a `.chooser`/video pane is a no-op (the stamped
-        // `lastKnownCwd` still rides the spec, so a chooser that later resolves to terminal keeps the hint).
-        guard kind == .terminal else { return false }
-        guard let bytes = SessionTemplateEngine.launchBytes(cwd: cwd, command: nil) else { return false }
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: launchGrace)
-            self?.handle(for: paneID)?.sendBytes(bytes)
-        }
-        return true
-    }
-
-    /// A26 cwd-freshness (the OSC-7 equivalent): after a command completes (OSC 133;D) pull pane `id`'s
+    /// A26 cwd-freshness fallback: after a command completes (OSC 133;D) pull pane `id`'s
     /// current working directory from the host `cwd` RPC and persist it via the dirty-guarded
     /// ``setLastKnownCwd(_:for:)``, so a `cd` in this pane becomes the inherit source for the NEXT new tab /
     /// split. A `nil` connection / failed RPC is a silent no-op (validate-then-drop); the metadata client's

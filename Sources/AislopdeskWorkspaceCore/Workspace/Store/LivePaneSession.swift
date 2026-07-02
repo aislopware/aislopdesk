@@ -321,6 +321,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         // (`!= "0"`) idiom preserved exactly via `boolDefaultOn`; an EMPTY overlay is byte-identical.
         let detachEnabled = EnvConfig.boolDefaultOn("AISLOPDESK_DETACH_ENABLED")
         let savedResumeID = detachEnabled ? spec.resumeSessionID : nil
+        let initialCwd = spec.lastKnownCwd
         // COLD LAUNCH: always seed seq=0 even when spec.resumeLastReceivedSeq is non-nil.
         //
         // This is a COLD path — the client actor is brand-new (process relaunch), so
@@ -346,6 +347,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         let connection = ConnectionViewModel(
             terminal: terminal,
             target: target,
+            initialCwd: initialCwd,
             makeClient: makeClientSeeded,
         )
         let inputBar = InputBarModel()

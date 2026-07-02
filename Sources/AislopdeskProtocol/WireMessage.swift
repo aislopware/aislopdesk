@@ -243,6 +243,12 @@ public enum WireMessage: Equatable, Sendable {
     /// delay it); the pane identity is carried by the mux channel envelope, not in this body.
     case progress(state: UInt8, percent: UInt8)
 
+    /// The pane's current working directory (OSC 7, type 33, host → client, CONTROL). Shells emit
+    /// `ESC ] 7 ; file://<host>/<absolute-path> ST/BEL` on prompt redraw / `cd`; the host parses that
+    /// path and forwards only the decoded absolute path. The client persists it into
+    /// ``PaneSpec/lastKnownCwd`` so new tabs/splits inherit the live cwd immediately.
+    case cwd(String)
+
     /// The semantic state of the foreground command in a pane's shell (from OSC 133).
 
     /// The semantic state of the foreground command in a pane's shell (from OSC 133).
@@ -282,6 +288,7 @@ public enum WireMessage: Equatable, Sendable {
         case .metadataResponse: 30
         case .inputEcho: 31
         case .progress: 32
+        case .cwd: 33
         }
     }
 
@@ -311,7 +318,8 @@ public enum WireMessage: Equatable, Sendable {
              .blockOutput,
              .metadataResponse,
              .inputEcho,
-             .progress:
+             .progress,
+             .cwd:
             .control
         }
     }

@@ -71,6 +71,24 @@ final class PTYProcessTests: XCTestCase {
         wait(for: [exp], timeout: 5)
     }
 
+    func testPTYSpawnStartsInRequestedCwd() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aislopdesk-pty-cwd-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let pty = PTYProcess()
+        try pty.spawn(
+            "/bin/sh",
+            arguments: ["-c", "pwd"],
+            environment: curatedEnv(),
+            cwd: dir.path,
+        )
+
+        let output = readUntil(fd: pty.masterFD, needle: dir.path)
+        XCTAssertTrue(output.contains(dir.path), "expected child cwd \(dir.path), got: \(output)")
+    }
+
     func testPTYInteractiveEcho() throws {
         let pty = PTYProcess()
         try pty.spawn("/bin/sh", environment: curatedEnv())

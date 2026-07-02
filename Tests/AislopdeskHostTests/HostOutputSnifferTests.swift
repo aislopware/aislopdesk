@@ -872,6 +872,35 @@ final class HostOutputSnifferTests: XCTestCase {
         }
     }
 
+    // MARK: - OSC 7 cwd → .cwd
+
+    private func cwdOnly(_ messages: [WireMessage]) -> [WireMessage] {
+        messages.filter { if case .cwd = $0 { return true }
+            return false
+        }
+    }
+
+    func testOSC7FileURLEmitsCwd() {
+        let raw = bytes("\u{1B}]7;file://mac-studio/Users/me/project%20dir\u{07}")
+        XCTAssertEqual(observeWhole(raw), [.cwd("/Users/me/project dir")])
+        assertForwardsUnchanged(raw)
+    }
+
+    func testOSC7SplitAcrossChunksEquivalence() {
+        let raw = bytes("\u{1B}]7;file://host/private/tmp/next\(ST)")
+        let whole = observeWhole(raw)
+        XCTAssertEqual(whole, [.cwd("/private/tmp/next")])
+        for size in 1...raw.count {
+            XCTAssertEqual(observeChunked(raw, size: size), whole, "diverged at chunk size \(size)")
+        }
+    }
+
+    func testOSC7DropsMalformedOrNonFilePayloads() {
+        XCTAssertEqual(cwdOnly(observeWhole(bytes("\u{1B}]7;https://host/Users/me\u{07}"))), [])
+        XCTAssertEqual(cwdOnly(observeWhole(bytes("\u{1B}]7;file://host\u{07}"))), [])
+        XCTAssertEqual(cwdOnly(observeWhole(bytes("\u{1B}]7;file://host/%ZZ\u{07}"))), [])
+    }
+
     func testStringSequenceSwallowsEmbeddedNotification() {
         // A `]9;…` embedded in a DCS string body must NOT fire a phantom notification (anti-spoof,
         // same rationale as the command-status case).

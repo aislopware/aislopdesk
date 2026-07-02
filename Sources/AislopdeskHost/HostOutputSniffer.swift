@@ -3,12 +3,13 @@ import Foundation
 
 /// The FUSED host-side output sniffer: ONE pass over the outbound PTY byte stream replacing
 /// the back-to-back pair ``HostTitleBellSniffer`` + ``HostCommandStatusSniffer``. It emits
-/// all THREE inline host→client CONTROL messages:
+/// inline host→client CONTROL messages:
 ///
 /// - ``WireMessage/title(_:)`` — OSC 0 / OSC 2 (`ESC ] 0;… <terminator>` / `ESC ] 2;…`).
 /// - ``WireMessage/bell`` — a standalone ground-state `BEL` (never an OSC/string terminator).
 /// - ``WireMessage/commandStatus(_:)`` — OSC 133 `C` (running) / `D[;exit]` (idle, with the
 ///   host-measured C→D duration in milliseconds via the injectable ``clock``).
+/// - ``WireMessage/cwd(_:)`` — OSC 7 `file://host/path`, the shell's current working directory.
 ///
 /// ## Provenance (exact-parity port)
 /// The two old sniffers shared an IDENTICAL 8-state transition table; the title sniffer was
@@ -431,6 +432,18 @@ public final class HostOutputSniffer: @unchecked Sendable {
                 break // A / unknown 133 subcommand — not surfaced.
             }
 
+        case "7":
+            // OSC 7 — current working directory (`ESC ] 7 ; file://<host>/<absolute-path> ST/BEL`).
+            // This is shell-controlled metadata, like title, but unlike title it feeds cwd inheritance:
+            // split/new-tab can use the fresh cwd immediately instead of waiting for the command-complete
+            // metadata RPC. The payload is already bounded by oscCap; malformed/non-file/relative values
+            // are silently dropped.
+            let bodyBytes = oscBuffer[oscBuffer.index(after: sep)...]
+            guard let body = String(bytes: bodyBytes, encoding: .utf8),
+                  let cwd = Self.osc7Path(from: body)
+            else { return }
+            messages.append(.cwd(cwd))
+
         case "9":
             // OSC 9 — iTerm2/ConEmu "post a notification" (`ESC ] 9 ; <body> ST`). The whole
             // remainder after `9;` is the notification body; no explicit title (the client falls
@@ -484,6 +497,20 @@ public final class HostOutputSniffer: @unchecked Sendable {
             // is neither a title, a command mark, nor a notification — skip.
             return
         }
+    }
+
+    static func osc7Path(from body: String) -> String? {
+        guard body.hasPrefix("file://") else { return nil }
+        let afterScheme = body.dropFirst("file://".count)
+        guard let slash = afterScheme.firstIndex(of: "/") else { return nil }
+        let encodedPath = String(afterScheme[slash...])
+        guard !encodedPath.isEmpty,
+              encodedPath.hasPrefix("/"),
+              let decoded = encodedPath.removingPercentEncoding,
+              !decoded.isEmpty,
+              decoded.hasPrefix("/")
+        else { return nil }
+        return decoded
     }
 
     // MARK: OSC 99 (kitty notification protocol) — bounded validate-then-drop → .notification

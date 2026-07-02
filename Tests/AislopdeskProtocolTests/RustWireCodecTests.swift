@@ -39,6 +39,7 @@ final class RustWireCodecTests: XCTestCase {
             .notification(title: "", body: ""),
             .notification(title: "Build", body: "done ✅"),
             .notification(title: "t", body: "multi\nline\u{0}body"),
+            .cwd("/Users/me/project dir"),
         ]
     }
 

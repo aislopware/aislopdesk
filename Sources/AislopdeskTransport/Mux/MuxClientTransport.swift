@@ -20,10 +20,16 @@ import Foundation
 ///
 /// All mutable state lives inside this `actor`. The shared connection is acquired/released through
 /// the (`@MainActor`) ``ConnectionRegistry``, hopped to from `connect`/`close`.
-public actor MuxClientTransport: ClientTransporting {
+public actor MuxClientTransport: ClientTransporting, InitialCwdConfigurableTransport {
     /// Acquires the shared connection for the endpoint (refcount++), returning it + the channel
     /// pair. Injected so `connect` need not know the registry's `@MainActor` isolation directly.
-    private let acquire: @Sendable (_ host: String, _ port: UInt16, _ sessionID: UUID, _ lastReceivedSeq: Int64)
+    private let acquire: @Sendable (
+        _ host: String,
+        _ port: UInt16,
+        _ sessionID: UUID,
+        _ lastReceivedSeq: Int64,
+        _ initialCwd: String?,
+    )
         async throws -> MuxAcquisition
     /// Releases this transport's channel from the shared connection (refcount--, tear down on 0).
     private let release: @Sendable (_ host: String, _ port: UInt16, _ channelID: UInt32) async -> Void
@@ -47,6 +53,19 @@ public actor MuxClientTransport: ClientTransporting {
         acquire: @escaping @Sendable (String, UInt16, UUID, Int64) async throws -> MuxAcquisition,
         release: @escaping @Sendable (String, UInt16, UInt32) async -> Void,
     ) {
+        self.init(
+            acquire: { host, port, sessionID, lastReceivedSeq, _ in
+                try await acquire(host, port, sessionID, lastReceivedSeq)
+            },
+            release: release,
+        )
+    }
+
+    @preconcurrency
+    public init(
+        acquire: @escaping @Sendable (String, UInt16, UUID, Int64, String?) async throws -> MuxAcquisition,
+        release: @escaping @Sendable (String, UInt16, UInt32) async -> Void,
+    ) {
         self.acquire = acquire
         self.release = release
         var continuation: AsyncThrowingStream<WireMessage, Error>.Continuation?
@@ -59,6 +78,15 @@ public actor MuxClientTransport: ClientTransporting {
 
     public nonisolated var inbound: AsyncThrowingStream<WireMessage, Error> { inboundStream }
 
+    private var initialCwd: String?
+
+    // Actor-isolated (not `async`): the cross-actor hop supplies the async-ness the
+    // `InitialCwdConfigurableTransport` requirement asks for, so callers still `await` it.
+    public func setInitialCwd(_ cwd: String?) {
+        let trimmed = cwd?.trimmingCharacters(in: .whitespacesAndNewlines)
+        initialCwd = (trimmed?.isEmpty ?? true) ? nil : trimmed
+    }
+
     public func connect(
         host: String,
         port: UInt16,
@@ -67,7 +95,8 @@ public actor MuxClientTransport: ClientTransporting {
         handshakeTimeout _: Duration,
     ) async throws {
         let id = resume == WireMessage.newSessionID ? UUID() : resume
-        let acquisition = try await acquire(host, port, id, lastReceivedSeq)
+        let cwdHint = (resume == WireMessage.newSessionID) ? initialCwd : nil
+        let acquisition = try await acquire(host, port, id, lastReceivedSeq, cwdHint)
         sessionID = id
         // S1/mux: `channelOpenAck` carries only `accepted: Bool` — no host-authoritative
         // `resumeFromSeq` reply. The host either reattaches an existing session (PATH A,

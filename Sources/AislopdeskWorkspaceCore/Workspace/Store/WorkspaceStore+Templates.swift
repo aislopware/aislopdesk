@@ -33,10 +33,10 @@ public extension WorkspaceStore {
         replaceTree(WorkspaceTreeOps.insertSession(session, in: tree, makeActive: true))
         reconcileTree()
 
-        // Send each pane's launch bytes once its PTY is live (deferred — the shell prompt must come up
-        // first), mirroring `applyLaunchPreset`. A pane with neither cwd nor command yields `nil` → skipped.
+        // Send each pane's command bytes once its PTY is live (deferred — the shell prompt must come up
+        // first), mirroring `applyLaunchPreset`. The cwd already rides the pane spec into host-side spawn.
         for (paneID, pane) in launches {
-            guard let bytes = SessionTemplateEngine.launchBytes(cwd: pane.cwd, command: pane.command) else {
+            guard let bytes = SessionTemplateEngine.launchBytes(cwd: nil, command: pane.command) else {
                 continue
             }
             Task { @MainActor [weak self] in

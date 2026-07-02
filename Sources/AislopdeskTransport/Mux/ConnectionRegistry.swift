@@ -88,6 +88,7 @@ public final class ConnectionRegistry {
         port: UInt16,
         sessionID: UUID,
         lastReceivedSeq: Int64,
+        initialCwd: String? = nil,
     ) async throws -> MuxAcquisition {
         let key = Self.key(host, port)
         let connection = try await sharedConnection(host: host, port: port, key: key)
@@ -113,6 +114,7 @@ public final class ConnectionRegistry {
                 sessionID: sessionID,
                 lastReceivedSeq: lastReceivedSeq,
                 channelClass: 0,
+                initialCwd: initialCwd,
             )
         } catch {
             // IDENTITY-GATE the cleanup (R8 #1, mirrors `release()` / `sharedConnection`): only touch

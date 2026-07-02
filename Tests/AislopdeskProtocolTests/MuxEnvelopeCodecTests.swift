@@ -13,13 +13,44 @@ private func roundTrip(_ frame: MuxFrame, file _: StaticString = #filePath, line
 final class MuxEnvelopeCodecTests: XCTestCase {
     func testChannelOpenRoundTrip() throws {
         let cases: [MuxFrame] = [
-            .channelOpen(channelID: 1, sessionID: WireMessage.newSessionID, lastReceivedSeq: 0, channelClass: 0),
-            .channelOpen(channelID: 3, sessionID: UUID(), lastReceivedSeq: Int64.max, channelClass: 7),
-            .channelOpen(channelID: UInt32.max, sessionID: UUID(), lastReceivedSeq: -1, channelClass: 255),
+            .channelOpen(
+                channelID: 1,
+                sessionID: WireMessage.newSessionID,
+                lastReceivedSeq: 0,
+                channelClass: 0,
+                initialCwd: nil,
+            ),
+            .channelOpen(channelID: 3, sessionID: UUID(), lastReceivedSeq: Int64.max, channelClass: 7, initialCwd: nil),
+            .channelOpen(
+                channelID: UInt32.max,
+                sessionID: UUID(),
+                lastReceivedSeq: -1,
+                channelClass: 255,
+                initialCwd: nil,
+            ),
+            .channelOpen(
+                channelID: 5,
+                sessionID: UUID(),
+                lastReceivedSeq: 0,
+                channelClass: 0,
+                initialCwd: "/Users/me/project",
+            ),
         ]
         for frame in cases {
             XCTAssertEqual(try roundTrip(frame), frame)
         }
+    }
+
+    func testChannelOpenWithoutCwdKeepsLegacyByteLayout() {
+        let frame = MuxFrame.channelOpen(
+            channelID: 1,
+            sessionID: WireMessage.newSessionID,
+            lastReceivedSeq: 0,
+            channelClass: 0,
+            initialCwd: nil,
+        )
+        let bytes = MuxEnvelopeCodec.encode(frame)
+        XCTAssertEqual(bytes.count, 4 + 4 + 1 + 16 + 8 + 1)
     }
 
     func testChannelOpenAckRoundTrip() throws {

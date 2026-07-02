@@ -188,6 +188,7 @@ final class WireMessageRoundTripTests: XCTestCase {
         XCTAssertEqual(WireMessage.commandStatus(.running).messageType, 23)
         XCTAssertEqual(WireMessage.commandStatus(.idle(exitCode: 0, durationMS: 0)).messageType, 23)
         XCTAssertEqual(WireMessage.pong(timestampMS: 0).messageType, 24)
+        XCTAssertEqual(WireMessage.cwd("/tmp").messageType, 33)
     }
 
     func testChannelAssignment() {
@@ -200,6 +201,7 @@ final class WireMessageRoundTripTests: XCTestCase {
         XCTAssertEqual(WireMessage.commandStatus(.running).channel, .control)
         XCTAssertEqual(WireMessage.ping(timestampMS: 0).channel, .control)
         XCTAssertEqual(WireMessage.pong(timestampMS: 0).channel, .control)
+        XCTAssertEqual(WireMessage.cwd("/tmp").channel, .control)
     }
 
     // MARK: Decode error paths (complete-but-invalid frames)

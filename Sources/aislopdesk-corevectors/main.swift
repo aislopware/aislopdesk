@@ -798,6 +798,9 @@ root["terminalWireMessages"] = [
     wmRecord("progress", .progress(state: 3, percent: 0), ["state": Int(3), "percent": Int(0)]),
     wmRecord("progress", .progress(state: 2, percent: 80), ["state": Int(2), "percent": Int(80)]),
     wmRecord("progress", .progress(state: 0, percent: 0), ["state": Int(0), "percent": Int(0)]),
+    // OSC 7 cwd edge (terminal CONTROL, host → client).
+    // type 33 cwd: UTF-8 path body, same string shape as title.
+    wmRecord("cwd", .cwd("/Users/me/project dir"), ["path": "/Users/me/project dir"]),
 ]
 
 // WB1 — Warp-style "Blocks" wire messages (terminal CONTROL).
@@ -1040,7 +1043,13 @@ func muxRecord(_ kind: String, _ f: MuxFrame, _ fields: [String: Any]) -> [Strin
 root["muxEnvelopes"] = [
     muxRecord(
         "channelOpen",
-        .channelOpen(channelID: 1, sessionID: WireMessage.newSessionID, lastReceivedSeq: 0, channelClass: 0),
+        .channelOpen(
+            channelID: 1,
+            sessionID: WireMessage.newSessionID,
+            lastReceivedSeq: 0,
+            channelClass: 0,
+            initialCwd: nil,
+        ),
         [
             "channelId": UInt32(1),
             "sessionIdHex": hex(uuidBytes(WireMessage.newSessionID)),
@@ -1050,7 +1059,7 @@ root["muxEnvelopes"] = [
     ),
     muxRecord(
         "channelOpen",
-        .channelOpen(channelID: UInt32.max, sessionID: sidA, lastReceivedSeq: -1, channelClass: 255),
+        .channelOpen(channelID: UInt32.max, sessionID: sidA, lastReceivedSeq: -1, channelClass: 255, initialCwd: nil),
         [
             "channelId": UInt32.max,
             "sessionIdHex": hex(uuidBytes(sidA)),

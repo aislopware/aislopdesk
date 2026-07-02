@@ -124,6 +124,7 @@ public actor MuxNWConnection {
         sessionID: UUID,
         lastReceivedSeq: Int64,
         channelClass: UInt8 = 0,
+        initialCwd: String? = nil,
     ) async throws -> (data: MuxSubChannel, control: MuxSubChannel) {
         guard role == .client else {
             throw AislopdeskTransportError.invalidState("openChannel on a host mux connection")
@@ -141,6 +142,7 @@ public actor MuxNWConnection {
             sessionID: sessionID,
             lastReceivedSeq: lastReceivedSeq,
             channelClass: channelClass,
+            initialCwd: initialCwd,
         ))
         do {
             try await dataLink.send(openFrame)
@@ -344,7 +346,7 @@ public actor MuxNWConnection {
         // the router table without bound (the cheap memory-DoS analogue of the channelClose unknown-id
         // growth the sibling `ChannelTable` fix closed; the EXPENSIVE PTY/fork was already bounded).
         // Refuse a NEW over-cap open here and RETURN without advancing the table or registering anything.
-        if role == .host, link == .data, case let .channelOpen(id, _, _, _) = frame,
+        if role == .host, link == .data, case let .channelOpen(id, _, _, _, _) = frame,
            dataChannels[id] == nil, dataChannels.count >= MuxFlowControl.maxChannelsPerConnection
         {
             // Pipelined: emitted from the receive loop — must never suspend it (same
@@ -385,7 +387,10 @@ public actor MuxNWConnection {
         // The HOST is the responder: a peer-initiated `channelOpen` on the DATA link registers the
         // channel pair so subsequent data routes. (The router already advanced the table; we mirror
         // it into the dispatch tables here, allocating the sub-channels.)
-        if role == .host, case let .channelOpen(id, sessionID, lastReceivedSeq, channelClass) = frame, link == .data {
+        if role == .host,
+           case let .channelOpen(id, sessionID, lastReceivedSeq, channelClass, initialCwd) = frame,
+           link == .data
+        {
             // Fire the relay open hook ONLY for a NEWLY-registered channel. A DUPLICATE/retransmitted
             // `channelOpen` for an already-live `id` must NOT re-invoke `hostOpenHandler` — that spawns
             // a SECOND PTY and overwrites/orphans the first session in the owner's map (master-fd +
@@ -403,6 +408,7 @@ public actor MuxNWConnection {
                     sessionID: sessionID,
                     lastReceivedSeq: lastReceivedSeq,
                     channelClass: channelClass,
+                    initialCwd: initialCwd,
                     data: dataCh,
                     control: controlCh,
                 )
@@ -661,6 +667,7 @@ public struct MuxChannelOpen: Sendable {
     public let sessionID: UUID
     public let lastReceivedSeq: Int64
     public let channelClass: UInt8
+    public let initialCwd: String?
     public let data: MuxSubChannel
     public let control: MuxSubChannel
 }

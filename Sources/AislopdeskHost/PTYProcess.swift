@@ -88,6 +88,7 @@ public final class PTYProcess: @unchecked Sendable {
         arguments: [String] = [],
         environment: [String: String],
         argv0: String? = nil,
+        cwd: String? = nil,
         cols: UInt16 = 80,
         rows: UInt16 = 24,
     ) throws {
@@ -134,11 +135,13 @@ public final class PTYProcess: @unchecked Sendable {
         envp.append(nil)
 
         let pathDup = strdup(executable)
+        let cwdDup: UnsafeMutablePointer<CChar>? = cwd.flatMap { strdup($0) }
 
         defer {
             for p in argv where p != nil { free(p) }
             for p in envp where p != nil { free(p) }
             free(pathDup)
+            if let cwdDup { free(cwdDup) }
         }
 
         // fork(), NOT posix_spawn: posix_spawn cannot run TIOCSCTTY in the child, and a
@@ -159,6 +162,7 @@ public final class PTYProcess: @unchecked Sendable {
             // dup2(slave → 0,1,2); close(slave) if >2. This is what makes the slave the
             // controlling terminal (so SIGWINCH / job control reach the shell).
             if login_tty(slave) != 0 { _exit(127) }
+            if let cwdDup, chdir(cwdDup) != 0 { _exit(127) }
             // The child must never hold the master, or its EOF would never arrive on read.
             close(master)
             _ = execve(pathDup, argv, envp)

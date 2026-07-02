@@ -390,6 +390,9 @@ Task {
                 // the local terminal already shows the program's own progress natively — so this is a no-op
                 // here (mirrors the `.inputEcho` no-op).
                 break
+            case .cwd:
+                // OSC 7 cwd is GUI metadata for split/new-tab inheritance. The raw CLI has no pane spec.
+                break
             }
         }
     }

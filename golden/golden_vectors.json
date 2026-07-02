@@ -3585,6 +3585,11 @@
       "kind": "progress",
       "percent": 0,
       "state": 0
+    },
+    {
+      "hex": "00000016212f55736572732f6d652f70726f6a65637420646972",
+      "kind": "cwd",
+      "path": "/Users/me/project dir"
     }
   ],
   "trendlineDrive": {

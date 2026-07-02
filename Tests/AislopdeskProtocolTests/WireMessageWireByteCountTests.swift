@@ -51,6 +51,7 @@ final class WireMessageWireByteCountTests: XCTestCase {
             .progress(state: 1, percent: 40),
             .progress(state: 2, percent: 80),
             .progress(state: 3, percent: 0),
+            .cwd("/Users/me/project dir"),
         ]
         for message in messages {
             XCTAssertEqual(

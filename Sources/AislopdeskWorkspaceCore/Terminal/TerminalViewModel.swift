@@ -1812,6 +1812,8 @@ public final class TerminalViewModel {
             // observable `progress` mirror — a `.clear` removes the indicator (`nil`), every other state sets
             // the determinate / indeterminate / error value the pane status strip + the Dock read.
             progress = PaneProgress(state: state, percent: percent)
+        case .cwd:
+            break
         }
     }
 

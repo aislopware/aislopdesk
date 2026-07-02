@@ -3,8 +3,8 @@ import XCTest
 @testable import AislopdeskWorkspaceCore
 
 /// The pure launch-preset model + expansion (docs/42 W14 #9, Warp launch-configuration parity): a preset
-/// → the pane spec(s) + the keystrokes to type after each pane connects, including the `cd` prefix, the
-/// optional split, and the shipped built-ins. No store, no transport.
+/// → the pane spec(s) + the keystrokes to type after each pane connects. The working directory lives on
+/// the pane spec for host-side spawn cwd; only commands become keystrokes. No store, no transport.
 final class LaunchPresetEngineTests: XCTestCase {
     private func text(_ bytes: [UInt8]) -> String { String(bytes: bytes, encoding: .utf8) ?? "" }
 
@@ -27,23 +27,25 @@ final class LaunchPresetEngineTests: XCTestCase {
         XCTAssertTrue(plan.panes[0].keystrokes.isEmpty)
     }
 
-    func testWorkingDirectoryEmitsCdPrefix() {
+    func testWorkingDirectoryStampsPaneSpecAndDoesNotEmitCdPrefix() {
         let preset = LaunchPreset(name: "Build", command: "make", workingDirectory: "/Users/me/proj")
         let plan = LaunchPresetEngine.plan(for: preset)
-        XCTAssertEqual(text(plan.panes[0].keystrokes), "cd '/Users/me/proj'\nmake\n")
+        XCTAssertEqual(plan.panes[0].spec.lastKnownCwd, "/Users/me/proj")
+        XCTAssertEqual(text(plan.panes[0].keystrokes), "make\n")
     }
 
-    func testWorkingDirectoryWithSpacesIsQuoted() {
+    func testWorkingDirectoryWithSpacesStampsPaneSpec() {
         let preset = LaunchPreset(name: "X", command: "ls", workingDirectory: "/a b/c")
         let plan = LaunchPresetEngine.plan(for: preset)
-        XCTAssertEqual(text(plan.panes[0].keystrokes), "cd '/a b/c'\nls\n")
+        XCTAssertEqual(plan.panes[0].spec.lastKnownCwd, "/a b/c")
+        XCTAssertEqual(text(plan.panes[0].keystrokes), "ls\n")
     }
 
-    func testWorkingDirectoryWithSingleQuoteIsEscaped() {
+    func testWorkingDirectoryWithSingleQuoteStampsPaneSpec() {
         let preset = LaunchPreset(name: "X", command: "ls", workingDirectory: "/it's/here")
         let plan = LaunchPresetEngine.plan(for: preset)
-        // POSIX single-quote escape: ' -> '\''
-        XCTAssertEqual(text(plan.panes[0].keystrokes), "cd '/it'\\''s/here'\nls\n")
+        XCTAssertEqual(plan.panes[0].spec.lastKnownCwd, "/it's/here")
+        XCTAssertEqual(text(plan.panes[0].keystrokes), "ls\n")
     }
 
     func testEmptyCwdAndCommandIsPlainShell() {
@@ -52,12 +54,10 @@ final class LaunchPresetEngineTests: XCTestCase {
         XCTAssertTrue(plan.panes[0].keystrokes.isEmpty)
     }
 
-    // MARK: SECURITY — cwd command injection (the cwd is a PATH, never SendKeysParser input)
+    // MARK: SECURITY — cwd never enters SendKeysParser
 
-    /// REGRESSION (was a command-injection hole): a cwd containing a `SendKeysParser` token like
-    /// `<Enter>` must NOT inject a 0x0D/0x0A inside the quoted `cd` path. On the un-fixed code the cwd
-    /// was run through `SendKeysParser.encode`, which turned `<Enter>` into a literal newline mid-path,
-    /// breaking out of `cd '…'` so the remainder ran as a SEPARATE shell command.
+    /// A cwd containing a `SendKeysParser` token like `<Enter>` is stored as a path string only. It must not
+    /// contribute CR/LF bytes to the startup keystrokes.
     func testCwdWithSendKeysTokenDoesNotInjectNewline() {
         let preset = LaunchPreset(
             name: "X", command: "ls",
@@ -65,17 +65,10 @@ final class LaunchPresetEngineTests: XCTestCase {
         )
         let plan = LaunchPresetEngine.plan(for: preset)
         let bytes = plan.panes[0].keystrokes
-        // The `cd` line is everything up to (and excluding) the FIRST real newline.
-        let firstNL = bytes.firstIndex(of: 0x0A) ?? bytes.endIndex
-        let cdLine = Array(bytes[bytes.startIndex..<firstNL])
-        // No raw CR/LF may appear inside that `cd` line — the `<Enter>` token stayed LITERAL in the path.
-        XCTAssertFalse(cdLine.contains(0x0D), "0x0D injected inside the cd path")
-        XCTAssertFalse(cdLine.contains(0x0A), "0x0A injected inside the cd path")
-        // The literal token survives verbatim inside the single-quoted path.
-        XCTAssertEqual(text(cdLine), "cd '/tmp/proj<Enter>rm -rf important'")
-        // Exactly one `cd` line + the command line: two newlines total, no injected third command.
-        XCTAssertEqual(bytes.count(where: { $0 == 0x0A }), 2)
-        XCTAssertEqual(text(bytes), "cd '/tmp/proj<Enter>rm -rf important'\nls\n")
+        XCTAssertEqual(plan.panes[0].spec.lastKnownCwd, "/tmp/proj<Enter>rm -rf important")
+        XCTAssertFalse(bytes.contains(0x0D), "cwd token injected CR into startup keystrokes")
+        XCTAssertEqual(bytes.count(where: { $0 == 0x0A }), 1)
+        XCTAssertEqual(text(bytes), "ls\n")
     }
 
     /// The COMMAND field, by contrast, legitimately resolves `SendKeysParser` tokens (intended shell
@@ -96,13 +89,8 @@ final class LaunchPresetEngineTests: XCTestCase {
         )
         let plan = LaunchPresetEngine.plan(for: preset)
         let bytes = plan.panes[0].keystrokes
-        // cd line: the cwd <Enter> is literal (no injected newline in the path).
-        let firstNL = bytes.firstIndex(of: 0x0A) ?? bytes.endIndex
-        XCTAssertEqual(text(Array(bytes[bytes.startIndex..<firstNL])), "cd '/tmp/p<Enter>j'")
-        // command line: the command <Enter> resolves to a CR; whole stream as expected.
-        let expected = Array("cd '/tmp/p<Enter>j'".utf8) + [0x0A]
-            + Array("echo hi".utf8) + [0x0D] + Array("echo bye".utf8) + [0x0A]
-        XCTAssertEqual(bytes, expected)
+        XCTAssertEqual(plan.panes[0].spec.lastKnownCwd, "/tmp/p<Enter>j")
+        XCTAssertEqual(bytes, Array("echo hi".utf8) + [0x0D] + Array("echo bye".utf8) + [0x0A])
     }
 
     // MARK: Two-pane (split) expansion
@@ -126,8 +114,10 @@ final class LaunchPresetEngineTests: XCTestCase {
         )
         let plan = LaunchPresetEngine.plan(for: preset)
         XCTAssertEqual(plan.splitAxis, .vertical)
-        XCTAssertEqual(text(plan.panes[0].keystrokes), "cd '/proj'\nnvim .\n")
-        XCTAssertEqual(text(plan.panes[1].keystrokes), "cd '/proj'\nls\n")
+        XCTAssertEqual(plan.panes[0].spec.lastKnownCwd, "/proj")
+        XCTAssertEqual(plan.panes[1].spec.lastKnownCwd, "/proj")
+        XCTAssertEqual(text(plan.panes[0].keystrokes), "nvim .\n")
+        XCTAssertEqual(text(plan.panes[1].keystrokes), "ls\n")
     }
 
     // MARK: Built-ins

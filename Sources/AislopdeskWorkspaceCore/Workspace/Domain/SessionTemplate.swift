@@ -4,8 +4,8 @@ import Foundation
 
 /// A named **session template / project profile**: a predefined split ``layout`` of panes, each carrying
 /// an optional working directory + startup command, that ``SessionTemplateEngine/makeSession(from:name:)``
-/// expands into a fresh ``Session`` (one tab, the template's split tree) whose panes auto-`cd` + run their
-/// command once their PTY is live. The inverse — capturing the active session's geometry back into a
+/// expands into a fresh ``Session`` (one tab, the template's split tree) whose panes start in that cwd and
+/// run their command once their PTY is live. The inverse — capturing the active session's geometry back into a
 /// reusable template — is ``SessionTemplateEngine/captureTemplate(from:name:symbol:)``.
 ///
 /// Distinct from a ``LaunchPreset`` (which opens ONE new TAB of ≤ 2 panes into the CURRENT session): a
@@ -41,14 +41,12 @@ public struct SessionTemplate: Codable, Sendable, Equatable, Identifiable {
 // MARK: - TemplatePane (one leaf of a template — kind + title + cwd/command)
 
 /// One leaf of a ``SessionTemplate``'s ``TemplateNode`` layout: the pane's ``kind`` + display ``title``
-/// plus the optional working directory + startup command typed into it once its PTY is live (the cwd is
-/// sent as a safe literal `cd`, the command through the same path the launch presets use — see
-/// ``SessionTemplateEngine/launchBytes(cwd:command:)``). A pure value.
+/// plus the optional working directory + startup command. The cwd is stamped on ``PaneSpec/lastKnownCwd``
+/// for host-side PTY spawn; the command is typed once the PTY is live. A pure value.
 public struct TemplatePane: Codable, Sendable, Equatable {
     public var kind: PaneKind
     public var title: String
-    /// Optional working directory — a leading `cd <dir>` is sent before the command. `nil`/empty ⇒ the
-    /// shell's default cwd.
+    /// Optional working directory for host-side PTY spawn. `nil`/empty ⇒ the shell's default cwd.
     public var cwd: String?
     /// Optional startup command run in the pane. `nil`/empty ⇒ a plain shell pane (no command sent).
     public var command: String?

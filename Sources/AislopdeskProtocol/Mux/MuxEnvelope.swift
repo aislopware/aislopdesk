@@ -8,7 +8,7 @@ import Foundation
 /// depends on the type. See ``MuxEnvelopeCodec`` for the wire layout.
 public enum MuxFrameType: UInt8, Sendable, Equatable, CaseIterable {
     /// Initiator asks to open a new logical channel. Body =
-    /// `[16-byte sessionUUID][Int64 BE lastReceivedSeq][UInt8 channelClass]`.
+    /// `[16-byte sessionUUID][Int64 BE lastReceivedSeq][UInt8 channelClass][optional UInt16 cwdLen][cwd UTF-8]`.
     case channelOpen = 1
     /// Responder accepts (or refuses) a channel open. Body = `[UInt8 accepted]`.
     case channelOpenAck = 2
@@ -35,8 +35,14 @@ public enum MuxFrameType: UInt8, Sendable, Equatable, CaseIterable {
 /// `MuxFrame` is `Sendable` so decoded frames can cross actor / task boundaries (the
 /// TCP receive loop hands them to per-channel consumers).
 public enum MuxFrame: Equatable, Sendable {
-    /// `channelOpen`: open `channelID` carrying a resume hint and a class selector.
-    case channelOpen(channelID: UInt32, sessionID: UUID, lastReceivedSeq: Int64, channelClass: UInt8)
+    /// `channelOpen`: open `channelID` carrying a resume hint, class selector, and optional initial cwd.
+    case channelOpen(
+        channelID: UInt32,
+        sessionID: UUID,
+        lastReceivedSeq: Int64,
+        channelClass: UInt8,
+        initialCwd: String?,
+    )
     /// `channelOpenAck`: `accepted` true if the responder will service the channel.
     case channelOpenAck(channelID: UInt32, accepted: Bool)
     /// `channelData`: OPAQUE inner ``WireMessage`` frame bytes for `channelID`.
@@ -49,7 +55,7 @@ public enum MuxFrame: Equatable, Sendable {
     /// The logical channel this frame addresses.
     public var channelID: UInt32 {
         switch self {
-        case let .channelOpen(channelID, _, _, _): channelID
+        case let .channelOpen(channelID, _, _, _, _): channelID
         case let .channelOpenAck(channelID, _): channelID
         case let .channelData(channelID, _): channelID
         case let .channelClose(channelID): channelID
@@ -104,10 +110,15 @@ public enum MuxEnvelopeCodec {
         out.append(frame.muxType.rawValue)
 
         switch frame {
-        case let .channelOpen(_, sessionID, lastReceivedSeq, channelClass):
+        case let .channelOpen(_, sessionID, lastReceivedSeq, channelClass, initialCwd):
             out.append(sessionID.dataBytes)
             out.appendBE(lastReceivedSeq)
             out.append(channelClass)
+            if let initialCwd {
+                let cwdBytes = clampedUTF8(initialCwd)
+                out.appendBE(UInt16(cwdBytes.count))
+                out.append(contentsOf: cwdBytes)
+            }
 
         case let .channelOpenAck(_, accepted):
             out.append(accepted ? 1 : 0)
@@ -156,11 +167,29 @@ public enum MuxEnvelopeCodec {
             guard let sessionID = UUID(dataBytes: idBytes) else {
                 throw AislopdeskError.malformedBody("channelOpen: invalid sessionID bytes")
             }
+            let initialCwd: String?
+            if reader.bytesRemaining == 0 {
+                initialCwd = nil
+            } else {
+                let length = try Int(reader.readUInt16())
+                let bytes = try reader.readBytes(length)
+                guard reader.bytesRemaining == 0 else {
+                    throw AislopdeskError.malformedBody("channelOpen: trailing cwd bytes")
+                }
+                if length == 0 {
+                    initialCwd = nil
+                } else if let decoded = String(data: bytes, encoding: .utf8) {
+                    initialCwd = decoded
+                } else {
+                    throw AislopdeskError.malformedBody("channelOpen: invalid cwd UTF-8")
+                }
+            }
             return .channelOpen(
                 channelID: channelID,
                 sessionID: sessionID,
                 lastReceivedSeq: lastReceivedSeq,
                 channelClass: channelClass,
+                initialCwd: initialCwd,
             )
 
         case .channelOpenAck:
@@ -178,5 +207,17 @@ public enum MuxEnvelopeCodec {
             let bytesToAdd = try reader.readUInt32()
             return .windowAdjust(channelID: channelID, bytesToAdd: bytesToAdd)
         }
+    }
+
+    private static func clampedUTF8(_ string: String) -> Data {
+        let full = Data(string.utf8)
+        guard full.count > Int(UInt16.max) else { return full }
+        var out = Data()
+        for scalar in string.unicodeScalars {
+            let bytes = Data(String(scalar).utf8)
+            if out.count + bytes.count > Int(UInt16.max) { break }
+            out.append(bytes)
+        }
+        return out
     }
 }

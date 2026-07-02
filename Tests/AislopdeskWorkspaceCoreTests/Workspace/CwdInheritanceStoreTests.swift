@@ -4,12 +4,11 @@ import XCTest
 
 /// E3 WI-2 (ES-E3-2): the store-side A26 cwd-inheritance — `splitActivePane` / `newTab` resolve the
 /// configured ``WorkingDirectoryPolicy`` against the active pane's ``PaneSpec/lastKnownCwd``, STAMP the
-/// result on the new pane's spec, and (terminal only) deliver a deferred `cd '<cwd>'\n` to that pane's
-/// session. Drives a LIVE `.tree` store through the `FakePaneSession` seam — no real client / view.
+/// result on the new pane's spec, and relies on host-side spawn cwd rather than typing a visible
+/// `cd '<cwd>'\n` into the session. Drives a LIVE `.tree` store through the `FakePaneSession` seam — no real client / view.
 ///
 /// The pure policy math is pinned in `WorkingDirectoryPolicyTests`; here we pin the WIRING: the resolved
-/// cwd lands on the right spec, `.home` stamps nil + sends nothing (no redundant `cd`), and with a `0`ms
-/// launch grace the `cd` bytes actually reach the NEW pane's `FakePaneSession` (not the original).
+/// cwd lands on the right spec, `.home` stamps nil, and no startup `cd` bytes reach the new pane.
 @MainActor
 final class CwdInheritanceStoreTests: XCTestCase {
     private let policyKeys = [
@@ -159,9 +158,9 @@ final class CwdInheritanceStoreTests: XCTestCase {
         XCTAssertNil(store.tree.spec(for: newPane)?.lastKnownCwd, "nothing to inherit → nil")
     }
 
-    // MARK: - Deferred `cd` send (launchGrace: 0)
+    // MARK: - No startup `cd` bytes
 
-    func testSplitInheritSendsDeferredCdToTheNewPane() async throws {
+    func testSplitInheritSendsNoStartupCdToTheNewPane() async throws {
         UserDefaults.standard.set("inherit", forKey: SettingsKey.workingDirectoryNewSplitKey)
         let pane = PaneID()
         let store = makeTreeStore(restoringTree: singlePaneWorkspace(pane, cwd: "/Users/me/project"))
@@ -171,17 +170,17 @@ final class CwdInheritanceStoreTests: XCTestCase {
 
         let newPane = try XCTUnwrap(allPaneIDs(store).subtracting(before).first)
         let newFake = store.handle(for: newPane) as? FakePaneSession
-        await waitForBytes(newFake)
+        await settleDeferredSends()
 
         XCTAssertEqual(
-            newFake?.sentBytes, [Array("cd '/Users/me/project'\n".utf8)],
-            "the inherited cwd is `cd`-ed into the new split pane",
+            newFake?.sentBytes ?? [], [],
+            "the inherited cwd rides channelOpen; no visible startup `cd` is typed into the split pane",
         )
-        // The ORIGINAL pane must receive nothing (the `cd` targets only the freshly-minted pane).
+        // The ORIGINAL pane must receive nothing too.
         XCTAssertEqual((store.handle(for: pane) as? FakePaneSession)?.sentBytes ?? [], [])
     }
 
-    func testNewTabInheritSendsDeferredCdToTheNewPane() async throws {
+    func testNewTabInheritSendsNoStartupCdToTheNewPane() async throws {
         UserDefaults.standard.set("inherit", forKey: SettingsKey.workingDirectoryNewTabKey)
         let pane = PaneID()
         let store = makeTreeStore(restoringTree: singlePaneWorkspace(pane, cwd: "/srv/app"))
@@ -191,9 +190,9 @@ final class CwdInheritanceStoreTests: XCTestCase {
 
         let newPane = try XCTUnwrap(allPaneIDs(store).subtracting(before).first)
         let newFake = store.handle(for: newPane) as? FakePaneSession
-        await waitForBytes(newFake)
+        await settleDeferredSends()
 
-        XCTAssertEqual(newFake?.sentBytes, [Array("cd '/srv/app'\n".utf8)])
+        XCTAssertEqual(newFake?.sentBytes ?? [], [], "the inherited cwd rides channelOpen, not shell input")
     }
 
     func testHomeSendsNoCd() async throws {
@@ -224,14 +223,13 @@ final class CwdInheritanceStoreTests: XCTestCase {
         XCTAssertEqual(newFake?.sentBytes ?? [], [], "no inherit source → no `cd`")
     }
 
-    // MARK: - The PRIMARY ⌘T / ⌘D chooser flow delivers the deferred `cd` (ES-E3-2)
+    // MARK: - The PRIMARY ⌘T / ⌘D chooser flow preserves cwd without a startup `cd` (ES-E3-2)
 
     // The dominant new-tab / split gestures route through a `.chooser` pane (`openChooserPane`), NOT a direct
-    // `.terminal` `newTab` / `splitActivePane`. The `cd` must reach the new terminal once the user PICKS
-    // Terminal (`choosePaneKind`) — the path the direct-`.terminal` tests above never exercise. These FAIL on
-    // the pre-fix store (the chooser→terminal flip never re-issued the deferred inheritance `cd`).
+    // `.terminal` `newTab` / `splitActivePane`. The cwd hint must stay on the chooser spec so that when the
+    // user picks Terminal (`choosePaneKind`), the host can spawn the terminal in that cwd directly.
 
-    func testChooserNewTabThenPickTerminalSendsDeferredCd() async throws {
+    func testChooserNewTabThenPickTerminalSendsNoStartupCd() async throws {
         UserDefaults.standard.set("inherit", forKey: SettingsKey.workingDirectoryNewTabKey)
         let pane = PaneID()
         let store = makeTreeStore(restoringTree: singlePaneWorkspace(pane, cwd: "/Users/me/project"))
@@ -245,19 +243,19 @@ final class CwdInheritanceStoreTests: XCTestCase {
         await settleDeferredSends()
         XCTAssertEqual((store.handle(for: chooser) as? FakePaneSession)?.sentBytes ?? [], [])
 
-        // Picking Terminal flips the chooser → terminal and must NOW deliver the inherited `cd`.
+        // Picking Terminal flips the chooser → terminal; cwd is already on the spec and must not be typed.
         store.choosePaneKind(chooser, kind: .terminal, launchGrace: .zero)
         let newFake = store.handle(for: chooser) as? FakePaneSession
-        await waitForBytes(newFake)
+        await settleDeferredSends()
         XCTAssertEqual(
-            newFake?.sentBytes, [Array("cd '/Users/me/project'\n".utf8)],
-            "the chooser-resolved terminal lands in the inherited cwd (the real ⌘T flow, not just the palette path)",
+            newFake?.sentBytes ?? [], [],
+            "the chooser-resolved terminal uses host-side spawn cwd, not a visible `cd`",
         )
-        // The original pane is untouched (the `cd` targets only the freshly-resolved pane).
+        // The original pane is untouched.
         XCTAssertEqual((store.handle(for: pane) as? FakePaneSession)?.sentBytes ?? [], [])
     }
 
-    func testChooserSplitThenPickTerminalSendsDeferredCd() async throws {
+    func testChooserSplitThenPickTerminalSendsNoStartupCd() async throws {
         UserDefaults.standard.set("inherit", forKey: SettingsKey.workingDirectoryNewSplitKey)
         let pane = PaneID()
         let store = makeTreeStore(restoringTree: singlePaneWorkspace(pane, cwd: "/srv/app"))
@@ -268,10 +266,10 @@ final class CwdInheritanceStoreTests: XCTestCase {
 
         store.choosePaneKind(chooser, kind: .terminal, launchGrace: .zero)
         let newFake = store.handle(for: chooser) as? FakePaneSession
-        await waitForBytes(newFake)
+        await settleDeferredSends()
         XCTAssertEqual(
-            newFake?.sentBytes, [Array("cd '/srv/app'\n".utf8)],
-            "the chooser-resolved split terminal inherits the active pane's cwd",
+            newFake?.sentBytes ?? [], [],
+            "the chooser-resolved split terminal inherits cwd through channelOpen, not shell input",
         )
     }
 
@@ -311,9 +309,9 @@ final class CwdInheritanceStoreTests: XCTestCase {
 
     // `SettingsKey.workingDirectoryNewWindow` was a DEAD accessor read NOWHERE before E7. These pin that
     // `newSession` now resolves + stamps it the same way `newTab` / `splitActivePane` do: inherit stamps the
-    // active pane's cwd on the new session's leaf and (0 ms grace) `cd`-s into it, `home` stamps nil + sends
-    // nothing, and the deferred `cd` fires for TERMINAL kind only. FAIL on the pre-fix `newSession` (it built
-    // a bare spec, never reading the policy, never deferring a `cd`).
+    // active pane's cwd on the new session's leaf, `home` stamps nil + sends nothing, and terminal panes use
+    // host-side spawn cwd instead of a visible `cd`. FAIL on the pre-fix `newSession` (it built a bare spec,
+    // never reading the policy).
 
     func testNewSessionInheritStampsActiveCwdOnNewSessionLeaf() throws {
         UserDefaults.standard.set("inherit", forKey: SettingsKey.workingDirectoryNewWindowKey)
@@ -346,7 +344,7 @@ final class CwdInheritanceStoreTests: XCTestCase {
         )
     }
 
-    func testNewSessionInheritSendsDeferredCdToTheNewSessionLeaf() async throws {
+    func testNewSessionInheritSendsNoStartupCdToTheNewSessionLeaf() async throws {
         UserDefaults.standard.set("inherit", forKey: SettingsKey.workingDirectoryNewWindowKey)
         let pane = PaneID()
         let store = makeTreeStore(restoringTree: singlePaneWorkspace(pane, cwd: "/srv/app"))
@@ -356,12 +354,12 @@ final class CwdInheritanceStoreTests: XCTestCase {
 
         let newPane = try XCTUnwrap(allPaneIDs(store).subtracting(before).first)
         let newFake = store.handle(for: newPane) as? FakePaneSession
-        await waitForBytes(newFake)
+        await settleDeferredSends()
         XCTAssertEqual(
-            newFake?.sentBytes, [Array("cd '/srv/app'\n".utf8)],
-            "the inherited cwd is `cd`-ed into the new session's terminal leaf",
+            newFake?.sentBytes ?? [], [],
+            "the inherited cwd rides channelOpen; no visible startup `cd` is typed into the new session leaf",
         )
-        // The original session's pane is untouched (the `cd` targets only the freshly-minted leaf).
+        // The original session's pane is untouched.
         XCTAssertEqual((store.handle(for: pane) as? FakePaneSession)?.sentBytes ?? [], [])
     }
 

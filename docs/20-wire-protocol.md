@@ -103,6 +103,7 @@ UUIDs (`sessionID`) are sent as their **16 raw bytes** in canonical order (not a
 | 30 | `metadataResponse` | host → client | control | `UInt32 requestID` (BE) + `UInt8 status` + `UInt32 payloadLen` (BE) + `payload` bytes (opaque) — reply to `metadataRequest` (E4) |
 | 31 | `inputEcho` | host → client | control | `UInt8 enabled` (`1` = canonical echo on, `0` = no-echo password prompt) — PTY termios `ECHO` edge; drives AUTO Secure Keyboard Entry (E17/I22) |
 | 32 | `progress` | host → client | control | `UInt8 state` (`0` clear / `1` in-progress / `2` error / `3` indeterminate) + `UInt8 percent` (`0`–`100`; meaningful for state `1`/`2`) — OSC 9;4 taskbar progress (E14/K1) |
+| 33 | `cwd` | host → client | control | `path` UTF-8 (absolute; rest-of-frame, no length prefix — same shape as `title`) — OSC 7 shell-reported working directory; feeds new-tab/split cwd inheritance |
 
 `protocolVersion` is currently **1** (`Aislopdesk.protocolVersion`). There is **no version
 negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` whose
@@ -282,7 +283,7 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
     signals; the pane identity is carried by the mux channel envelope, not the body. Not sequenced/replayed.
 
 The next free **client → host** CONTROL type byte is **17** (10–16 used). The next free
-**host → client** CONTROL type byte is **33** (20–32 used). (Byte 28 was once reserved for a W14 OSC-8
+**host → client** CONTROL type byte is **34** (20–33 used). (Byte 28 was once reserved for a W14 OSC-8
 hyperlink type, but W14 ships OSC-8 click-to-open via **libghostty's own hit-testing** —
 `GHOSTTY_ACTION_OPEN_URL` / `GHOSTTY_ACTION_MOUSE_OVER_LINK` — so no wire change was needed; 28 was
 later taken by the Warp-style `commandBlock`. See DECISIONS.md "W14 terminal parity".)

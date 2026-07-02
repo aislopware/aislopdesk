@@ -50,6 +50,13 @@ final class WorkspaceStoreRecipesTests: XCTestCase {
         }
     }
 
+    private func settleDeferredSends() async {
+        for _ in 0..<10 {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
     /// A `.tree`-live store with its recipe folders pointed at the per-test temp `HOME`.
     private func makeStore() -> WorkspaceStore {
         let store = WorkspaceStore(
@@ -137,10 +144,7 @@ final class WorkspaceStoreRecipesTests: XCTestCase {
     }
 
     /// ES-E16-2 "restores working directories": opening a recipe whose pane captured a cwd `cd`s the restored
-    /// pane into that directory (the safe-literal `cd` route `newTab` uses). Layout-Only ⇒ no replay, so the
-    /// ONLY injection is the cwd `cd`.
-    /// REVERT-TO-CONFIRM-FAIL: without `mountRestorePlan` deferring the inherited `cd`, the restored pane only
-    /// carries `lastKnownCwd` as a metadata hint and the shell stays at $HOME (nothing injected).
+    /// pane into that directory via host-side spawn cwd. Layout-Only ⇒ no replay, so there is no shell input.
     func testRestoredRecipePaneRestoresWorkingDirectory() async throws {
         let store = makeStore()
         let active = try activePane(store)
@@ -157,17 +161,16 @@ final class WorkspaceStoreRecipesTests: XCTestCase {
             store.tree.spec(for: restoredPane)?.lastKnownCwd, "/Users/me/proj",
             "the restored pane carries the recipe's captured cwd",
         )
-        try await waitForInjected(store, restoredPane, atLeast: 1)
+        await settleDeferredSends()
         XCTAssertEqual(
-            try injected(store, restoredPane), ["cd '/Users/me/proj'\n"],
-            "the restored pane is `cd`-ed into the recipe's captured working directory",
+            try injected(store, restoredPane), [],
+            "the restored pane uses host-side spawn cwd, not a visible `cd`",
         )
     }
 
     /// E16 handoff hazard: a `.window`/`.tab` recipe restore mounts a FRESH shell (one initial OSC-133;A prompt)
-    /// and types the captured cwd `cd` AHEAD of the replay burst (the parallel `deferInheritedCwd` stream — it
-    /// runs at that same local prompt and emits its OWN OSC-133;A). The handoff-absorb counter must skip those
-    /// PRE-BURST local prompt marks, else it hits zero one edge EARLY and the post-`ssh` command injects into the
+    /// before the replay burst. The handoff-absorb counter must skip that PRE-BURST local prompt mark, else it
+    /// hits zero one edge EARLY and the post-`ssh` command injects into the
     /// local shell instead of the inner session. With commands `[echo a, ssh host, echo b]` + a restored cwd the
     /// pre-resume local prompt marks are: fresh-shell prompt → cwd `cd` → `echo a` — `echo b` must stay HELD until
     /// the FOURTH prompt mark (the INNER ssh shell's prompt), so it resumes INTO ssh.
@@ -195,11 +198,11 @@ final class WorkspaceStoreRecipesTests: XCTestCase {
             XCTFail("the restored pane's queue pauses on the ssh handoff")
             return
         }
-        // The absorb folds in THREE pre-resume local prompt marks: the fresh shell's own first prompt, the
-        // restored cwd `cd`, and the typed-ahead `echo a`. Pre-fix this armed to 1 (the burst's `echo a` only).
+        // The absorb folds in TWO pre-resume local prompt marks: the fresh shell's own first prompt and the
+        // typed-ahead `echo a`. Pre-fix this armed to 1 (the burst's `echo a` only).
         XCTAssertEqual(
-            store.recipes.replayHandoffAbsorb[restored], 3,
-            "the fresh-shell prompt + restored cwd `cd` are folded into the handoff-absorb alongside `echo a`",
+            store.recipes.replayHandoffAbsorb[restored], 2,
+            "the fresh-shell prompt is folded into the handoff-absorb alongside `echo a`",
         )
         XCTAssertFalse(try injected(store, restored).contains("echo b\n"), "echo b is held while paused on ssh")
 
@@ -208,12 +211,7 @@ final class WorkspaceStoreRecipesTests: XCTestCase {
         XCTAssertTrue(store.isReplayingRecipe(for: restored), "the fresh-shell prompt is absorbed — still paused")
         XCTAssertFalse(try injected(store, restored).contains("echo b\n"), "echo b held after the fresh prompt")
 
-        // 2nd prompt mark = the restored cwd `cd`'s OSC-133;A — ALSO absorbed (it ran at the local prompt).
-        store.recipeReplayPromptReturned(for: restored)
-        XCTAssertTrue(store.isReplayingRecipe(for: restored), "the cwd `cd` prompt is absorbed — still paused")
-        XCTAssertFalse(try injected(store, restored).contains("echo b\n"), "echo b still held after the `cd`")
-
-        // 3rd prompt mark = the typed-ahead `echo a`'s OSC-133;A — ALSO absorbed (also a local prompt).
+        // 2nd prompt mark = the typed-ahead `echo a`'s OSC-133;A — ALSO absorbed (also a local prompt).
         store.recipeReplayPromptReturned(for: restored)
         XCTAssertTrue(store.isReplayingRecipe(for: restored), "echo a prompt is absorbed — still behind ssh")
         XCTAssertFalse(
@@ -221,20 +219,19 @@ final class WorkspaceStoreRecipesTests: XCTestCase {
             "echo b must NOT inject until ssh's inner prompt — folding the pre-burst prompts into the count holds it",
         )
 
-        // 4th prompt mark = ssh connected → the INNER shell draws its prompt → the queue resumes INTO ssh.
+        // 3rd prompt mark = ssh connected → the INNER shell draws its prompt → the queue resumes INTO ssh.
         store.recipeReplayPromptReturned(for: restored)
         XCTAssertTrue(
             try injected(store, restored).contains("echo b\n"), "echo b injects into the inner ssh session",
         )
         XCTAssertFalse(store.isReplayingRecipe(for: restored), "replay finished after the post-handoff command")
 
-        // The full typed-ahead stream eventually lands (the cwd `cd` is deferred via a Task even at .zero grace,
-        // so its byte ordering vs the synchronous burst is a test artifact — assert membership, not order).
-        try await waitForInjected(store, restored, atLeast: 4)
+        // The full typed-ahead stream eventually lands; cwd is applied through host-side spawn, not input.
+        try await waitForInjected(store, restored, atLeast: 3)
         XCTAssertEqual(
             try Set(injected(store, restored)),
-            ["cd '/Users/me/proj'\n", "echo a\n", "ssh host\n", "echo b\n"],
-            "the restored cwd `cd`, the typed-ahead burst, and the resumed echo b all land",
+            ["echo a\n", "ssh host\n", "echo b\n"],
+            "the typed-ahead burst and the resumed echo b all land",
         )
     }
 

@@ -7,7 +7,7 @@ import Foundation
 /// (`spec/user-interface__window-tab-split.md`, values a path / `home` / `inherit`).
 ///
 /// - ``inherit``: start in the **active pane's** last-known cwd ("Same as Current Tab"). The source cwd
-///   is the host `cwd` RPC refreshed on command-completion — the OSC-7 equivalent (see `docs/DECISIONS.md`).
+///   is the shell-reported OSC 7 cwd, with the host `cwd` RPC as a command-completion fallback.
 /// - ``home``: start in the shell's login directory. Resolves to a **`nil`** cwd: a fresh login shell already
 ///   starts at `$HOME`, so emitting a literal `cd $HOME` would be redundant (and would fight a shell that is
 ///   configured to open elsewhere). No `cd` is sent — see ``resolve(activePaneCwd:)``.

@@ -6,7 +6,7 @@ import XCTest
 final class MuxFrameDecoderTests: XCTestCase {
     /// Three distinct mux frames spanning all the body shapes, used by the framing tests.
     private let frames: [MuxFrame] = [
-        .channelOpen(channelID: 1, sessionID: UUID(), lastReceivedSeq: 7, channelClass: 0),
+        .channelOpen(channelID: 1, sessionID: UUID(), lastReceivedSeq: 7, channelClass: 0, initialCwd: nil),
         .channelData(channelID: 1, payload: WireMessage.output(seq: 3, bytes: Data("coalesced ✅".utf8)).encode()),
         .channelClose(channelID: 1),
     ]

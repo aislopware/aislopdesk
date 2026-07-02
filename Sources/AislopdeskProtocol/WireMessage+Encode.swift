@@ -71,6 +71,9 @@ extension WireMessage {
         case let .title(string):
             frame.append(Data(string.utf8))
 
+        case let .cwd(path):
+            frame.append(Data(path.utf8))
+
         case let .notification(title, body):
             // [UInt16 BE titleLen][title UTF-8][body UTF-8] — the title is length-prefixed so the
             // body (which may contain anything, incl. no delimiter) is the unambiguous remainder.
@@ -275,6 +278,7 @@ public extension WireMessage {
             case .progress: 2 // state UInt8 + percent UInt8
             case .helloAck: Self.sessionIDByteCount + 8 + 1 // UUID + Int64 + Bool
             case let .title(string): string.utf8.count
+            case let .cwd(path): path.utf8.count
             case let .notification(title, bodyText): 2 + Self.clampedNotificationTitle(title).utf8.count + bodyText.utf8
                 .count // UInt16 len + (clamped) title + body
             case let .foregroundProcess(name): name.utf8.count

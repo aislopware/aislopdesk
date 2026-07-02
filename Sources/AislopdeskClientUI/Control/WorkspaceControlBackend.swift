@@ -60,8 +60,9 @@ final class WorkspaceControlBackend: ClientControlBackend {
     /// additional config-change observer can refresh — a broadcast hook alongside the direct re-apply.
     static let configReloadNotification = Notification.Name("AislopdeskClientControlConfigReload")
 
-    /// How long the `view`/`edit` shim defers its command injection past the new pane's inherited-cwd `cd`
-    /// (so a RELATIVE path resolves in the inherited directory first). Defaults to the production 1500 ms;
+    /// How long the `view`/`edit` shim defers its command injection while the new pane's prompt comes up.
+    /// The pane's inherited cwd is applied host-side at PTY spawn, so relative paths already resolve there.
+    /// Defaults to the production 1500 ms;
     /// injectable so a unit test can observe the deferred launch bytes without a 1.5 s wall.
     private let shimLaunchGrace: Duration
 
@@ -217,8 +218,7 @@ final class WorkspaceControlBackend: ClientControlBackend {
     /// renderer — the documented E20 shim, carry-over §4). The shim TYPES a shell command into the freshly-spawned
     /// pane: `view` → `open <url>` for a URL else `less <path>`; `edit` → `${EDITOR:-vi} <path>`. The command is
     /// injected through the SAME new-pane launch seam template panes use
-    /// (``SessionTemplateEngine/launchBytes(cwd:command:)``), deferred past the new pane's inherited-cwd `cd` so a
-    /// RELATIVE path resolves in the inherited directory first. Returns `false` only when the placement op spawned
+    /// (``SessionTemplateEngine/launchBytes(cwd:command:)``), after the new pane's prompt appears. Returns `false` only when the placement op spawned
     /// no pane (e.g. no active session to split / new-tab into).
     func open(target: String, mode: ClientControlOpenMode, placement: ClientControlProtocol.Placement) -> Bool {
         guard let store else { return false }
@@ -235,8 +235,8 @@ final class WorkspaceControlBackend: ClientControlBackend {
         case .bottom: store.splitActivePane(axis: .vertical, kind: .terminal, leading: false)
         }
         guard let newPane = Self.leafIDs(of: store).subtracting(before).first else { return false }
-        // `cwd: nil` — the placement op already scheduled the inherited-cwd `cd`; this injects only the shim
-        // command, the SAME way a launch-preset / template command is delivered into a fresh pane.
+        // `cwd: nil` — the placement op already put the inherited cwd on the pane spec for host-side spawn;
+        // this injects only the shim command, the SAME way a launch-preset / template command is delivered.
         guard let bytes = SessionTemplateEngine.launchBytes(cwd: nil, command: command) else { return false }
         Task { @MainActor [weak store, grace = shimLaunchGrace] in
             try? await Task.sleep(for: grace)

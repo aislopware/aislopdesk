@@ -117,7 +117,7 @@ final class FrameDecoderCursorTests: XCTestCase {
     /// frame round-trips.
     func testMuxFrameEncodePrefixEqualsInnerLength() throws {
         let samples: [MuxFrame] = [
-            .channelOpen(channelID: 1, sessionID: UUID(), lastReceivedSeq: 5, channelClass: 0),
+            .channelOpen(channelID: 1, sessionID: UUID(), lastReceivedSeq: 5, channelClass: 0, initialCwd: nil),
             .channelOpenAck(channelID: 2, accepted: true),
             .channelOpenAck(channelID: 3, accepted: false),
             .channelData(channelID: 4, payload: Data("payload-bytes".utf8)),

@@ -172,6 +172,72 @@ final class WorkspaceStoreProgressTests: XCTestCase {
         XCTAssertNil(terminal.progress, "the terminal mirror also folded the clear")
     }
 
+    func testConnectionRoutesCwdToSink() {
+        let terminal = TerminalViewModel()
+        let vm = ConnectionViewModel(
+            terminal: terminal,
+            target: { .default },
+            makeClient: { AislopdeskClient(makeTransport: { fatalError("not used in cwd tests") }) },
+        )
+        var pushed: [String] = []
+        vm.onWorkingDirectoryChanged = { pushed.append($0) }
+
+        // A `cd` at the prompt IS a command (OSC 133;C precedes its OSC 7), so once past the first
+        // command-START the shell's OSC 7 routes straight to the store sink.
+        vm.foldEventForTesting(.commandStatus(.running))
+        vm.foldEventForTesting(.cwd("/Users/me/next"))
+
+        XCTAssertEqual(pushed, ["/Users/me/next"], "post-command OSC 7 cwd routes to the store sink")
+    }
+
+    func testConnectionSuppressesPreCommandCwdEvenWithoutInitialCwd() {
+        // Failing-first regression for the OSC-7 startup-noise poison: a zsh plugin manager transiently
+        // `cd`s into its plugin cache dir while sourcing `.zshrc` and emits an OSC 7 BEFORE the first
+        // command. That must NEVER become the inherit source — otherwise a later new-tab / split spawns
+        // its PTY in `…/zsh-users---zsh-autosuggestions`. The gate is `commandStartSeen`, NOT the presence
+        // of an `initialCwd` hint: this pane has none, yet the pre-command edge must still be dropped.
+        let terminal = TerminalViewModel()
+        let vm = ConnectionViewModel(
+            terminal: terminal,
+            target: { .default },
+            makeClient: { AislopdeskClient(makeTransport: { fatalError("not used in cwd tests") }) },
+        )
+        var pushed: [String] = []
+        vm.onWorkingDirectoryChanged = { pushed.append($0) }
+
+        vm.foldEventForTesting(.cwd("/Users/me/.local/share/zinit/plugins/zsh-users---zsh-autosuggestions"))
+        vm.foldEventForTesting(.commandStatus(.running))
+        vm.foldEventForTesting(.cwd("/Users/me/project"))
+
+        XCTAssertEqual(
+            pushed,
+            ["/Users/me/project"],
+            "a pre-command plugin OSC 7 is dropped even with no initialCwd; the post-command cwd wins",
+        )
+    }
+
+    func testConnectionSuppressesPreCommandCwdWhenInitialCwdWasProvided() {
+        let terminal = TerminalViewModel()
+        let vm = ConnectionViewModel(
+            terminal: terminal,
+            target: { .default },
+            initialCwd: "/Users/me/project",
+            makeClient: { AislopdeskClient(makeTransport: { fatalError("not used in cwd tests") }) },
+        )
+        var pushed: [String] = []
+        vm.onWorkingDirectoryChanged = { pushed.append($0) }
+
+        vm.foldEventForTesting(.cwd("/Users/me/.local/share/zinit/plugins/zsh-users---zsh-autosuggestions"))
+        vm.foldEventForTesting(.commandStatus(.running))
+        vm.foldEventForTesting(.cwd("/Users/me/project/src"))
+
+        XCTAssertEqual(
+            pushed,
+            ["/Users/me/project/src"],
+            "startup/plugin OSC 7 must not overwrite an inherited initial cwd before the first real command",
+        )
+    }
+
     /// A lifecycle drop / exit clears the store's per-pane progress (the badge source) so it agrees with the
     /// terminal model — no stuck spinner on a dead/dropped pane. Both `.exit` and `.disconnected` push a `nil`.
     func testExitAndDisconnectClearStoreProgress() {

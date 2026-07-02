@@ -563,7 +563,7 @@ public extension WorkspaceStore {
             queueReplay(plan, target: activePaneID, mode: mode)
         case .tab,
              .window:
-            mountRestorePlan(plan, name: recipe.name, launchGrace: launchGrace)
+            mountRestorePlan(plan, name: recipe.name)
             queueReplay(plan, target: nil, mode: mode)
         }
         // E16 WI-9: actually START the replay the restore just queued — the whole point of ES-E16-2. Without
@@ -577,10 +577,10 @@ public extension WorkspaceStore {
     /// Mount a `tab` / `window` restore plan into the live tree: a `window` recipe appends a fresh ``Session``
     /// (selected); a `tab` recipe appends its tab(s) to the active session (or a fresh session when none).
     /// Then ``reconcileTree()`` materializes the new leaves. The plan's leaf ids are reused verbatim, so the
-    /// queued replay (keyed by those ids) targets the mounted panes. Finally each restored TERMINAL pane is
-    /// `cd`-ed into its captured working directory (ES-E16-2), via the SAME deferred safe-literal `cd` route
-    /// `newTab` / `splitActivePane` use; `launchGrace` defers it past the freshly-mounted shell's prompt.
-    private func mountRestorePlan(_ plan: RecipeRestorePlan, name: String, launchGrace: Duration) {
+    /// queued replay (keyed by those ids) targets the mounted panes. Each restored TERMINAL pane's captured
+    /// working directory (ES-E16-2) rides its spec's `lastKnownCwd` into `channelOpen`, so the host spawns
+    /// the PTY there directly — no deferred startup `cd` is typed (hence no `launchGrace` here).
+    private func mountRestorePlan(_ plan: RecipeRestorePlan, name: String) {
         guard !plan.tabs.isEmpty else { return }
         let restored = sessionFromRestoreTabs(plan.tabs, name: recipeSessionName(name))
         guard !restored.tabs.isEmpty else { return }
@@ -599,25 +599,18 @@ public extension WorkspaceStore {
             tree.activeSessionID = restored.id
         }
         reconcileTree()
-        // ES-E16-2 "restores working directories": a recipe captures each pane's cwd in `lastKnownCwd`, but a
-        // freshly-mounted PTY starts at $HOME — type the safe-literal `cd` into each restored terminal pane so
-        // it lands in its captured directory. Independent of replay mode (a Skip / Layout-Only restore still
-        // restores cwd); `deferInheritedCwd` no-ops a non-terminal pane or an empty cwd.
+        // ES-E16-2 "restores working directories": a recipe captures each pane's cwd in `lastKnownCwd`.
+        // The restored spec now sends that cwd in `channelOpen`, so the host starts the PTY there directly
+        // instead of typing a visible startup `cd`.
         //
         // PRE-BURST PROMPT ABSORB (see `replayPreBurstPromptAbsorb`): the replay's shell-handoff resume now keys
-        // off OSC-133;A prompt marks. A freshly-restored pane emits LOCAL prompt marks BEFORE its replay burst's
-        // commands run — its fresh shell's own FIRST idle prompt, plus one more per typed-ahead restored-cwd `cd`
-        // (which runs at that same local prompt). The handoff-absorb must skip those so the post-`ssh` command
+        // off OSC-133;A prompt marks. A freshly-restored pane emits a LOCAL prompt mark BEFORE its replay burst's
+        // commands run — its fresh shell's own FIRST idle prompt. The handoff-absorb must skip that so the post-`ssh` command
         // resumes only on the INNER session's prompt — else it injects into the local shell, on the wrong host.
         // `beginRecipeReplay` consumes + clears these. (Every restored pane is a `.terminal` — see
         // `sessionFromRestoreTabs` — so each emits exactly one fresh-shell prompt.)
-        for (paneID, spec) in restored.specs {
+        for paneID in restored.specs.keys {
             recipes.replayPreBurstPromptAbsorb[paneID, default: 0] += 1 // the fresh shell's own first prompt
-            let typedCd = deferInheritedCwd(
-                spec.lastKnownCwd, into: paneID, kind: spec.kind, launchGrace: launchGrace,
-            )
-            guard typedCd else { continue }
-            recipes.replayPreBurstPromptAbsorb[paneID, default: 0] += 1 // + the typed-ahead restored-cwd `cd`
         }
     }
 

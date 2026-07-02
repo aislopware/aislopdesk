@@ -201,6 +201,13 @@ extension WireMessage {
             let percent = try reader.readUInt8()
             return .progress(state: state, percent: percent)
 
+        case 33: // cwd
+            let bytes = reader.remaining()
+            guard let path = String(data: bytes, encoding: .utf8) else {
+                throw AislopdeskError.malformedBody("cwd: invalid UTF-8")
+            }
+            return .cwd(path)
+
         default:
             throw AislopdeskError.unknownMessageType(type)
         }

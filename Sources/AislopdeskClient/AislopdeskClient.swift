@@ -119,6 +119,9 @@ public actor AislopdeskClient {
         /// reaches the UI. `percent` is clamped 0…100 host-side; it is meaningful for `inProgress`/`error`.
         /// Drives the per-pane tab badge (spinner / error) + the macOS Dock aggregate. Rides CONTROL.
         case progress(state: ProgressState, percent: UInt8)
+        /// The shell-reported current working directory (OSC 7, wire type 33). The GUI persists this
+        /// into the pane spec so split/new-tab inherit the live cwd immediately.
+        case cwd(String)
         /// The transport dropped (network loss / clean close). ``ReconnectManager``
         /// reacts to this; surfaced for diagnostics.
         case disconnected(reason: String)
@@ -220,6 +223,7 @@ public actor AislopdeskClient {
     /// ``WorkspaceStore/liveMakeSession`` bound to the per-host ``ConnectionRegistry``).
     private let makeTransport: @Sendable () -> any ClientTransporting
     private var transport: (any ClientTransporting)?
+    private var initialCwd: String?
     private var inboundTask: Task<Void, Never>?
     private var ackTask: Task<Void, Never>?
     private var pingTask: Task<Void, Never>?
@@ -302,6 +306,13 @@ public actor AislopdeskClient {
         highestSeqFed = seq
     }
 
+    /// Provides the transport with a startup cwd for the next brand-new PTY. Existing/resumed sessions
+    /// ignore this hint so reconnect never changes the working directory of a live shell.
+    public func setInitialCwd(_ cwd: String?) {
+        let trimmed = cwd?.trimmingCharacters(in: .whitespacesAndNewlines)
+        initialCwd = (trimmed?.isEmpty ?? true) ? nil : trimmed
+    }
+
     /// Connects to `host:port`. A first call uses a NEW session (zero sessionID); a
     /// later call (driven by ``ReconnectManager`` or ``resume()``) reuses the learned
     /// ``sessionID`` and presents ``highestContiguousSeq`` so the host replays the tail.
@@ -333,6 +344,9 @@ public actor AislopdeskClient {
         let transport = makeTransport()
         let resume = sessionID ?? WireMessage.newSessionID
         let lastSeq = highestContiguousSeq
+        if let configurable = transport as? any InitialCwdConfigurableTransport {
+            await configurable.setInitialCwd(resume == WireMessage.newSessionID ? initialCwd : nil)
+        }
         do {
             try await transport.connect(
                 host: host,
@@ -513,6 +527,8 @@ public actor AislopdeskClient {
             // host-clamped `percent` (0…100) rides through. Only a known state reaches the UI's badge/Dock.
             guard let validated = ProgressState(wire: state) else { break }
             eventBroadcaster.yield(.progress(state: validated, percent: percent))
+        case let .cwd(path):
+            eventBroadcaster.yield(.cwd(path))
         case let .pong(timestampMS):
             recordPong(sentAtMS: timestampMS)
         default:

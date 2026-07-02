@@ -60,6 +60,12 @@ public protocol ClientTransporting: Sendable {
     func close() async
 }
 
+/// Optional transport capability: a UI may provide an initial cwd for a brand-new session before
+/// ``connect(host:port:resume:lastReceivedSeq:handshakeTimeout:)``. Reconnects ignore the hint.
+public protocol InitialCwdConfigurableTransport: Sendable {
+    func setInitialCwd(_ cwd: String?) async
+}
+
 public extension ClientTransporting {
     /// Default no-op: only windowed transports (the mux) account consumption.
     func noteOutputConsumed(wireBytes _: Int) {}

@@ -30,6 +30,7 @@ public final class ConnectionViewModel {
     /// here so changing the host + reconnecting re-targets every pane. Injected (not stored host/port) so
     /// a later host change is picked up without rebuilding the session.
     private let target: @MainActor () -> ConnectionTarget
+    private let initialCwd: String?
 
     // MARK: Observable status
 
@@ -108,6 +109,16 @@ public final class ConnectionViewModel {
     /// (remove the indicator). `nil` ⇒ no observer (the side-effect is dropped); the terminal model still folds
     /// its own observable `progress` mirror via `terminal.handle` regardless.
     public var onProgressUpdate: ((_ progress: PaneProgress?) -> Void)?
+
+    /// A shell-reported cwd edge (OSC 7, wire type 33). The store persists this into
+    /// ``PaneSpec/lastKnownCwd`` so cwd inheritance uses the live prompt cwd immediately.
+    public var onWorkingDirectoryChanged: ((_ cwd: String) -> Void)?
+
+    /// Whether a command has started (OSC 133;C) in this pane yet. Gates ``routeWorkingDirectory``:
+    /// startup zsh/plugin code transiently `cd`s into a plugin cache directory while sourcing `.zshrc`
+    /// and emits an OSC 7 from there BEFORE the first prompt — those pre-command edges must not overwrite
+    /// the inheritance source (`lastKnownCwd`), or a later new-tab / split spawns its PTY in the plugin dir.
+    private var commandStartSeen = false
 
     private var client: AislopdeskClient?
     /// The pane's typed metadata façade (E4), created on connect bound to the live ``client`` and torn
@@ -262,11 +273,14 @@ public final class ConnectionViewModel {
         terminal: TerminalViewModel,
         target: @escaping @MainActor () -> ConnectionTarget = { .default },
         backoff: ReconnectManager.Backoff = .init(),
+        initialCwd: String? = nil,
         makeClient: @escaping @Sendable () -> AislopdeskClient,
     ) {
         self.terminal = terminal
         self.target = target
         self.backoff = backoff
+        let trimmed = initialCwd?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.initialCwd = (trimmed?.isEmpty ?? true) ? nil : trimmed
         self.makeClient = makeClient
     }
 
@@ -431,7 +445,10 @@ public final class ConnectionViewModel {
             // does NOT inherit our caller's cancellation); awaiting `.value` still propagates a real
             // connect error/timeout, but `Task.isCancelled` inside is now always false. Our own
             // generation + `self.client === client` guards below remain the authority on supersession.
-            try await Task { @MainActor in try await client.connect(host: host, port: port) }.value
+            try await Task { @MainActor in
+                await client.setInitialCwd(initialCwd)
+                try await client.connect(host: host, port: port)
+            }.value
             // Read the learned id, THEN re-check we are still the live attempt before writing any state —
             // `AislopdeskClient.connect` RETURNS (not throws) when it was closed/paused/superseded mid-handshake,
             // so without this guard a torn-down or superseded pane would be whitewashed to `.connected`.
@@ -632,6 +649,7 @@ public final class ConnectionViewModel {
             case .running:
                 // The command-START edge clears a STALE completion badge in the store (a new run resets the
                 // prior exit ✓/✗ before the spinner resolves). The terminal model still sets `.running` below.
+                commandStartSeen = true
                 onCommandStarted?()
             case let .idle(exitCode, durationMS):
                 onCommandCompleted?(exitCode, durationMS)
@@ -692,10 +710,37 @@ public final class ConnectionViewModel {
             // ALSO folds it (`terminal.handle` below) into its observable `progress` mirror for the pane
             // status strip / Dock read. `PaneProgress(state:percent:)` maps a `.clear` to `nil` (remove it).
             onProgressUpdate?(PaneProgress(state: state, percent: percent))
+        case let .cwd(path):
+            routeWorkingDirectory(path)
         case .bell:
             break
         }
         terminal.handle(event)
+    }
+
+    private func routeWorkingDirectory(_ path: String) {
+        guard !path.isEmpty else { return }
+        // OSC-7 STARTUP-NOISE GATE. A zsh plugin manager (zinit / antidote / antigen / …) transiently
+        // `cd`s into its plugin CACHE directory while sourcing `.zshrc` and emits an OSC 7 from there —
+        // e.g. `…/plugins/zsh-users---zsh-autosuggestions` — BEFORE the shell reaches its first prompt.
+        // Accepting that edge overwrites this pane's inherit source (`lastKnownCwd`), so a later
+        // new-tab / split then `chdir`s the freshly-spawned PTY into that plugin dir (via `channelOpen`)
+        // instead of the real project cwd. That is the whole bug: split/new-tab landing in
+        // `zsh-users---zsh-autosuggestions`.
+        //
+        // Gate on `commandStartSeen` (first OSC 133;C command-START): plugin sourcing never emits a
+        // command-START mark, whereas an INTERACTIVE `cd` (itself a command) does — so a genuine user
+        // `cd` is still captured live, immediately, from the OSC 7 the shell reports. Before the first
+        // command the stamped `lastKnownCwd` (set at pane creation from the inherited cwd) is already the
+        // correct inherit source, so dropping pre-command edges is loss-free. The host `cwd` RPC is NOT a
+        // useful cross-check here: it re-reads the shell's LIVE cwd, which is the same transient plugin dir
+        // the OSC 7 reported — it races the `cd`, it does not authoritatively reject the noise.
+        //
+        // NOTE: `metadataClient`-independent by design — every production terminal pane has a live
+        // `metadataClient`, so any branch keyed on it being nil would never run in production (the exact
+        // trap the previous implementation fell into). There is one path, and the unit tests exercise it.
+        guard commandStartSeen else { return }
+        onWorkingDirectoryChanged?(path)
     }
 
     #if DEBUG

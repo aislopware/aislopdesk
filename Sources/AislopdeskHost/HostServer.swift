@@ -582,6 +582,7 @@ public final class HostServer: @unchecked Sendable {
                     paneID: agentHookListener != nil ? paneID : nil,
                     controlSocketPath: agentControlSocketPath.isEmpty ? nil : agentControlSocketPath,
                 )
+                if let initialCwd = open.initialCwd { env["PWD"] = initialCwd }
                 if let overrides = ShellIntegration.makeEnvironmentOverrides(
                     parent: ProcessInfo.processInfo.environment,
                     shellPath: shellPath,
@@ -591,7 +592,7 @@ public final class HostServer: @unchecked Sendable {
                     // session deletes it on the child's exit (R8 #3).
                     shimDir = overrides["ZDOTDIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
                 }
-                try pty.spawn(shellPath, environment: env, argv0: argv0)
+                try pty.spawn(shellPath, environment: env, argv0: argv0, cwd: open.initialCwd)
             }
         } catch {
             onLog?("mux channel \(open.channelID) (conn \(connectionID)): shell spawn failed: \(error)")
@@ -995,6 +996,7 @@ public final class HostServer: @unchecked Sendable {
             arguments: argv,
             environment: environ,
             argv0: argv0,
+            cwd: cwd,
             cols: cols,
             rows: rows,
         )

@@ -13,7 +13,13 @@ final class HostChannelRouterTests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line,
     ) {
-        let decision = router.route(.channelOpen(channelID: id, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0))
+        let decision = router.route(.channelOpen(
+            channelID: id,
+            sessionID: UUID(),
+            lastReceivedSeq: 0,
+            channelClass: 0,
+            initialCwd: nil,
+        ))
         guard case .lifecycle(id, .open) = decision else {
             XCTFail("expected peer-open lifecycle for \(id), got \(decision)", file: file, line: line)
             return

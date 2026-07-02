@@ -17,8 +17,7 @@ public struct LaunchPreset: Codable, Sendable, Equatable, Identifiable {
     public var name: String
     /// The command spawned in the (first / only) pane. Empty ⇒ a plain shell pane (no command sent).
     public var command: String
-    /// Optional working directory: a leading `cd <dir>` is sent before the command. `nil`/empty ⇒ the
-    /// shell's default cwd.
+    /// Optional working directory for host-side PTY spawn. `nil`/empty ⇒ the shell's default cwd.
     public var workingDirectory: String?
     /// When set, the FIRST pane splits along this axis and a SECOND pane runs ``secondaryCommand`` — a
     /// two-pane template (e.g. editor + watch). `nil` ⇒ a single pane.
@@ -126,20 +125,20 @@ public enum LaunchPresetEngine {
     }
 
     /// Expands `preset` into a ``Plan``. The pane title is the preset name (so "Claude Code" labels the
-    /// chrome); the command + optional `cd` become the keystrokes. A two-pane preset adds a second
-    /// `.terminal` pane and the split axis.
+    /// chrome); the working directory becomes the pane's initial cwd, and the command becomes the
+    /// post-connect keystrokes. A two-pane preset adds a second `.terminal` pane and the split axis.
     public static func plan(for preset: LaunchPreset) -> Plan {
         let primary = PaneLaunch(
-            spec: PaneSpec(kind: .terminal, title: preset.name),
-            keystrokes: keystrokes(command: preset.command, cwd: preset.workingDirectory),
+            spec: PaneSpec(kind: .terminal, title: preset.name, lastKnownCwd: preset.workingDirectory),
+            keystrokes: keystrokes(command: preset.command, cwd: nil),
         )
         guard let split = preset.split else {
             return Plan(panes: [primary], splitAxis: nil)
         }
         let secondary = PaneLaunch(
             // The second pane shares the preset's cwd (a split inherits the working directory).
-            spec: PaneSpec(kind: .terminal, title: preset.name),
-            keystrokes: keystrokes(command: split.secondaryCommand, cwd: preset.workingDirectory),
+            spec: PaneSpec(kind: .terminal, title: preset.name, lastKnownCwd: preset.workingDirectory),
+            keystrokes: keystrokes(command: split.secondaryCommand, cwd: nil),
         )
         return Plan(panes: [primary, secondary], splitAxis: split.axis)
     }
