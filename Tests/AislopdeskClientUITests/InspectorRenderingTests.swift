@@ -301,6 +301,37 @@ final class InspectorRenderingTests: XCTestCase {
         XCTAssertEqual(InfoTabFormatting.displayPath("/Users/me/src/app"), "/Users/me/src/app")
     }
 
+    /// ES-E9/bugfix: after a `cd`, the pane spec's live `lastKnownCwd` must win over the metadata model's
+    /// stale bind-time `cwd` — the model is only refetched on pane-focus/(re)connect, so it would otherwise
+    /// keep showing the pre-`cd` directory. FAILS on the un-fixed `activeModel.cwd ?? cwd` ordering, which
+    /// returns the STALE model value whenever both are non-nil.
+    func testResolveWorkingDirectoryPrefersLiveLastKnownCwdOverStaleModelCwd() {
+        XCTAssertEqual(
+            InfoTabFormatting.resolveWorkingDirectory(lastKnownCwd: "/Users/me/projB", modelCwd: "/Users/me/projA"),
+            "/Users/me/projB",
+            "the live post-cd cwd must win over the stale bind-time metadata cwd",
+        )
+    }
+
+    /// A freshly-spawned pane (no OSC-7 fired yet, so `lastKnownCwd` is nil) still falls back to the
+    /// host-resolved metadata cwd rather than showing the em-dash placeholder prematurely.
+    func testResolveWorkingDirectoryFallsBackToModelCwdWhenNoLiveCwdKnown() {
+        XCTAssertEqual(
+            InfoTabFormatting.resolveWorkingDirectory(lastKnownCwd: nil, modelCwd: "/Users/me/projA"),
+            "/Users/me/projA",
+        )
+        XCTAssertEqual(
+            InfoTabFormatting.resolveWorkingDirectory(lastKnownCwd: "", modelCwd: "/Users/me/projA"),
+            "/Users/me/projA",
+            "an empty live cwd must not shadow a real model cwd",
+        )
+    }
+
+    func testResolveWorkingDirectoryNilWhenBothMissing() {
+        XCTAssertNil(InfoTabFormatting.resolveWorkingDirectory(lastKnownCwd: nil, modelCwd: nil))
+        XCTAssertNil(InfoTabFormatting.resolveWorkingDirectory(lastKnownCwd: "", modelCwd: ""))
+    }
+
     // MARK: - AgentSessionHistoryView — Send to Chat context wiring
 
     /// REVERT-TO-CONFIRM-FAIL: without the `onSendToChat` callback the context-menu "Send to Chat" item

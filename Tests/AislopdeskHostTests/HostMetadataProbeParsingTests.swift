@@ -77,6 +77,20 @@ final class HostMetadataProbeParsingTests: XCTestCase {
         XCTAssertEqual(behind, 0)
     }
 
+    // MARK: - claudeProjectSlug (Claude Code's on-disk project-dir encoding)
+
+    /// Claude Code dashes EVERY non-alphanumeric char, not just `/` — verified against a real
+    /// `~/.claude/projects` listing where `/Users/me/.config/nvim` stores as `-Users-me--config-nvim`
+    /// (the `.` gets its own dash, distinct from the adjacent `/`'s dash — no run-collapsing).
+    func testClaudeProjectSlugDashesEveryNonAlphanumericChar() {
+        XCTAssertEqual(
+            HostMetadataProbe.claudeProjectSlug("/Users/me/.config/nvim"), "-Users-me--config-nvim",
+            "a dotted path segment must slug to a SEPARATE dash per non-alphanumeric char",
+        )
+        XCTAssertEqual(HostMetadataProbe.claudeProjectSlug("/Users/me/my_app"), "-Users-me-my-app")
+        XCTAssertEqual(HostMetadataProbe.claudeProjectSlug("/Users/me/proj"), "-Users-me-proj")
+    }
+
     // MARK: - parseStatusLine (porcelain v1 `XY <path>`; rename keeps the NEW path)
 
     /// `MM f` (staged + worktree modified) → packed `0x11`, path `f`.

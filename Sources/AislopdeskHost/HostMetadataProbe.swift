@@ -151,7 +151,12 @@ struct HostMetadataProbe: MetadataQuerying {
     // MARK: - git status (porcelain v1 -b) + diff
 
     func gitStatus(cwd: String) -> MetadataCodec.GitStatusPayload {
-        guard let output = Self.runProcessString(Self.gitPath, ["-C", cwd, "status", "--porcelain", "-b"]) else {
+        // `-c core.quotepath=false` disables git's default octal-escaping/quoting of non-ASCII paths
+        // (`"b\303\241o..."`) so accented/CJK filenames flow through verbatim as UTF-8 — both for display
+        // and as the `gitDiff` pathspec, which would otherwise match nothing against the quoted literal.
+        guard let output = Self.runProcessString(
+            Self.gitPath, ["-c", "core.quotepath=false", "-C", cwd, "status", "--porcelain", "-b"],
+        ) else {
             return .noRepo
         }
         var hasRepo = false
@@ -372,12 +377,19 @@ struct HostMetadataProbe: MetadataQuerying {
         ]
     }
 
-    /// Claude Code: `~/.claude/projects/<slug>/*.jsonl` where the slug is the project path with `/`
-    /// replaced by `-` (Claude's on-disk convention). Title is best-effort (filled by the viewer epic).
+    /// Claude Code's on-disk project-slug convention: every non-alphanumeric character (not just `/`)
+    /// becomes `-`, one dash per character (no collapsing of runs). Verified empirically against a real
+    /// `~/.claude/projects` listing — e.g. `/Users/me/.config/nvim` stores as `-Users-me--config-nvim`
+    /// (the leading `.` of `.config` becomes its OWN dash, adjacent to the `/`'s dash).
+    static func claudeProjectSlug(_ project: String) -> String {
+        String(project.map { $0.isASCII && $0.isLetter || $0.isASCII && $0.isNumber ? $0 : "-" })
+    }
+
+    /// Claude Code: `~/.claude/projects/<slug>/*.jsonl` where the slug is ``claudeProjectSlug(_:)``.
+    /// Title is best-effort (filled by the viewer epic).
     private static func claudeSessions(project: String) -> [MetadataCodec.AgentSessionInfo] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let slug = project.replacingOccurrences(of: "/", with: "-")
-        let dir = "\(home)/.claude/projects/\(slug)"
+        let dir = "\(home)/.claude/projects/\(claudeProjectSlug(project))"
         return jsonlSessions(inDirectory: dir, kind: .claude, project: project, ext: "jsonl")
     }
 
