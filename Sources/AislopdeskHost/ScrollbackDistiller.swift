@@ -38,6 +38,13 @@ enum ScrollbackDistiller {
     private static let backslash: UInt8 = 0x5C
     private static let rightBracket: UInt8 = 0x5D
     private static let semicolon: UInt8 = 0x3B
+    // String-sequence introducers (R9 #4, mirrors ``HostOutputSniffer``): DCS `ESC P`, SOS `ESC X`,
+    // PM `ESC ^`, APC `ESC _`. A conformant terminal swallows their body to the ST/BEL terminator; an
+    // embedded `ESC]133;…` in that body must NEVER be read as a mark (else it flips the distiller phase).
+    private static let dcs: UInt8 = 0x50 // 'P'
+    private static let sos: UInt8 = 0x58 // 'X'
+    private static let pm: UInt8 = 0x5E // '^'
+    private static let apc: UInt8 = 0x5F // '_'
 
     /// Payload cap for a single OSC sequence (mirrors the segmenter's general 4096 cap) — an OSC that
     /// exceeds it is discarded to its terminator so a never-terminated OSC can't grow unbounded.
@@ -57,6 +64,10 @@ enum ScrollbackDistiller {
         case oscEsc // inside an OSC, last byte was ESC — looking for `\` (ST)
         case oscDiscard // OSC over the cap — swallow to the terminator
         case oscDiscardEsc
+        // Inside a DCS/SOS/PM/APC string body (R9 #4): its bytes PASS THROUGH verbatim (honoring phase)
+        // but are NEVER parsed for marks — an embedded `ESC]133;…` there can't flip the phase.
+        case stringConsume
+        case stringConsumeEsc // inside a string body, last byte was ESC — looking for `\` (ST)
     }
 
     /// How the current B→C command-input span is being handled.
@@ -117,6 +128,21 @@ enum ScrollbackDistiller {
             pending.removeAll(keepingCapacity: true)
         }
 
+        // Closes an OPEN B→C command-input span that ended WITHOUT a `C` (an empty-Enter line, a Ctrl-C'd
+        // command, or a defensive `A`/`D` mid-span): FLUSH its buffered raw bytes rather than drop them
+        // (the accept-line CRLF echo / the cancelled command text is real scrollback), honoring the type's
+        // "never lost output" fallback guarantee. A no-op when idle or already in passthrough (bytes were
+        // emitted live). Leaves the parser idle (`suppress == false`).
+        func flushOpenInputSpan() {
+            guard suppress else { return }
+            if inputMode == .buffering, !inputBuffer.isEmpty {
+                out.append(contentsOf: inputBuffer)
+            }
+            inputBuffer.removeAll(keepingCapacity: true)
+            command = nil
+            suppress = false
+        }
+
         // Acts on a completed OSC (payload in `oscPayload`, full raw bytes in `pending`). A `133` mark is
         // CONSUMED (drives the phase, never emitted — it is zero-width). Any other OSC is emitted verbatim.
         func finishOSC() {
@@ -138,7 +164,12 @@ enum ScrollbackDistiller {
             let mark = oscPayload[oscPayload.index(after: sep)...].first
             switch mark {
             case 0x41: // 'A' — prompt start → idle (end any command span defensively).
-                suppress = false
+                // Flush any open (no-`C`) span so its bytes aren't lost, then RE-EMIT the prompt mark:
+                // libghostty counts one prompt per `133;A`, and the client's block/prompt jumps
+                // (WorkspaceStore+Blocks BlockJump) re-anchor by that count — so the distilled cold-reattach
+                // scrollback must carry one `133;A` per prompt to keep the count identical to the live stream.
+                flushOpenInputSpan()
+                out.append(contentsOf: pending)
             case 0x42: // 'B' — command-input start (or a prompt REDRAW re-firing B).
                 suppress = true
                 inputMode = .buffering
@@ -168,10 +199,40 @@ enum ScrollbackDistiller {
                     command = nil
                     suppress = false
                 }
-            case 0x44: // 'D' — command finished → idle.
-                suppress = false
+            case 0x44: // 'D' — command finished → idle. Flush any open (no-`C`) span so its echoed bytes
+                // (the empty-Enter CRLF, a Ctrl-C'd command line) reach the transcript instead of vanishing.
+                flushOpenInputSpan()
             default:
                 break // some other 133 subcommand — not a phase mark; drop the (zero-width) mark.
+            }
+        }
+
+        // Classifies the byte AFTER an ESC (the introducer already pushed onto `pending`): `]` → OSC,
+        // `P`/`X`/`^`/`_` → a DCS/SOS/PM/APC string body (R9 #4), a second ESC → re-introduce, else a
+        // CSI / short escape flushed to ground. Shared by the main `.afterEsc` arm and the two stray-ESC
+        // re-entry arms (post-OSC / post-oscDiscard) so all three treat string introducers identically.
+        func handleAfterEsc(_ b: UInt8) {
+            pending.append(b)
+            switch b {
+            case rightBracket: // `ESC ]` — OSC begins.
+                state = .osc
+                oscPayload.removeAll(keepingCapacity: true)
+            case dcs,
+                 sos,
+                 pm,
+                 apc:
+                // A string sequence: emit the introducer verbatim (honoring phase), then pass the body
+                // through in `.stringConsume` WITHOUT parsing marks — mirrors ``HostOutputSniffer`` R9 #4.
+                emitPending()
+                state = .stringConsume
+            case esc: // consecutive ESC — flush the first, keep this one as the new introducer.
+                pending.removeLast()
+                emitPending()
+                pending = [esc]
+                state = .afterEsc
+            default: // CSI (`ESC [`) or a short escape — not an OSC; flush it and resume ground.
+                emitPending()
+                state = .ground
             }
         }
 
@@ -186,19 +247,33 @@ enum ScrollbackDistiller {
                 }
 
             case .afterEsc:
-                pending.append(b)
+                handleAfterEsc(b)
+
+            case .stringConsume:
                 switch b {
-                case rightBracket: // `ESC ]` — OSC begins.
-                    state = .osc
-                    oscPayload.removeAll(keepingCapacity: true)
-                case esc: // consecutive ESC — flush the first, keep this one as the new introducer.
-                    pending.removeLast()
-                    emitPending()
+                case bel: // BEL terminates the string body.
+                    emitContent(b)
+                    state = .ground
+                case esc: // possible ST (`ESC \`) — hold the ESC and decide on the next byte.
                     pending = [esc]
-                // stay in .afterEsc
-                default: // CSI (`ESC [`) or a short escape — not an OSC; flush it and resume ground.
+                    state = .stringConsumeEsc
+                default: // opaque string-body byte — pass through verbatim (never parsed for marks).
+                    emitContent(b)
+                }
+
+            case .stringConsumeEsc:
+                switch b {
+                case backslash: // `ESC \` = ST terminator — emit it and resume ground.
+                    pending.append(b)
                     emitPending()
                     state = .ground
+                case esc: // another ESC — the held one was body; emit it and keep waiting for ST.
+                    emitPending()
+                    pending = [esc]
+                default: // lone ESC inside the body — emit `ESC <b>` and keep consuming the string.
+                    pending.append(b)
+                    emitPending()
+                    state = .stringConsume
                 }
 
             case .osc:
@@ -230,21 +305,7 @@ enum ScrollbackDistiller {
                     // new escape. Finish the OSC (without the trailing ESC), then reprocess from .afterEsc.
                     finishOSC()
                     pending = [esc]
-                    state = .afterEsc
-                    // Reprocess `b` in the .afterEsc arm.
-                    pending.append(b)
-                    switch b {
-                    case rightBracket:
-                        state = .osc
-                        oscPayload.removeAll(keepingCapacity: true)
-                    case esc:
-                        pending.removeLast()
-                        emitPending()
-                        pending = [esc]
-                    default:
-                        emitPending()
-                        state = .ground
-                    }
+                    handleAfterEsc(b)
                 }
 
             case .oscDiscard:
@@ -259,20 +320,7 @@ enum ScrollbackDistiller {
                     state = .ground
                 } else {
                     pending = [esc]
-                    state = .afterEsc
-                    pending.append(b)
-                    switch b {
-                    case rightBracket:
-                        state = .osc
-                        oscPayload.removeAll(keepingCapacity: true)
-                    case esc:
-                        pending.removeLast()
-                        emitPending()
-                        pending = [esc]
-                    default:
-                        emitPending()
-                        state = .ground
-                    }
+                    handleAfterEsc(b)
                 }
             }
         }

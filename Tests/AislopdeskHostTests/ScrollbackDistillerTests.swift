@@ -41,10 +41,11 @@ final class ScrollbackDistillerTests: XCTestCase {
 
     func testCommandSpanCollapsedToCommittedCommand() {
         // Prompt (A→B) kept; the B→C editing region (here: garbage echo) DROPPED and replaced by the
-        // `133;E` command text + CRLF; the C→D output kept verbatim.
+        // `133;E` command text + CRLF; the C→D output kept verbatim. The `133;A` prompt mark is RE-EMITTED
+        // (libghostty counts prompts by it) so cold-reattach prompt/block jumps still anchor.
         let input =
             "\(mark("A"))~/proj ❯ \(mark("B"))ggii...garbage-echo...\(mark("E;git status"))\(mark("C"))On branch main\n\(mark("D;0"))"
-        XCTAssertEqual(distill(input), "~/proj ❯ git status\r\nOn branch main\n")
+        XCTAssertEqual(distill(input), "\(mark("A"))~/proj ❯ git status\r\nOn branch main\n")
     }
 
     func testTabCompletionMenuDropped() {
@@ -53,28 +54,28 @@ final class ScrollbackDistillerTests: XCTestCase {
         let menu = "git ch\n  checkout  cherry  cherry-pick\u{1B}[2A\u{1B}[J"
         let input =
             "\(mark("A"))$ \(mark("B"))\(menu)\(mark("E;git checkout main"))\(mark("C"))Switched to branch 'main'\n\(mark("D;0"))"
-        XCTAssertEqual(distill(input), "$ git checkout main\r\nSwitched to branch 'main'\n")
+        XCTAssertEqual(distill(input), "\(mark("A"))$ git checkout main\r\nSwitched to branch 'main'\n")
     }
 
     func testOutputColoursPreserved() {
         // SGR colour runs in the C→D output must survive (unlike in B→C, where they are churn).
         let input =
             "\(mark("A"))$ \(mark("B"))x\(mark("E;ls"))\(mark("C"))\u{1B}[01;34mdir\u{1B}[0m file\n\(mark("D;0"))"
-        XCTAssertEqual(distill(input), "$ ls\r\n\u{1B}[01;34mdir\u{1B}[0m file\n")
+        XCTAssertEqual(distill(input), "\(mark("A"))$ ls\r\n\u{1B}[01;34mdir\u{1B}[0m file\n")
     }
 
     func testNonSemanticOSCInOutputPreserved() {
         // A hyperlink OSC (OSC 8) emitted as command OUTPUT is kept.
         let link = "\u{1B}]8;;http://x\u{1B}\\link\u{1B}]8;;\u{1B}\\"
         let input = "\(mark("A"))$ \(mark("B"))x\(mark("E;echo"))\(mark("C"))\(link)\n\(mark("D;0"))"
-        XCTAssertEqual(distill(input), "$ echo\r\n\(link)\n")
+        XCTAssertEqual(distill(input), "\(mark("A"))$ echo\r\n\(link)\n")
     }
 
     func testMultipleCommandsCollapsedIndependently() {
         let input =
             "\(mark("A"))$ \(mark("B"))junk1\(mark("E;pwd"))\(mark("C"))/home\n\(mark("D;0"))"
                 + "\(mark("A"))$ \(mark("B"))junk2\(mark("E;whoami"))\(mark("C"))root\n\(mark("D;0"))"
-        XCTAssertEqual(distill(input), "$ pwd\r\n/home\n$ whoami\r\nroot\n")
+        XCTAssertEqual(distill(input), "\(mark("A"))$ pwd\r\n/home\n\(mark("A"))$ whoami\r\nroot\n")
     }
 
     // MARK: Fallback safety (no committed command)
@@ -83,7 +84,7 @@ final class ScrollbackDistillerTests: XCTestCase {
         // A B→C span with NO `133;E`: the raw editing bytes pass through verbatim (never lost, never
         // invented). Byte-identical to the pre-distiller replay for a non-shim shell.
         let input = "\(mark("A"))$ \(mark("B"))ls -la\r\n\(mark("C"))total 0\n\(mark("D;0"))"
-        XCTAssertEqual(distill(input), "$ ls -la\r\ntotal 0\n")
+        XCTAssertEqual(distill(input), "\(mark("A"))$ ls -la\r\ntotal 0\n")
     }
 
     func testPromptRedrawResetsInputBuffer() {
@@ -91,7 +92,7 @@ final class ScrollbackDistillerTests: XCTestCase {
         // final `E` command is what survives.
         let input =
             "\(mark("A"))$ \(mark("B"))par\(mark("B"))partial-echo\(mark("E;make test"))\(mark("C"))ok\n\(mark("D;0"))"
-        XCTAssertEqual(distill(input), "$ make test\r\nok\n")
+        XCTAssertEqual(distill(input), "\(mark("A"))$ make test\r\nok\n")
     }
 
     // MARK: E unescape (byte-identical to the segmenter)
@@ -99,14 +100,14 @@ final class ScrollbackDistillerTests: XCTestCase {
     func testExplicitCommandUnescaped() {
         // The shim escapes `;`, `\`, ESC, BEL, CR, LF as `\xNN`. `echo a;b` → `echo a\x3bb`.
         let input = "\(mark("A"))$ \(mark("B"))z\(mark("E;echo a\\x3bb"))\(mark("C"))a;b\n\(mark("D;0"))"
-        XCTAssertEqual(distill(input), "$ echo a;b\r\na;b\n")
+        XCTAssertEqual(distill(input), "\(mark("A"))$ echo a;b\r\na;b\n")
     }
 
     func testExplicitCommandWithSTTerminator() {
         // The mark may be closed by ST (`ESC \`) instead of BEL — both must parse.
         let input =
             "\(markST("A"))$ \(markST("B"))w\(markST("E;date"))\(markST("C"))Mon\n\(markST("D;0"))"
-        XCTAssertEqual(distill(input), "$ date\r\nMon\n")
+        XCTAssertEqual(distill(input), "\(markST("A"))$ date\r\nMon\n")
     }
 
     // MARK: Partial / mid-stream streams (scrollback ring can start mid-history)
@@ -115,14 +116,14 @@ final class ScrollbackDistillerTests: XCTestCase {
         // The ring's oldest entry can begin mid-output (line-aligned, but after a prior command's C).
         // With no leading A/B we are in the idle/passthrough phase → verbatim until the next mark cycle.
         let input = "…tail of prior output\n\(mark("A"))$ \(mark("B"))q\(mark("E;id"))\(mark("C"))uid=0\n\(mark("D;0"))"
-        XCTAssertEqual(distill(input), "…tail of prior output\n$ id\r\nuid=0\n")
+        XCTAssertEqual(distill(input), "…tail of prior output\n\(mark("A"))$ id\r\nuid=0\n")
     }
 
     func testUnterminatedCommandSpanAtEndEmitsRawTail() {
         // A B→C span still open at end-of-buffer (the live command line being edited when the ring ended)
         // with no committed E: emit the raw tail so nothing is lost.
         let input = "\(mark("A"))$ \(mark("B"))half-typed-cmd"
-        XCTAssertEqual(distill(input), "$ half-typed-cmd")
+        XCTAssertEqual(distill(input), "\(mark("A"))$ half-typed-cmd")
     }
 
     func testMalformedTrailingEscapeDoesNotTrap() {
@@ -149,5 +150,41 @@ final class ScrollbackDistillerTests: XCTestCase {
         // The overflowed raw span is present; output follows.
         XCTAssertTrue(result.contains(big), "oversized span should pass through verbatim")
         XCTAssertTrue(result.hasSuffix("out\n"))
+    }
+
+    // MARK: Input-span flush on D / A (no C) — the "never lost output" fallback (Bug 3)
+
+    func testEmptyEnterSpanFlushedOnD() {
+        // An empty-Enter line: `B` (from $PROMPT) → the accept-line "\r\n" echo → precmd `D;0` (NO preexec,
+        // so NO `E`/`C`). The buffered "\r\n" must be FLUSHED on the `D`, not dropped — else consecutive
+        // prompts jam onto one line in the restored scrollback.
+        let input = "\(mark("A"))~ ❯ \(mark("B"))\r\n\(mark("D;0"))\(mark("A"))~ ❯ "
+        XCTAssertEqual(distill(input), "\(mark("A"))~ ❯ \r\n\(mark("A"))~ ❯ ")
+    }
+
+    func testCtrlCSpanFlushedOnClosingA() {
+        // A typed-then-Ctrl-C'd line closed directly by the NEXT prompt's `A` (no `C`, no `D` seen before it):
+        // the echoed "sleep 99^C\r\n" must survive rather than vanish + concatenate the two prompts.
+        let input = "\(mark("A"))$ \(mark("B"))sleep 99^C\r\n\(mark("A"))$ "
+        XCTAssertEqual(distill(input), "\(mark("A"))$ sleep 99^C\r\n\(mark("A"))$ ")
+    }
+
+    // MARK: DCS/SOS/PM/APC string-swallow (R9 #4 parity with HostOutputSniffer) (Bug 4)
+
+    func testDCSStringBodyDoesNotSpoofMarkAndOutputSurvives() {
+        // A DCS passthrough string whose BODY contains an `ESC]133;B` must NOT flip the distiller into
+        // command-input suppression: the body passes through verbatim, the following real output is kept,
+        // and a subsequent real `133;D` is consumed (zero-width). Without the string-consume state the
+        // embedded `B` sets suppress=true and the real output is orphaned + dropped at the `D`.
+        let input = "\u{1B}P\u{1B}]133;B\u{07}REALOUTPUT\u{1B}\\\(mark("D;0"))"
+        // Everything but the trailing real `133;D` mark passes through verbatim; the embedded `133;B` is
+        // opaque DCS-body text (BEL terminates the DCS), never a phase mark.
+        XCTAssertEqual(distill(input), "\u{1B}P\u{1B}]133;B\u{07}REALOUTPUT\u{1B}\\")
+    }
+
+    func testDCSStringBodyPreservedVerbatimWhenIdle() {
+        // A well-formed ST-terminated DCS with no embedded marks passes through untouched in the idle phase.
+        let dcs = "\u{1B}Pcontrol-string-body\u{1B}\\"
+        XCTAssertEqual(distill("before\(dcs)after"), "before\(dcs)after")
     }
 }
