@@ -167,6 +167,13 @@ public struct PaneSpec: Sendable, Equatable {
     /// ``WorkspacePersistence/loadTree()``). Read-only from the client perspective.
     public var lastKnownTitle: String?
 
+    /// The title to surface in a command-completion notification/toast — the live OSC 0/2 shell title
+    /// (``lastKnownTitle``, often the running command line) when the shell has reported one, else the
+    /// static ``title`` (e.g. "Terminal"). Distinct from ``title`` itself, which stays the pane's
+    /// persisted/renamable identity — this is only for the completion sink, which historically read
+    /// `title` directly and so always showed the generic default.
+    public var completionNotificationTitle: String { lastKnownTitle ?? title }
+
     // MARK: Floating overlay field (additive — schema v11)
 
     /// Non-`nil` marks this pane as a **floating** (scratch) pane that overlays the tiled layout instead
