@@ -228,6 +228,11 @@ public struct AislopdeskClientApp: App {
         // Persist a committed target into the tree (so the Connect-to-Host editor prefills the last host
         // next launch).
         appConnection.onTargetCommitted = { [weak store] target in store?.commitConnectionTarget(target) }
+        // R-lifecycle #1: when the app-global connection (re)establishes, re-dial every pane channel stuck
+        // disconnected/failed/unreachable — the leaf's connect-on-appear `.task` never re-fires under
+        // keep-all-mounted, so without this fan-out a restored pane that gave up while the host was down stays
+        // a dead, blank terminal behind a green pill until a manual per-pane Reconnect.
+        appConnection.onConnectionEstablished = { [weak store] in store?.redialDisconnectedPanes() }
         // Gate the scene-level "Reconnect Pane" command on the app being connected.
         store.isAppConnected = { [weak appConnection] in
             if case .connected = appConnection?.status { return true }
@@ -461,7 +466,10 @@ public struct AislopdeskClientApp: App {
         // `.introspect(.window)` closure reads the SAME `chrome.pinned` the titlebar / menu flip.
         _chrome = State(initialValue: WorkspaceChromeState())
         #if os(macOS)
-        _windowBox = State(initialValue: WeakWindowBox())
+        // Held in a local so the keybinding dispatcher's `isWorkspaceWindowKey` closure below captures the SAME
+        // `WeakWindowBox` the `.introspect(.window)` hook fills — mirroring the `overlay` local pattern.
+        let windowBox = WeakWindowBox()
+        _windowBox = State(initialValue: windowBox)
         _clipboardMonitor = State(initialValue: ClipboardMonitor(store: store))
         _dockProgress = State(initialValue: dockProgress)
         // WS-B / B3: build the live keybinding dispatcher over the single store. A new-pane action (split /
@@ -513,6 +521,12 @@ public struct AislopdeskClientApp: App {
             // `capturesKeyboardWhileVisible` — without it a modeled ⌘W destroyed a background pane / ⌘1–9
             // switched a background tab behind the open dialog (the chord leaked past the focused field).
             isOverlayCapturingKeys: { [overlay] in overlay.capturesKeyboardWhileVisible },
+            // Bug-fix (keyboard audit): gate the app-wide NSEvent monitor on the WORKSPACE window being key, so
+            // the stock Settings scene (⌘,) + attached sheets receive their own keystrokes instead of a bound
+            // chord (⌘W/⌘T/⌘1–9/…) resolving against the hidden workspace tree behind them. The window is
+            // captured weakly in `windowBox` by the `.introspect(.window)` hook below; before capture (nil) we
+            // default to "workspace is key" so the at-launch behaviour is unchanged.
+            isWorkspaceWindowKey: { [windowBox] in windowBox.window.map(\.isKeyWindow) ?? true },
         ))
         // E20 WI-3: the client control socket server over a ``WorkspaceControlBackend`` adapter on the SAME
         // live stores the GUI uses (the backend holds them WEAKLY — the app retains the originals). Built
@@ -549,6 +563,10 @@ public struct AislopdeskClientApp: App {
             // read, through the one NSEvent monitor that owns every chord.
             installPinToggle: { [keyDispatcher] toggle in keyDispatcher.setTogglePinWindow(toggle) },
         )
+        // Keyboard-audit fix: bind the coordinator's `openSettingsAction` to the SwiftUI `openSettings`
+        // environment action so the palette "Open Settings" row + the agent footer hook open the stock
+        // Settings scene (previously a dead control — nothing observed the old `settingsVisible` flag).
+        .modifier(SettingsOpenerInstaller(overlay: overlayCoordinator))
         #else
         WorkspaceRootView(store: store, connection: connection, overlay: overlayCoordinator, chrome: chrome)
         #endif
@@ -737,6 +755,22 @@ public struct AislopdeskClientApp: App {
                     // E14/K5/K8: reset the process-global Dock tile on teardown so a quit never leaves a
                     // stuck progress/red tile behind for the next app to inherit.
                     dockProgress.clear()
+                }
+                // Audit fix (notify cluster): on macOS `scenePhase` tracks WINDOW VISIBILITY, not app
+                // activation — it stays `.active` while the window sits visible-but-backgrounded behind
+                // another app, which kept `isAppActive` permanently true and silently suppressed every
+                // command/error/agent UN banner (default `notifyWhileForeground == .off`). Drive it from
+                // the real AppKit activation signal instead — the same one DockProgressController /
+                // SecureKeyboardEntryController already use — so backgrounding the app (window still
+                // visible) correctly flips the foreground gate.
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    store.isAppActive = true
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+                    store.isAppActive = false
+                }
+                .task {
+                    store.isAppActive = NSApplication.shared.isActive
                 }
             #endif
         }
@@ -1010,8 +1044,10 @@ public struct AislopdeskClientApp: App {
     #endif
 
     private func handleScenePhase(_ phase: ScenePhase) {
-        store.isAppActive = (phase == .active)
         #if os(iOS)
+        // iOS scenePhase genuinely tracks foreground/background (there's no separate window-occlusion
+        // signal to prefer), so it stays the source of truth for `isAppActive` there.
+        store.isAppActive = (phase == .active)
         let prev = lifecycleTask
         lifecycleTask = Task {
             await prev?.value
@@ -1036,6 +1072,19 @@ public struct AislopdeskClientApp: App {
 }
 
 #if os(macOS)
+/// Keyboard-audit fix — binds ``OverlayCoordinator/openSettingsAction`` to the SwiftUI `openSettings`
+/// environment action so the palette "Open Settings" row + the agent footer's settings hook actually open the
+/// stock `Settings` scene (⌘, is otherwise the ONLY way in). `openSettings` is only readable from inside a
+/// View's environment, so this zero-effect modifier is where the app captures it; wired once on appear.
+private struct SettingsOpenerInstaller: ViewModifier {
+    let overlay: OverlayCoordinator
+    @Environment(\.openSettings) private var openSettings
+
+    func body(content: Content) -> some View {
+        content.onAppear { overlay.openSettingsAction = { openSettings() } }
+    }
+}
+
 /// E19 WI-4 — a tiny WEAK holder for THIS scene's `NSWindow`, captured in the blessed `.introspect(.window)`
 /// closure so the `.onChange(of: chrome.pinned)` pin actuator can re-level the live window without the
 /// forbidden `NSApplication.windows` scan. Deliberately NOT `@Observable` — mutating `window` must not trigger

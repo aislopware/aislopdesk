@@ -78,9 +78,13 @@ struct KeybindingsEditorView: View {
             Text("This clears every customized shortcut and restores the defaults.")
         }
         #if os(macOS)
-        .background(KeyCaptureMonitor(isActive: recordingID != nil) { event in
-            handleCapturedEvent(event)
-        })
+        .background(KeyCaptureMonitor(
+            isActive: recordingID != nil,
+            onKey: { event in handleCapturedEvent(event) },
+            // Cancel recording if the Settings window loses focus (click-away / app switch) so a stray
+            // keystroke elsewhere is never silently recorded as the new chord.
+            onCancel: { recordingID = nil },
+        ))
         #endif
     }
 
@@ -261,9 +265,10 @@ struct KeybindingsEditorView: View {
     /// `didSet` fires (it compares to `oldValue`).
     private func clearOverride(_ id: String) {
         guard store.keybindings.chord(for: id) != nil else { return }
-        var overrides = store.keybindings.overrides
-        overrides.removeValue(forKey: id)
-        store.keybindings = KeybindingPreferences(overrides: overrides)
+        // MUTATE the existing model (preserving sequenceOverrides / textBindings / unbinds) — rebuilding it as
+        // `KeybindingPreferences(overrides:)` would default those three to empty, silently wiping the user's
+        // config.toml literal-byte / unbind / sequence bindings on every edit.
+        store.keybindings = KeybindingsEditorModel.clearingOverride(for: id, in: store.keybindings)
     }
 
     /// The global "Reset to Default": clear EVERY customization (single-chord, sequence, text-byte, and
@@ -277,9 +282,8 @@ struct KeybindingsEditorView: View {
     /// Write `chord` as the override for `id` and stop recording. The single persistence channel: setting
     /// `store.keybindings` republishes to `WorkspaceBindingRegistry.activeOverrides` (D6 invariant).
     private func setOverride(_ chord: KeybindingPreferences.KeyChord, for id: String) {
-        var overrides = store.keybindings.overrides
-        overrides[id] = chord
-        store.keybindings = KeybindingPreferences(overrides: overrides)
+        // MUTATE the existing model (preserving sequenceOverrides / textBindings / unbinds) — see clearOverride.
+        store.keybindings = KeybindingsEditorModel.settingOverride(chord, for: id, in: store.keybindings)
         recordingID = nil
     }
 
@@ -317,15 +321,29 @@ struct KeybindingsEditorView: View {
 /// A zero-size `NSViewRepresentable` that installs a LOCAL `NSEvent` keyDown monitor while `isActive` so a
 /// captured keystroke reaches `onKey` (and is SWALLOWED — the monitor returns `nil` so the keystroke does
 /// not also trigger a menu shortcut / type into a field while recording). Removed when inactive.
+///
+/// SCOPING (keyboard-audit fix): a `.keyDown` local monitor fires for events delivered to ANY window in the
+/// process. Without scoping, clicking "Press a key…" and then clicking away (into the Settings search field
+/// or the main workspace window) meant every keystroke app-wide was swallowed and the first one recorded as a
+/// bogus chord. So the monitor captures ONLY events destined for its OWN hosting key window; a keystroke aimed
+/// elsewhere passes THROUGH unchanged. It also observes its window losing key focus and fires `onCancel` so
+/// recording stops on click-away rather than lying in wait for a stray key.
 private struct KeyCaptureMonitor: NSViewRepresentable {
     let isActive: Bool
     let onKey: (NSEvent) -> Void
+    let onCancel: () -> Void
 
-    func makeNSView(context _: Context) -> NSView { NSView(frame: .zero) }
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.hostView = view
+        return view
+    }
 
-    func updateNSView(_: NSView, context: Context) {
-        context.coordinator.isActive = isActive
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.hostView = view
         context.coordinator.onKey = onKey
+        context.coordinator.onCancel = onCancel
+        context.coordinator.isActive = isActive
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -337,9 +355,13 @@ private struct KeyCaptureMonitor: NSViewRepresentable {
     @MainActor
     final class Coordinator {
         var onKey: (NSEvent) -> Void = { _ in }
+        var onCancel: () -> Void = {}
+        weak var hostView: NSView?
         private var monitor: Any?
+        private var resignObserver: NSObjectProtocol?
         var isActive: Bool = false {
             didSet {
+                guard isActive != oldValue else { return }
                 if isActive { install() } else { teardown() }
             }
         }
@@ -347,14 +369,32 @@ private struct KeyCaptureMonitor: NSViewRepresentable {
         private func install() {
             guard monitor == nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                self?.onKey(event)
-                return nil // swallow the keystroke while recording
+                guard let self else { return event }
+                // Only capture keystrokes aimed at THIS Settings window (the one hosting the recorder). A key
+                // delivered to any other window / field passes through UNCHANGED — never swallowed, never
+                // mis-recorded.
+                guard let window = hostView?.window, window.isKeyWindow, event.window === window else {
+                    return event
+                }
+                onKey(event)
+                return nil // swallow the keystroke while recording, only for our own window
+            }
+            // Cancel recording if our window loses key focus (click-away / app switch) so a later keystroke
+            // elsewhere can never be silently captured as the new chord.
+            if let window = hostView?.window {
+                resignObserver = NotificationCenter.default.addObserver(
+                    forName: NSWindow.didResignKeyNotification, object: window, queue: .main,
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.onCancel() }
+                }
             }
         }
 
         func teardown() {
             if let monitor { NSEvent.removeMonitor(monitor) }
             monitor = nil
+            if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+            resignObserver = nil
         }
     }
 }

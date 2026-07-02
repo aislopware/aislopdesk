@@ -1,7 +1,7 @@
 // OverlayCoordinator — the single `@MainActor @Observable` owner of the floating-overlay layer's state
 // (warp-overlays-actions.md §4: a central reducer the chrome controls dispatch into). It owns:
 //   - the command-palette presentation (mode + active filter + query) and its mixer,
-//   - the Settings overlay flag,
+//   - the Settings open action (the injected `openSettings` environment action → the stock Settings scene),
 //   - the toast stack (wired to the store's onPaneNotification / onLongCommandNotify / onAgentAttention),
 //   - and routes a palette row's `PaletteAction` to the store, then closes.
 //
@@ -56,8 +56,13 @@ public final class OverlayCoordinator {
 
     // MARK: Settings state
 
-    /// Whether the Settings overlay is presented.
-    public private(set) var settingsVisible = false
+    /// Opens the app's Settings surface. On macOS the Settings surface is the STOCK SwiftUI `Settings` scene
+    /// (a separate system-chromed window opened by ⌘,), which no in-window flag can present — so the root view
+    /// injects this closure, bound to the SwiftUI `openSettings` environment action (with an `NSApp`
+    /// `showSettingsWindow:` fallback). The palette "Open Settings" row and the agent footer's settings hook
+    /// route through ``openSettings()`` → this closure. `nil` (tests / previews / a pre-`onAppear` scene) makes
+    /// ``openSettings()`` a graceful no-op rather than a dead control that silently does nothing.
+    @ObservationIgnored public var openSettingsAction: (@MainActor () -> Void)?
 
     // MARK: Connect-to-Host state
 
@@ -513,8 +518,9 @@ public final class OverlayCoordinator {
 
     // MARK: Settings
 
-    public func openSettings() { settingsVisible = true }
-    public func closeSettings() { settingsVisible = false }
+    /// Open the app Settings surface via the injected ``openSettingsAction`` (the SwiftUI `openSettings`
+    /// environment action on macOS). A no-op when unbound (tests / previews) — never a dead control.
+    public func openSettings() { openSettingsAction?() }
 
     // MARK: Connect-to-Host
 
@@ -720,7 +726,14 @@ public final class OverlayCoordinator {
             store?.sendChatMessage(message, to: target)
             lastChatTarget = target
         } else {
-            store?.sendChatToNewSession(message)
+            store?.sendChatToNewSession(message) { [weak self] in
+                self?.pushToast(Toast(
+                    id: "send-to-chat-new-session-failed",
+                    flavor: .error,
+                    title: "Couldn't start the chat",
+                    body: "The new session never connected, so the message was not sent.",
+                ))
+            }
         }
         closeSendToChat()
     }

@@ -123,4 +123,32 @@ public enum KeybindingsEditorModel {
         !prefs.overrides.isEmpty || !prefs.sequenceOverrides.isEmpty
             || !prefs.textBindings.isEmpty || !prefs.unbinds.isEmpty
     }
+
+    /// Return `prefs` with `id`'s single-chord override set to `chord`, PRESERVING every other collection
+    /// (`sequenceOverrides` / `textBindings` / `unbinds`). The editor previously rebuilt the whole model as
+    /// `KeybindingPreferences(overrides:)`, whose initializer defaults those three to empty — so ANY
+    /// single-chord rebind in Settings silently wiped every config.toml `text:`/`csi:`/`esc:` literal-byte
+    /// binding, `unbind:` directive, and multi-key sequence override (the audit bug). Mutating a copy keeps
+    /// them intact while still yielding a fresh value so the store's `didSet` republishes.
+    public static func settingOverride(
+        _ chord: KeybindingPreferences.KeyChord,
+        for id: String,
+        in prefs: KeybindingPreferences,
+    ) -> KeybindingPreferences {
+        var next = prefs
+        next.overrides[id] = chord
+        return next
+    }
+
+    /// Return `prefs` with `id`'s single-chord override removed (restoring the registry default), PRESERVING
+    /// `sequenceOverrides` / `textBindings` / `unbinds` — the clear-one-row counterpart to ``settingOverride``
+    /// (the editor's Backspace-to-clear path), same audit fix.
+    public static func clearingOverride(
+        for id: String,
+        in prefs: KeybindingPreferences,
+    ) -> KeybindingPreferences {
+        var next = prefs
+        next.overrides.removeValue(forKey: id)
+        return next
+    }
 }

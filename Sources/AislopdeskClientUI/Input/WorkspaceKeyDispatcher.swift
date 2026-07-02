@@ -99,6 +99,18 @@ final class WorkspaceKeyDispatcher {
     /// GLOBAL entry chords only while the picker is HIDDEN (they open it).
     private let isOverlayCapturingKeys: () -> Bool
 
+    /// A predicate the monitor consults FIRST — `true` only while the WORKSPACE window is the key window. The
+    /// app NSEvent monitor is application-wide (a `.keyDown` local monitor fires for events delivered to ANY
+    /// window in this process), so without this gate a bound chord typed while the separate stock SwiftUI
+    /// Settings scene window (⌘,) — or an attached sheet (Save Recipe / first-launch / close-confirm) — is
+    /// key resolves against the HIDDEN main-window workspace tree and is swallowed before the Settings window
+    /// ever sees it: ⌘W closes a background terminal pane while Settings refuses to close, ⌘T/⌘D/⌘1–9 mutate
+    /// the hidden tree, and the keybindings recorder is starved (this monitor eats the chord it is trying to
+    /// record). When this returns `false` every key passes through UNCHANGED so the frontmost Settings window /
+    /// sheet owns its own keystrokes. `{ true }` (the headless / test default) keeps the at-rest behaviour
+    /// byte-identical — a test with no real window server always reports the workspace as key.
+    private let isWorkspaceWindowKey: () -> Bool
+
     /// The pure prefix machine (B2). Its sequence resolver reads the override-aware `resolvedSequenceTable`
     /// (single-chord fallback to `resolvedChordTable`) so a rebind — single OR multi-key — takes effect; the
     /// prefix chord itself is configurable (defaults to the store's live `workspaceKeyPrefix`).
@@ -126,6 +138,7 @@ final class WorkspaceKeyDispatcher {
         selectDetailsTab: ((DetailsPanelTab) -> Void)? = nil,
         togglePinWindow: (() -> Void)? = nil,
         isOverlayCapturingKeys: @escaping () -> Bool = { false },
+        isWorkspaceWindowKey: @escaping () -> Bool = { true },
     ) {
         self.store = store
         self.togglePalette = togglePalette
@@ -141,6 +154,7 @@ final class WorkspaceKeyDispatcher {
         self.selectDetailsTab = selectDetailsTab
         self.togglePinWindow = togglePinWindow
         self.isOverlayCapturingKeys = isOverlayCapturingKeys
+        self.isWorkspaceWindowKey = isWorkspaceWindowKey
         // The prefix machine resolves a post-prefix key against the override-aware SEQUENCE table FIRST (so a
         // multi-key prefix sequence whose tail key is not a standalone binding still fires), falling back to
         // the SINGLE-CHORD table (so the seeded ⌃A→⌘D, where ⌘D is also a standalone chord, keeps working and
@@ -210,6 +224,12 @@ final class WorkspaceKeyDispatcher {
     /// modal-yield gate below is unit-testable headlessly via `@testable` (it constructs a synthetic NSEvent,
     /// never a window-server resource — the hang-safety rule is about SCStream/VT/Metal, not NSEvent).
     func handle(_ event: NSEvent) -> NSEvent? {
+        // KEY-WINDOW GATE: the monitor is application-wide, but every workspace chord is meaningful ONLY when
+        // the workspace window holds focus. If a separate window is key — the stock Settings scene (⌘,), or an
+        // attached sheet — pass EVERY key through UNCHANGED so that window receives its own keystrokes (and the
+        // keybindings recorder can capture the chord it is trying to record) instead of this monitor resolving
+        // + swallowing it against the hidden workspace tree behind them.
+        if !isWorkspaceWindowKey() { return event }
         // MODAL YIELD: while a keyboard-capturing overlay (the Open-Quickly picker) is presented, this monitor
         // — which PREEMPTS the responder chain — must NOT resolve the global chord table behind it, or ⌘1–9
         // would switch the BACKGROUND tab (instead of quick-picking the Nth result) and ⌘W would DESTROY the

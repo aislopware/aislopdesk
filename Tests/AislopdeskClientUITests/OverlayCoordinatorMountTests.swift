@@ -418,6 +418,38 @@ final class OverlayCoordinatorMountTests: XCTestCase {
         XCTAssertEqual(afterClose, afterKeepOpen + 1, "plain ↩ also ran the action exactly once")
     }
 
+    // MARK: - Keyboard audit: "Open Settings" routes through the injected openSettings action
+
+    /// THE audit fix (Bug 4): the palette "Open Settings" row + the agent footer's settings hook both call
+    /// `overlay.openSettings()`, which previously only flipped a `settingsVisible` flag NO view observed — a
+    /// dead control. Now it invokes the injected `openSettingsAction` (the app binds it to the SwiftUI
+    /// `openSettings` environment action → the stock Settings scene). Pin that `openSettings()` fires the
+    /// injected closure, AND that running the "Open Settings" palette row routes through it. REVERT-TO-CONFIRM-
+    /// FAIL: restore `openSettings()` to set a flag instead of calling `openSettingsAction` and `fired` stays 0.
+    func testOpenSettingsFiresInjectedAction() throws {
+        let (overlay, _) = makeCoordinator()
+        var fired = 0
+        overlay.openSettingsAction = { fired += 1 }
+
+        overlay.openSettings()
+        XCTAssertEqual(fired, 1, "openSettings() invokes the injected openSettings action")
+
+        // The palette "Open Settings" row (PaletteAction.openSettings) routes through openSettings().
+        let row = try XCTUnwrap(
+            ActionsPaletteSource.catalog.first { $0.id == "action.openSettings" },
+            "the palette catalog has an Open Settings row",
+        )
+        overlay.run(row)
+        XCTAssertEqual(fired, 2, "running the Open Settings palette row also opens Settings via the action")
+    }
+
+    /// With no action injected (tests / previews / a pre-`onAppear` scene) `openSettings()` is a graceful
+    /// no-op — never a trap, never a crash.
+    func testOpenSettingsIsGracefulNoOpWithoutInjectedAction() {
+        let (overlay, _) = makeCoordinator()
+        overlay.openSettings() // must not crash with no action bound
+    }
+
     /// The ⌘/ toggle the app threads is `overlay.toggleCheatSheet()`. Pin open/close parity.
     func testToggleCheatSheetOpensAndCloses() {
         let (overlay, _) = makeCoordinator()
