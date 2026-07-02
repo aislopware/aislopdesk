@@ -258,6 +258,56 @@ final class CommandBlockSegmenterTests: XCTestCase {
         XCTAssertEqual(blocks[0].commandText, "ls")
     }
 
+    func testPhantomDInCommandPhaseAfterEmptyEnterDropped() {
+        // The zsh shim emits `D;$?` from precmd on EVERY prompt cycle (before A), so an empty Enter
+        // at the prompt fires a `D` while the block is still in the `.command` phase — B fired (the
+        // prompt) but preexec/`C` did NOT (no command executed). Before the fix the `D` arm gated
+        // only on `hasOpenBlock` and minted a "completed" phantom block with empty commandText and
+        // the PREVIOUS command's exit code, piling "(no command)" rows into the Commands / Outline.
+        let stream =
+            cycle(prompt: "$ ", command: "false", output: "", exit: 1) // one real failed command
+                + a() + "$ " + b() // new prompt: block opens (.command phase)
+                + d(1) // empty-Enter precmd D;1 — stale $? = 1, NO C this cycle
+                + a() + "$ " + b() + "ls" + c() + "ok\n" + d(0) // a real command after the empty Enter
+        let blocks = CommandBlockSegmenter.segment(bytes(stream))
+        XCTAssertEqual(blocks.count, 2, "the empty-Enter phantom D must not mint a completed block")
+        XCTAssertEqual(blocks.map(\.commandText), ["false", "ls"])
+        XCTAssertEqual(blocks.map(\.exitCode), [1, 0])
+        XCTAssertTrue(blocks.allSatisfy(\.complete))
+    }
+
+    func testCtrlCLineAbortDropsPhantomBlock() {
+        // A Ctrl-C at the prompt aborts the line: zsh echoes `^C`, runs precmd (`D;130`) but NOT
+        // preexec — no `C`, so the open block stayed in the `.command` phase. Before the fix this
+        // minted a phantom completed "foo^C" block shown as FAILED (exit 130) though nothing ran.
+        let stream =
+            a() + "$ " + b() + "foo" + "^C\n" // typed "foo", then Ctrl-C abort (no preexec / C)
+            + d(130) // precmd D;130 — abort exit, no command executed
+            + a() + "$ " + b() + "ls" + c() + "ok\n" + d(0) // a real command after the abort
+        let blocks = CommandBlockSegmenter.segment(bytes(stream))
+        XCTAssertEqual(blocks.count, 1, "a Ctrl-C line-abort (no C) must not mint a phantom completed block")
+        XCTAssertEqual(blocks[0].commandText, "ls")
+        XCTAssertEqual(blocks[0].exitCode, 0)
+    }
+
+    func testInterruptedOutputBlockCarriesDurationOnClose() {
+        // A running command (reached `C` → `.output`) interrupted by a fresh prompt `A` with no `D`
+        // (a nested shell / ssh whose inner shell emits its own OSC-133) is closed as INCOMPLETE. It
+        // must carry a NON-nil durationMS so the close is distinguishable from the running peek —
+        // otherwise the tracker's dedup (which compares only exit/duration/text for a running block)
+        // suppresses the final emit and the client shows the row "running…" forever (Bug 3).
+        let clock = TestClock()
+        var seg = CommandBlockSegmenter(clock: clock.date)
+        _ = seg.ingest(bytes(a() + "$ " + b() + "ssh host" + c())) // reaches .output, runningSince set
+        clock.advance(2.0) // 2s of runtime before the interrupt
+        let closed = seg.ingest(bytes(a())) // remote prompt A interrupts, no D
+        XCTAssertEqual(closed.count, 1)
+        XCTAssertFalse(closed[0].complete)
+        XCTAssertNil(closed[0].exitCode)
+        XCTAssertEqual(closed[0].commandText, "ssh host")
+        XCTAssertEqual(closed[0].durationMS, 2000, "an interrupt-close stamps the C→interrupt duration")
+    }
+
     func testRepromptWithoutDClosesPriorAsIncomplete() {
         // A new A (prompt) arrives while a block is still open (no D) — the prior block is
         // flushed as incomplete, the new cycle starts fresh.

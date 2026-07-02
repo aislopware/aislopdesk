@@ -456,10 +456,23 @@ public struct CommandBlockSegmenter {
 
         switch fields[1] {
         case "A":
-            // Prompt start. If a block is somehow still open here (a malformed stream that
-            // re-prompted without a `D`), close it as incomplete first so we never lose it.
-            if hasOpenBlock, let open = takeOpenBlock(complete: false) {
-                completed.append(open)
+            // Prompt start. If a block is still open here (a stream that re-prompted without a `D`),
+            // close it as incomplete ONLY if it actually STARTED EXECUTING (reached its `C`, phase
+            // == .output) — a real running command interrupted by a fresh prompt (a nested shell /
+            // ssh whose inner shell emits its own OSC-133). A block still in the `.command`/idle
+            // phase never ran (an empty prompt, an empty Enter, a Ctrl-C line-abort): DISCARD it so
+            // it leaves no phantom "(no command)" block. The incomplete close stamps the C→interrupt
+            // duration so the tracker's dedup treats it as a distinct final update (else the client
+            // shows it "running…" forever).
+            if hasOpenBlock {
+                if phase == .output {
+                    let duration = runningSince.map { Self.durationMS(from: $0, to: clock()) }
+                    if let open = takeOpenBlock(complete: false, durationMS: duration) {
+                        completed.append(open)
+                    }
+                } else {
+                    discardOpenBlock()
+                }
             }
             phase = .idle
 
@@ -486,8 +499,19 @@ public struct CommandBlockSegmenter {
                 return
             }
             // (A `B` without a preceding `A` is tolerated — `A` only set phase to idle.)
-            if hasOpenBlock, let open = takeOpenBlock(complete: false) {
-                completed.append(open)
+            // As in the `A` arm: only a block that reached `.output` (a real running command
+            // re-prompted without a `D`) is closed as incomplete (duration-stamped so the close is a
+            // distinct update); an open block that never executed is discarded, not turned into a
+            // phantom.
+            if hasOpenBlock {
+                if phase == .output {
+                    let duration = runningSince.map { Self.durationMS(from: $0, to: clock()) }
+                    if let open = takeOpenBlock(complete: false, durationMS: duration) {
+                        completed.append(open)
+                    }
+                } else {
+                    discardOpenBlock()
+                }
             }
             startOpenBlock()
             phase = .command
@@ -535,10 +559,18 @@ public struct CommandBlockSegmenter {
             }
 
         case "D":
-            // Command finished. A `D` with no open block is the first-prompt phantom `D;0`
-            // (or a `D` with no matching `C`) — drop it, exactly like the live sniffer ignores
-            // a `D` with no `runningSince`.
-            guard hasOpenBlock else {
+            // Command finished. Only close a block that actually STARTED EXECUTING — one that saw
+            // its `C` (phase == .output, `runningSince` set). The zsh shim emits `D;$?` from precmd
+            // on EVERY prompt cycle, INCLUDING an empty Enter or a Ctrl-C line-abort: those run
+            // precmd but NOT preexec, so no `C` fired and the open block is still in the `.command`
+            // phase carrying the PREVIOUS command's `$?`. Minting a "completed" phantom from that
+            // (empty commandText + stale exit) piled bogus "(no command)" / red-failed rows into the
+            // Commands / Outline on every empty Enter. DROP it silently — mirrors the live
+            // ``HostOutputSniffer`` gating `D` on `runningSince` (:415). Discard the unexecuted open
+            // block so it leaves no phantom (a following `A`/`B` opens a fresh one). A `D` with no
+            // open block at all is the first-prompt phantom `D;0`.
+            guard hasOpenBlock, phase == .output else {
+                if hasOpenBlock { discardOpenBlock() }
                 phase = .idle
                 return
             }
@@ -567,6 +599,26 @@ public struct CommandBlockSegmenter {
         // real 9;4 (suppression is strictly per-block).
         syntheticSpinnerActive = false
         sawRealProgressThisBlock = false
+    }
+
+    /// Discards the currently-open block WITHOUT emitting it and WITHOUT consuming an index — for a
+    /// prompt block that never executed (an empty Enter / Ctrl-C line-abort, or an idle-prompt A/B
+    /// with no `C`). Such a cycle represents NO command, so it must leave no phantom block — neither a
+    /// completed one (the old `D`-arm bug) nor a forever-"running" incomplete one. Unlike
+    /// ``takeOpenBlock`` it does NOT bump ``nextIndex`` (the discarded prompt claims no block index),
+    /// so the next real command reuses the slot.
+    private mutating func discardOpenBlock() {
+        // A `.command`/idle-phase block never armed the synthetic spinner (that happens at `C`), so
+        // no clear frame is owed; reset the per-block K2 flags defensively so a following block starts
+        // clean.
+        syntheticSpinnerActive = false
+        sawRealProgressThisBlock = false
+        hasOpenBlock = false
+        runningSince = nil
+        openCommandBytes.removeAll(keepingCapacity: true)
+        openCommandExplicit = nil
+        openOutputBytes.removeAll(keepingCapacity: true)
+        openOutputTruncated = false
     }
 
     /// Materializes + clears the currently-open block, or `nil` if none is open.

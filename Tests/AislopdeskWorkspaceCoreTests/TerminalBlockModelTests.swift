@@ -35,6 +35,24 @@ final class TerminalBlockModelTests: XCTestCase {
         XCTAssertEqual(block?.outputLen, 4096)
     }
 
+    func testInterruptedBlockWithDurationIsNotRunning() {
+        // Bug 3: the host closes an interrupted (nested-shell / ssh) block as `complete == false`
+        // but stamps a durationMS so the close is a distinct update. The client must treat a block
+        // that has a duration as FINISHED (spinner off) — not perpetually "running…". Before the fix
+        // `status` gated purely on `complete`, so a duration-stamped incomplete block spun forever
+        // (and snapshotForResync re-armed the same stuck spinner on every reattach).
+        let model = TerminalBlockModel()
+        model.upsert(index: 0, commandText: "ssh host", exitCode: nil, durationMS: 2000, complete: false, outputLen: 12)
+        XCTAssertNotEqual(
+            model.block(at: 0)?.status,
+            .running,
+            "a duration-stamped incomplete block must not spin forever",
+        )
+        // A genuinely-running block (no duration yet) is still running.
+        model.upsert(index: 1, commandText: "tail -f", exitCode: nil, durationMS: nil, complete: false, outputLen: 4)
+        XCTAssertEqual(model.block(at: 1)?.status, .running, "a block with no duration is still running")
+    }
+
     func testNavigatorBlocksAreNewestFirst() {
         let model = TerminalBlockModel()
         for i in 0..<4 {
@@ -212,6 +230,19 @@ final class TerminalBlockModelTests: XCTestCase {
         XCTAssertTrue(didResolve, "reset resolves every in-flight request (no strand)")
         XCTAssertNil(result, "the stranded request resolves as unavailable")
         XCTAssertFalse(model.isOutputPending(index: 7))
+    }
+
+    func testResetBumpsSessionEpochSoIndexKeyedCachesInvalidate() {
+        // On a reconnect (`reset()`) block indices restart at 0. The observable epoch must advance on EACH
+        // reset so the inspector's index-keyed output cache discards the dead session's bytes and can never
+        // serve them under a reused index (Bug 1's within-pane reconnect collision).
+        let model = TerminalBlockModel()
+        XCTAssertEqual(model.epoch, 0, "a fresh model starts at epoch 0")
+        model.upsert(index: 0, commandText: "a", exitCode: 0, durationMS: 1, complete: true, outputLen: 3)
+        model.reset()
+        XCTAssertEqual(model.epoch, 1, "reset advances the session epoch")
+        model.reset()
+        XCTAssertEqual(model.epoch, 2, "each reset advances the epoch (monotonic, so onChange always fires)")
     }
 
     // MARK: First-seen timestamps (E9 Outline — client-receive time side-map)

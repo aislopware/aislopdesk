@@ -131,6 +131,42 @@ final class CommandBlockTrackerTests: XCTestCase {
         XCTAssertEqual(complete[0].exit, 0)
     }
 
+    // MARK: 3bb. Interrupted (nested-shell) block — the close still emits + resync finalizes it
+
+    // A deterministic clock so the interrupt-close duration is a pinned value, not wall-clock noise.
+    private final class TestClock {
+        private var now = Date(timeIntervalSinceReferenceDate: 0)
+        func date() -> Date { now }
+        func advance(_ seconds: TimeInterval) { now = now.addingTimeInterval(seconds) }
+    }
+
+    func testInterruptedRunningBlockEmitsFinalUpdate() {
+        // Bug 3: a running block (surfaced at C) interrupted by a fresh prompt (A/B with no D — a
+        // nested shell / ssh whose inner shell emits its own OSC-133) is closed INCOMPLETE on the
+        // host. The close must STILL emit a type-28 so the client's spinner can end. Before the fix
+        // the segmenter closed it with a nil duration, so the tracker's dedup saw "both running" with
+        // only outputLen changed and suppressed the emit — the client was stranded on "running…".
+        let clock = TestClock()
+        var tracker = CommandBlockTracker(segmenter: CommandBlockSegmenter(clock: clock.date))
+        // Open + run a block to .output (surfaces as running).
+        _ = tracker.ingest(bytes(a() + "$ " + b() + "ssh host" + c() + "partial\n"))
+        clock.advance(3.0)
+        // A fresh prompt A interrupts it (no D).
+        let onInterrupt = commandBlocks(tracker.ingest(bytes(a())))
+        XCTAssertEqual(onInterrupt.count, 1, "the interrupt-close must emit a final type-28, not be deduped away")
+        XCTAssertEqual(onInterrupt[0].index, 0)
+        XCTAssertEqual(onInterrupt[0].cmd, "ssh host")
+        XCTAssertFalse(onInterrupt[0].complete)
+        XCTAssertEqual(onInterrupt[0].dur, 3000, "the close stamps the C→interrupt duration so it is distinct")
+
+        // And a reattach backfill carries the FINALIZED (duration-stamped) metadata — not stuck as a
+        // bare running row that the client would re-spin.
+        let snap = commandBlocks(tracker.snapshotForResync())
+        XCTAssertEqual(snap.count, 1)
+        XCTAssertEqual(snap[0].index, 0)
+        XCTAssertEqual(snap[0].dur, 3000, "resync no longer resurrects the stuck running state")
+    }
+
     // MARK: 3c. Reattach backfill — snapshotForResync re-emits every held block's metadata in order
 
     func testSnapshotForResyncReEmitsAllHeldBlocksInIndexOrder() {

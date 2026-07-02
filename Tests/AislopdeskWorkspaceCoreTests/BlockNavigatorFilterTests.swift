@@ -9,13 +9,15 @@ import XCTest
 /// is never failed). All headless / view-free.
 @MainActor
 final class BlockNavigatorFilterTests: XCTestCase {
-    /// Builds a block with the given status shape.
+    /// Builds a block with the given status shape. A still-RUNNING block (`complete == false`) carries
+    /// NO durationMS — matching the wire (the host only stamps a duration once a block finishes, incl.
+    /// an interrupted close); the client treats a duration-stamped block as finished.
     private func block(_ index: UInt32, exit: Int32?, complete: Bool = true) -> CommandBlock {
         CommandBlock(
             index: index,
             commandText: "c\(index)",
             exitCode: exit,
-            durationMS: 1,
+            durationMS: complete ? 1 : nil,
             complete: complete,
             outputLen: 0,
         )

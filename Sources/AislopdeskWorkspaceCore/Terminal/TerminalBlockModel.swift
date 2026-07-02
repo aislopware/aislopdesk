@@ -57,8 +57,14 @@ public struct CommandBlock: Equatable, Sendable, Identifiable {
     }
 
     /// The derived status: running until complete, then succeeded (exit 0 / unknown) or failed (≠0).
+    ///
+    /// A block INTERRUPTED by a new prompt (a nested shell / ssh whose inner shell emits its own
+    /// OSC-133 A/B without a `D`) is closed on the host as `complete == false` but carries a
+    /// non-nil `durationMS` (the host stamps the C→interrupt time). Treat "has a duration" as
+    /// FINISHED so such a row does not spin `running…` forever — a genuinely-running block always
+    /// arrives with `durationMS == nil` (the host never stamps a duration on the running peek).
     public var status: Status {
-        guard complete else { return .running }
+        guard complete || durationMS != nil else { return .running }
         switch exitCode {
         case nil,
              0:
@@ -127,6 +133,12 @@ public final class TerminalBlockModel {
 
     /// The blocks in INDEX order (oldest first). Newest is `last`. Bounded to ``maxBlocks``.
     public private(set) var blocks: [CommandBlock] = []
+
+    /// A monotonic SESSION-EPOCH bumped on every ``reset()`` (a reconnect / fresh session). Block indices
+    /// restart at 0 each epoch, so any consumer that caches by index (e.g. the inspector's fetched-output
+    /// cache) OBSERVES this and discards its cache when it changes — otherwise a reused index would serve
+    /// the dead session's bytes. Observed (NOT `@ObservationIgnored`) so a SwiftUI `onChange` fires.
+    public private(set) var epoch: Int = 0
 
     /// The newest block (the CURRENT / last command), or `nil` if none yet. Drives the sticky header +
     /// the chrome status chip.
@@ -296,6 +308,7 @@ public final class TerminalBlockModel {
     /// Clears all blocks + cancels every pending output request with an empty result (so a caller awaiting
     /// one never hangs). Called on a session reset / reconnect — the dead session's blocks are stale.
     public func reset() {
+        epoch &+= 1 // a new session epoch — index-keyed caches downstream must discard on this edge.
         blocks.removeAll()
         // The dead session's first-seen timestamps die with its blocks (a fresh session re-captures them).
         firstSeenByIndex.removeAll()
