@@ -578,6 +578,41 @@ public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressurin
         }
     }
 
+    /// Publishes the IME preedit (marked / composing) text so libghostty renders it at the
+    /// cursor cell with the composing underline (core `renderer_state.preedit`).
+    ///
+    /// `ghostty_surface_preedit(surface, ptr, len)` (header 1189); `len` EXCLUDES any NUL
+    /// (upstream `SurfaceView_AppKit.syncPreedit` passes `utf8CString.count - 1`). Pass `nil`
+    /// to CLEAR a finished/cancelled composition — upstream calls
+    /// `ghostty_surface_preedit(surface, nil, 0)` for that, and the Zig export only forms the
+    /// slice when `len != 0` (embedded.zig 2566), so the nil pointer is never read.
+    public func preedit(_ text: String?) {
+        guard let surf = surface else { return }
+        if var copy = text, !copy.isEmpty {
+            copy.withUTF8 { buf in
+                guard let base = buf.baseAddress else { return }
+                base.withMemoryRebound(to: CChar.self, capacity: buf.count) { cptr in
+                    ghostty_surface_preedit(surf, cptr, UInt(buf.count))   // header 1189
+                }
+            }
+        } else {
+            ghostty_surface_preedit(surf, nil, 0)   // clear (the upstream idiom)
+        }
+    }
+
+    /// Where the IME candidate window should anchor: the cursor cell's bottom-left in the
+    /// hosting view's TOP-LEFT-origin POINT space (Surface.zig `imePoint` divides the pixel
+    /// position by the content scale, so the values come back unscaled). `width` is the
+    /// current preedit extent (0 when empty), `height` one cell.
+    ///
+    /// `ghostty_surface_ime_point(surface, &x, &y, &w, &h)` (header 1204).
+    public func imePoint() -> (x: Double, y: Double, width: Double, height: Double)? {
+        guard let surf = surface else { return nil }
+        var x = 0.0, y = 0.0, w = 0.0, h = 0.0
+        ghostty_surface_ime_point(surf, &x, &y, &w, &h)   // header 1204
+        return (x, y, w, h)
+    }
+
     // MARK: TerminalSurface — Mouse / scroll / selection / clipboard
     //
     // Pointer + clipboard wiring (the second half of the GUI input path, after keys/text).
@@ -683,6 +718,16 @@ public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressurin
         var lines = String(cString: ptr).components(separatedBy: "\n")
         if lines.last == "" { lines.removeLast() }
         return lines
+    }
+
+    /// The live grid COLUMN count (``TerminalSurfaceActions`` seam), used to map an unwrapped LOGICAL scrollback
+    /// line index (into ``scrollbackTextLines()``, whose soft-wrapped rows are collapsed) to the PHYSICAL grid
+    /// row `scroll_to_row:` addresses. Read from the measured `ghostty_surface_size` (header 1177), falling back
+    /// to the mirrored `cols` seed before the first layout. `0` when the surface is gone (validate-then-drop).
+    public func scrollbackGridColumns() -> Int {
+        guard let s = surface else { return 0 }
+        let sz = ghostty_surface_size(s)   // header 1177 → ghostty_surface_size_s
+        return sz.columns > 0 ? Int(sz.columns) : Int(cols)
     }
 
     // MARK: TerminalViewportSnapshotting (E10 WI-2 — overlay geometry seam)
@@ -855,12 +900,31 @@ public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressurin
     /// an unrelated OSC-52 read (those fire from a separate `feed` call stack, with the flag already cleared).
     public var pasteApprovedOnce: Bool = false
 
-    /// Reads and CLEARS ``pasteApprovedOnce`` — `read_clipboard_cb` calls this so an embedder-approved unsafe
-    /// paste completes with `confirmed: true` exactly once, and every other read keeps the default
-    /// `confirmed: false` (so the OSC-52 read access gate is never bypassed).
+    /// The EXACT text the paste-protection sheet inspected + previewed, captured at decide time and set
+    /// alongside ``pasteApprovedOnce`` inside the synchronous approved-paste window. `read_clipboard_cb`
+    /// returns THIS (via ``consumeApprovedPaste()``) instead of RE-READING the live pasteboard, closing the
+    /// TOCTOU where a hosted-PTY OSC-52 write (or the user copying elsewhere while the non-modal sheet is
+    /// open) could swap the clipboard between the preview and the approved paste — so "Paste Anyway" pastes
+    /// what the user reviewed, never newly-arrived bytes. `nil` on every non-approved read.
+    public var approvedPasteText: String?
+
+    /// Reads and CLEARS ``pasteApprovedOnce``/``approvedPasteText`` together — `read_clipboard_cb` calls
+    /// this so an embedder-approved unsafe paste completes with `confirmed: true` exactly once AND pastes
+    /// the reviewed snapshot (not a fresh pasteboard read). Every other read gets `(false, nil)`, keeping
+    /// the default `confirmed: false` so the OSC-52 read access gate is never bypassed.
+    public func consumeApprovedPaste() -> (approved: Bool, text: String?) {
+        let approved = pasteApprovedOnce
+        let text = approvedPasteText
+        pasteApprovedOnce = false
+        approvedPasteText = nil
+        return (approved, text)
+    }
+
+    /// Reads and CLEARS ``pasteApprovedOnce`` — retained for callers that only need the confirmed flag.
     public func consumePasteApproval() -> Bool {
         let approved = pasteApprovedOnce
         pasteApprovedOnce = false
+        approvedPasteText = nil
         return approved
     }
 

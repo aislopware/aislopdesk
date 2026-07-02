@@ -79,6 +79,7 @@ import CGhostty            // the clang module over ghostty.h (link "ghostty")
 #if os(macOS)
 import AislopdeskClientUI    // PasteProtectionSheet (the macOS paste-protection confirmation surface, E8 WI-4)
 import AppKit
+import Carbon              // TIS keyboard-layout id (IME input-source-switch guard; framework already linked)
 #elseif os(iOS)
 import UIKit
 #endif
@@ -272,6 +273,16 @@ final class GhosttyApp {
     }
 
     private init() {
+        #if os(macOS)
+        // IME/NSTextInputClient side-effect guard (upstream AppDelegate.swift:207): once the
+        // terminal view participates in text input, macOS "press and hold" would pop the
+        // accent picker for a HELD letter key and SUPPRESS auto-repeat — wrong for a terminal
+        // (holding `j` in vim must repeat). Registering the default (not `set`) keeps a user's
+        // explicit `defaults write` override intact. Registered here — the one process-wide,
+        // renderer-gated init that runs before any surface can take keyboard input.
+        UserDefaults.standard.register(defaults: ["ApplePressAndHoldEnabled": false])
+        #endif
+
         // 1. ghostty_init (header 1117): once per process, before any config/app.
         //    Signature is `int ghostty_init(uintptr_t, char**)` — argc/argv; we pass
         //    none (the embedder owns the CLI).
@@ -421,16 +432,22 @@ final class GhosttyApp {
                 // (NSPasteboard.ghostty(_:)); we mirror that. iOS has no selection clipboard.
                 #if os(macOS)
                 let pb = aislopdeskPasteboard(for: location)
-                let str = pb.string(forType: .string) ?? ""
+                let live = pb.string(forType: .string) ?? ""
                 #else
-                let str = (location == GHOSTTY_CLIPBOARD_SELECTION) ? "" : (UIPasteboard.general.string ?? "")
+                let live = (location == GHOSTTY_CLIPBOARD_SELECTION) ? "" : (UIPasteboard.general.string ?? "")
                 #endif
                 // E8 WI-4 (ES-E8-3): if the embedder already ran the paste-protection sheet for THIS paste
                 // and the user approved it, complete with `confirmed: true` (allow_unsafe) so libghostty pastes
                 // without re-tripping its own (narrower) `isSafe` gate → no SECOND dialog. The flag is one-shot
                 // and consumed here; every other read keeps `confirmed: false`, so the OSC-52 read access gate
                 // (`clipboard-read = ask`) is never bypassed.
-                surface.completeClipboardRead(str, state: state, confirmed: surface.consumePasteApproval())
+                //
+                // TOCTOU fix: on an approved paste we return the REVIEWED SNAPSHOT captured at decide time,
+                // NOT a fresh pasteboard read — a hosted-PTY OSC-52 write (or the user copying elsewhere while
+                // the non-modal sheet was open) must not swap in unreviewed bytes under `allow_unsafe`.
+                let (approved, reviewed) = surface.consumeApprovedPaste()
+                let str = approved ? (reviewed ?? live) : live
+                surface.completeClipboardRead(str, state: state, confirmed: approved)
             }
             return true
         }
@@ -924,6 +941,13 @@ final class GhosttyLayerBackedView: NSView {
             requestPresent(3)             // paint whatever already arrived this instant
             scheduleSettlePresentBurst()  // …and sustain the sync-present path ~400ms for the late bytes
         }
+        // E5: the ⌘F find bar closing tears down the focused query field WITHOUT a workspace-focus change, so
+        // none of the surface's own reclaim paths (the `isFocusedPane` didSet, mount, mouseDown, focus-follows-
+        // mouse — all gated on a focus TRANSITION or a click) fire. `close()` calls `reclaimKeyboardFocus()`,
+        // which invokes this so THIS pane re-takes the window's first responder (via the same deferred,
+        // `isFocusedPane`-guarded `makeFirstResponder` the didSet uses). Re-set each attach; a stale prior
+        // view's `[weak self]` closure no-ops once overwritten.
+        model.onReclaimKeyboardFocus = { [weak self] in self?.applyKeyboardFocus() }
         requestPresent(8)   // flush whatever the replay just fed
     }
 
@@ -1030,6 +1054,32 @@ final class GhosttyLayerBackedView: NSView {
     /// already guard). Stamped in `keyDown` on swallow, cleared once by the matching `keyUp`. `nil` = nothing
     /// pending.
     private var workspaceConsumedReleaseKeyCode: UInt16?
+
+    // MARK: IME (NSTextInputClient) state — ported from upstream `Ghostty.SurfaceView`
+    // (SurfaceView_AppKit.swift). The conformance itself is the extension after this class.
+
+    /// The IME's current marked (composing) text — the un-committed "vie" of Telex "việt", the
+    /// romaji/kana of a Japanese conversion, or a pending dead-key accent. Mirrored to
+    /// libghostty as the PREEDIT (`syncPreedit` → `surface.preedit`) so it renders at the
+    /// cursor cell with the composing underline. Empty ⇔ no composition in progress.
+    private var markedText = NSMutableAttributedString()
+
+    /// Non-nil ONLY while `keyDown` is inside `interpretKeyEvents`: text the input context
+    /// COMMITS via `insertText` during that window accumulates here so `keyDown` can send the
+    /// composed result through the ghostty KEY path (with the event's keycode/mods) instead of
+    /// a bare text write. `nil` means an `insertText` arrived OUTSIDE a keyDown (e.g. the user
+    /// picked a candidate with the MOUSE in the IME window) → committed via `surface.text`.
+    /// Upstream: `keyTextAccumulator` (SurfaceView_AppKit.swift:226).
+    private var keyTextAccumulator: [String]?
+
+    /// Timestamp of the last ⌘/⌃ key equivalent this view let flow through AppKit unhandled.
+    /// Because the view is now an NSTextInputClient, AppKit's input context may redirect such
+    /// an equivalent to `doCommand(by:)` BEFORE `keyDown` ever sees it (⌘. → "cancel:");
+    /// `doCommand` re-sends the event and `unhandledKeyEquivalent` recognizes it by this
+    /// timestamp on the second pass, routing it to `keyDown` for ghostty encoding. NSEvent has
+    /// no reliable identity; the timestamp comparison (guarding the synthetic timestamp-0
+    /// events) is upstream's proven workaround (`lastPerformKeyEvent`, SurfaceView_AppKit).
+    private var lastPerformKeyEvent: TimeInterval?
 
     override func layout() {
         super.layout()
@@ -1168,6 +1218,7 @@ final class GhosttyLayerBackedView: NSView {
         // `snippetAutoExpand` setting, so ordinary typing is never touched unless the user opts in. This view is
         // a thin actuator: it only maps the trigger key and acts on the boolean.
         if let model,
+           markedText.length == 0, // an active IME composition OWNS Tab/Space (convert / candidate keys)
            !event.modifierFlags.contains(.command),
            !event.modifierFlags.contains(.control),
            !event.modifierFlags.contains(.option),
@@ -1298,11 +1349,75 @@ final class GhosttyLayerBackedView: NSView {
             }
         }
 
-        // Route every other key through libghostty's encoder (DECISIONS: never hand-roll VT).
-        // ghostty_input_key_s (header 322): action / mods / keycode / text /
-        // unshifted_codepoint / composing.
+        // ── IME / NSTextInputClient routing (upstream `SurfaceView_AppKit.keyDown`) ──
+        // Every remaining key goes through the macOS INPUT CONTEXT FIRST so marked-text
+        // composition (Vietnamese Telex, CJK conversion, ⌥-dead-keys) can begin/continue:
+        // `interpretKeyEvents` drives our NSTextInputClient conformance (extension below) —
+        // `setMarkedText` updates ghostty's preedit, `insertText` commits into
+        // `keyTextAccumulator`, named keys land in the swallowed `doCommand`. The key EVENT
+        // still reaches libghostty's encoder afterwards with the correct `composing` flag, so
+        // kitty/DECCKM encoding stays ghostty-owned (DECISIONS: never hand-roll VT).
+        let action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+
+        // Non-nil accumulator ⇔ "we are inside a keyDown" for insertText/setMarkedText.
+        keyTextAccumulator = []
+        defer { keyTextAccumulator = nil }
+
+        // Whether these events CLEARED an in-progress composition (needed for `composing` below).
+        let markedTextBefore = markedText.length > 0
+
+        // Some keystrokes are input-source SWITCHES (Kana/Eisu, the globe layout toggle) that
+        // change the keyboard layout inside interpretKeyEvents; those must not ALSO type into
+        // the terminal (upstream's keyboardIdBefore guard).
+        let keyboardIdBefore: String? = markedTextBefore ? nil : Self.keyboardLayoutID
+
+        // Inside a keyDown no performKeyEquivalent redispatch is pending (see doCommand);
+        // interpretKeyEvents may fire doCommand and must not re-send the event into a loop.
+        lastPerformKeyEvent = nil
+
+        interpretKeyEvents([event])
+
+        if !markedTextBefore && keyboardIdBefore != Self.keyboardLayoutID {
+            return
+        }
+
+        // Publish/clear the preedit to libghostty (the composing underline at the cursor).
+        // Order vs the key events below doesn't matter — preedit state flows ONLY through
+        // this API (upstream syncPreedit).
+        syncPreedit(clearIfNeeded: markedTextBefore)
+
+        if let committed = keyTextAccumulator, !committed.isEmpty {
+            // The input context COMMITTED text (insertText fired during interpretKeyEvents):
+            // send the composed result. NEVER `composing` — this is composition OUTPUT
+            // ("việt" after Telex `v i e e j t`, "é" after ⌥e e, a chosen CJK candidate).
+            for text in committed {
+                sendGhosttyKey(action, event: event, text: text, composing: false)
+            }
+        } else {
+            // Nothing committed: a plain key, or a composition in flight. `composing` covers
+            // BOTH marked-now and marked-before: a Backspace that only cancels/reshapes a
+            // preedit must not ALSO encode a DEL to the PTY (upstream's Japanese-backspace
+            // case — it clears the composing state, not the prior committed characters).
+            sendGhosttyKey(
+                action,
+                event: event,
+                text: event.characters,
+                composing: markedText.length > 0 || markedTextBefore,
+            )
+        }
+    }
+
+    /// The ONE funnel into libghostty's key encoder (DECISIONS: never hand-roll VT).
+    /// ghostty_input_key_s (header 322): action / mods / keycode / text /
+    /// unshifted_codepoint / composing.
+    private func sendGhosttyKey(
+        _ action: ghostty_input_action_e,
+        event: NSEvent,
+        text: String?,
+        composing: Bool,
+    ) {
         var key = ghostty_input_key_s()
-        key.action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+        key.action = action
         key.mods = Self.ghosttyMods(event.modifierFlags)
         // consumed_mods: the mods AppKit already "used up" producing `event.characters`. Upstream
         // (NSEvent+Extension `consumedModifiers`) reports the layout-consumed set; we approximate it
@@ -1316,10 +1431,10 @@ final class GhosttyLayerBackedView: NSView {
         // so a shifted `2` reported `@` here — wrong. `characters(byApplyingModifiers: [])` strips ALL
         // modifiers including Shift, giving the true base codepoint Ghostty keys its bindings on.
         key.unshifted_codepoint = event.characters(byApplyingModifiers: [])?.unicodeScalars.first.map { $0.value } ?? 0
-        key.composing = false
+        key.composing = composing
         // `text` is a borrowed const char* for the keypress duration; bind the chars.
-        if let chars = event.characters, !chars.isEmpty {
-            let copy = chars
+        if let text, !text.isEmpty {
+            let copy = text
             copy.withCString { cstr in
                 key.text = cstr
                 _ = surface?.key(key)
@@ -1328,6 +1443,28 @@ final class GhosttyLayerBackedView: NSView {
             key.text = nil
             _ = surface?.key(key)
         }
+    }
+
+    /// Mirrors upstream `syncPreedit`: publish the marked text to libghostty as the PREEDIT
+    /// (rendered at the cursor with the composing underline), or clear a finished one.
+    /// `clearIfNeeded` is false only on the non-keyDown `setMarkedText` path, where an empty
+    /// marked string never follows a live preedit.
+    private func syncPreedit(clearIfNeeded: Bool = true) {
+        if markedText.length > 0 {
+            surface?.preedit(markedText.string)
+        } else if clearIfNeeded {
+            surface?.preedit(nil)
+        }
+    }
+
+    /// The current keyboard input source ID (upstream `Helpers/KeyboardLayout.swift` — Carbon
+    /// TIS, already linked for libghostty). Used to detect that a keystroke was an
+    /// input-source SWITCH inside interpretKeyEvents (see keyDown).
+    private static var keyboardLayoutID: String? {
+        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              let idPointer = TISGetInputSourceProperty(source, kTISPropertyInputSourceID)
+        else { return nil }
+        return unsafeBitCast(idPointer, to: CFString.self) as String
     }
 
     override func keyUp(with event: NSEvent) {
@@ -1376,16 +1513,9 @@ final class GhosttyLayerBackedView: NSView {
             return
         }
 
-        var key = ghostty_input_key_s()
-        key.action = GHOSTTY_ACTION_RELEASE
-        key.mods = Self.ghosttyMods(event.modifierFlags)
-        // Same consumed-mods / unshifted-codepoint correctness as keyDown (see there for the why).
-        key.consumed_mods = Self.ghosttyMods(event.modifierFlags.subtracting([.control, .command]))
-        key.keycode = UInt32(event.keyCode)
-        key.unshifted_codepoint = event.characters(byApplyingModifiers: [])?.unicodeScalars.first.map { $0.value } ?? 0
-        key.composing = false
-        key.text = nil
-        _ = surface?.key(key)
+        // Same consumed-mods / unshifted-codepoint correctness as keyDown (see sendGhosttyKey);
+        // a release carries no text and is never composing (upstream keyUp → bare keyAction).
+        sendGhosttyKey(GHOSTTY_ACTION_RELEASE, event: event, text: nil, composing: false)
     }
 
     // MARK: Link highlight (E10 WI-5 — ⌘-hold underline + full-path hover)
@@ -1797,6 +1927,10 @@ final class GhosttyLayerBackedView: NSView {
         if precision { packed |= 0b0000_0001 }                                   // bit0 = precision
         packed |= Int32(Self.scrollMomentum(event.momentumPhase)) << 1           // bits1-3 = momentum
         surface?.sendMouseScroll(deltaX: Double(x), deltaY: Double(y), mods: packed)
+        // E10 WI-5: a LOCAL scrollback scroll moves the viewport with NO new wire bytes, so nudge the
+        // observable viewport tick the ⌘-hold ``LinkHighlightOverlay`` depends on — else its underlines
+        // would cling to pre-scroll screen rows over unrelated text until new output / ⌘ re-press.
+        if model?.linkHighlightActive == true { model?.noteViewportScrolled() }
 
         // E8 WI-12 (I14/I15, ES-E8-5): SCROLL-PAST overscroll + SMOOTH-SCROLL — DOCUMENTED RENDERING CEILING.
         // The delta above is handed straight to libghostty, which OWNS the viewport: on the primary screen it
@@ -2052,6 +2186,11 @@ final class GhosttyLayerBackedView: NSView {
             // REAL alt-screen flag, not the `.running` proxy: a single-line `sudo` pasted into a non-TUI
             // foreground command must STILL trip the sheet (the `.running` proxy wrongly skipped it).
             isAlternateScreen: model?.isAlternateScreen ?? false,
+            // Bracketed-safe skip (matches libghostty's `clipboard-paste-bracketed-safe`, which this
+            // pre-check preempts): the live setting AND the real DECSET `?2004h` state from the client
+            // `TerminalModeTracker`. When both hold, the shell frames the paste inertly → no sheet.
+            bracketedSafe: SettingsKey.pasteBracketedSafeEnabled,
+            programAdvertisedBracketed: model?.isBracketedPasteActive ?? false,
         )
         switch decision {
         case .pasteDirect:
@@ -2064,11 +2203,15 @@ final class GhosttyLayerBackedView: NSView {
                 in: window,
             ) { [weak self] pasteAnyway in
                 guard pasteAnyway, let self, let surface = self.surface else { return }
-                // Approved → paste with allow_unsafe (one-shot), consumed by `read_clipboard_cb`. Cleared right
-                // after the SYNCHRONOUS binding-action read so it can never leak into a later read.
+                // Approved → paste with allow_unsafe (one-shot), consumed by `read_clipboard_cb`. Capture the
+                // REVIEWED text so the read returns the exact snapshot the user approved (not a fresh — and
+                // possibly swapped — pasteboard read). Both are cleared right after the SYNCHRONOUS
+                // binding-action read so they can never leak into a later read.
                 surface.pasteApprovedOnce = true
+                surface.approvedPasteText = clipboard
                 surface.performBindingAction(bindingAction)
                 surface.pasteApprovedOnce = false
+                surface.approvedPasteText = nil
             }
         }
     }
@@ -2125,6 +2268,11 @@ final class GhosttyLayerBackedView: NSView {
             canSendToChat: model?.onRequestSendToChat != nil,
         )
         let menu = NSMenu()
+        // NSMenu defaults `autoenablesItems == true`, which RE-VALIDATES every item at display time and
+        // enables any whose target responds to the action selector (all of them here) — clobbering the
+        // per-item `isEnabled` set from the unit-tested `TerminalContextMenu.isEnabled`. Turn it off so the
+        // manual enablement (copy-needs-selection, paste-needs-clipboard, hasCommandOutput, …) actually shows.
+        menu.autoenablesItems = false
 
         // E10 WI-6 (ES-E10-2): if the right-click landed ON a detected path/URL, PREPEND its action items
         // (Open / Copy Path|URL / Reveal in Finder / Change Directory Here) above the standard terminal menu,
@@ -2159,6 +2307,7 @@ final class GhosttyLayerBackedView: NSView {
                     title: TerminalContextMenu.pasteAsSubmenuTitle, action: nil, keyEquivalent: "",
                 )
                 let submenu = NSMenu(title: TerminalContextMenu.pasteAsSubmenuTitle)
+                submenu.autoenablesItems = false   // same reason as the parent menu — honour manual isEnabled
                 for sub in TerminalContextMenu.pasteAsItems {
                     if sub.separatorBefore { submenu.addItem(.separator()) }
                     let subItem = NSMenuItem(
@@ -2249,7 +2398,8 @@ final class GhosttyLayerBackedView: NSView {
 
     /// Catch Cmd-C / Cmd-X / Cmd-V / Cmd-A DIRECTLY, regardless of whether an Edit menu is installed. Returning
     /// `true` marks the equivalent handled so it does not propagate to the menu / beep. Other Cmd-combos
-    /// (the workspace shortcuts) are left to `super` so the command table still sees them.
+    /// (the workspace shortcuts) are left to `super` so the command table still sees them — via
+    /// `unhandledKeyEquivalent`, which also arms the NSTextInputClient doCommand redispatch (see there).
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         // Only the bare Cmd-<letter> (no shift/ctrl/opt) is the copy/paste/select-all chord; a shifted
         // or otherwise-modified Cmd combo is left to the workspace command table / remote app.
@@ -2259,7 +2409,7 @@ final class GhosttyLayerBackedView: NSView {
               !event.modifierFlags.contains(.option),
               !event.modifierFlags.contains(.shift),
               let chars = event.charactersIgnoringModifiers else {
-            return super.performKeyEquivalent(with: event)
+            return unhandledKeyEquivalent(event)
         }
         switch chars {
         case "c": copy(nil); return true
@@ -2278,8 +2428,39 @@ final class GhosttyLayerBackedView: NSView {
         case "=": surface?.performBindingAction("increase_font_size:1"); return true
         case "-": surface?.performBindingAction("decrease_font_size:1"); return true
         case "0": surface?.performBindingAction("reset_font_size");      return true
-        default:  return super.performKeyEquivalent(with: event)
+        default:  return unhandledKeyEquivalent(event)
         }
+    }
+
+    /// The tail of `performKeyEquivalent` for every equivalent this view does NOT claim.
+    /// Because the view is an NSTextInputClient, letting an unclaimed ⌘/⌃ equivalent flow
+    /// through AppKit can end at the input context, which maps it to a `doCommand` selector
+    /// (⌘. → "cancel:") WITHOUT ever calling `keyDown` — silently eating the key. Upstream's
+    /// fix (`lastPerformKeyEvent`, SurfaceView_AppKit.swift): remember the event's timestamp
+    /// on the FIRST pass and let AppKit try (menu items, the workspace command table, and any
+    /// other responder all still win exactly as before); if `doCommand` receives that same
+    /// event it re-sends it, and THIS second pass routes it to `keyDown` for ghostty encoding.
+    private func unhandledKeyEquivalent(_ event: NSEvent) -> Bool {
+        // Only real keyDown equivalents participate; synthetic events carry timestamp 0
+        // (e.g. the "escape" AppKit fabricates for ⌘.) and must never be re-routed.
+        guard event.type == .keyDown, event.timestamp != 0 else {
+            return super.performKeyEquivalent(with: event)
+        }
+        // Non-⌘/⌃ equivalents can't hit the input-context redirect; reset the marker.
+        guard event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control) else {
+            lastPerformKeyEvent = nil
+            return super.performKeyEquivalent(with: event)
+        }
+        // Second pass of a doCommand-redispatched event: nothing else claimed it, so it is
+        // terminal input — route to keyDown (which encodes via ghostty) and consume.
+        if let lastPerformKeyEvent, lastPerformKeyEvent == event.timestamp {
+            self.lastPerformKeyEvent = nil
+            keyDown(with: event)
+            return true
+        }
+        // First pass: arm the redispatch marker, then let the normal AppKit flow try.
+        lastPerformKeyEvent = event.timestamp
+        return super.performKeyEquivalent(with: event)
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -2371,6 +2552,132 @@ final class GhosttyLayerBackedView: NSView {
         }
         guard !first.isWhitespace, first.unicodeScalars.allSatisfy({ $0.value >= 0x20 }) else { return nil }
         return KeyChord(character: first, mods)
+    }
+}
+
+// MARK: - NSTextInputClient (IME: Vietnamese Telex / CJK / dead-key composition)
+
+/// Faithful port of upstream `Ghostty.SurfaceView: NSTextInputClient`
+/// (SurfaceView_AppKit.swift:1810). Making the view a text-input client gives it an
+/// `inputContext`, so `keyDown`'s `interpretKeyEvents` routes plain typing through the active
+/// macOS input method: marked text lands in `setMarkedText` (mirrored to ghostty's preedit —
+/// the composing underline at the cursor), commits land in `insertText` (funneled through the
+/// ghostty key path via `keyTextAccumulator`), and `firstRect` anchors the candidate window at
+/// the terminal cursor. Deviations from upstream, deliberate: `selectedRange` is empty (the
+/// pinned fork exposes selection CONTENT but not grid OFFSETS, and no QuickLook consumer is
+/// wired here) so `firstRect` always anchors at the IME point; `doCommand`'s scroll-selector
+/// handling is omitted (scrolling is pane-owned here).
+// The conformance is ISOLATED to the main actor (SE-0470): `NSTextInputClient` is not
+// MainActor-annotated in the macOS 26 SDK, but AppKit only ever drives it from the main
+// thread (the input context lives on the view's thread), so the isolated conformance is
+// sound and keeps every method main-actor without `nonisolated` escape hatches.
+extension GhosttyLayerBackedView: @MainActor NSTextInputClient {
+    func hasMarkedText() -> Bool {
+        markedText.length > 0
+    }
+
+    func markedRange() -> NSRange {
+        guard markedText.length > 0 else { return NSRange() }
+        return NSRange(0...(markedText.length - 1))
+    }
+
+    func selectedRange() -> NSRange {
+        NSRange()
+    }
+
+    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        switch string {
+        case let v as NSAttributedString:
+            markedText = NSMutableAttributedString(attributedString: v)
+        case let v as String:
+            markedText = NSMutableAttributedString(string: v)
+        default:
+            break // unknown payload type — leave the composition untouched (upstream logs & ignores)
+        }
+
+        // OUTSIDE a keyDown (accumulator nil — e.g. an input-source switch mid-composition
+        // re-shapes the marked text), publish the preedit immediately; the keyDown path syncs
+        // once after interpretKeyEvents instead (upstream:1848).
+        if keyTextAccumulator == nil {
+            syncPreedit()
+        }
+    }
+
+    func unmarkText() {
+        if markedText.length > 0 {
+            markedText.mutableString.setString("")
+            syncPreedit()
+        }
+    }
+
+    func validAttributesForMarkedText() -> [NSAttributedString.Key] {
+        []
+    }
+
+    func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
+        // Upstream returns the current selection regardless of the (often bogus) requested
+        // range — macOS lookup/Services probe this. String-only via the binding's selection read.
+        guard range.length > 0, let selection = surface?.readSelection(), !selection.isEmpty else { return nil }
+        return NSAttributedString(string: selection)
+    }
+
+    func characterIndex(for point: NSPoint) -> Int {
+        0
+    }
+
+    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        // Anchor the IME candidate window at the terminal cursor: ghostty reports the cursor
+        // cell's bottom-left in view-local TOP-LEFT-origin POINTS (Surface.zig `imePoint`
+        // divides by the content scale) → flip to AppKit's bottom-left origin → window → screen.
+        guard let ime = surface?.imePoint(), let window else {
+            return NSRect(x: frame.origin.x, y: frame.origin.y, width: 0, height: 0)
+        }
+        let viewRect = NSRect(x: ime.x, y: frame.size.height - ime.y, width: ime.width, height: ime.height)
+        let winRect = convert(viewRect, to: nil)
+        return window.convertToScreen(winRect)
+    }
+
+    func insertText(_ string: Any, replacementRange: NSRange) {
+        // Must be associated with a real input event (upstream guard — filters programmatic calls).
+        guard NSApp.currentEvent != nil else { return }
+
+        let chars: String
+        switch string {
+        case let v as NSAttributedString: chars = v.string
+        case let v as String: chars = v
+        default: return
+        }
+
+        // insertText ⇒ the composition COMMITTED — the preedit is over.
+        unmarkText()
+
+        // Inside keyDown's interpretKeyEvents: accumulate so keyDown sends the composed text
+        // through the ghostty KEY path (correct keycode/mods + composing flags).
+        if var acc = keyTextAccumulator {
+            acc.append(chars)
+            keyTextAccumulator = acc
+            return
+        }
+
+        // Outside keyDown (e.g. a candidate picked with the MOUSE in the IME window): commit
+        // as plain text — `ghostty_surface_text` encodes + writes to the PTY.
+        surface?.text(chars)
+    }
+
+    /// Two jobs (upstream:1993): (1) swallow the selectors `interpretKeyEvents` produces for
+    /// named keys (arrows/Return/Backspace/Esc → `moveUp:`/`insertNewline:`/…) so NSResponder's
+    /// unhandled-action NSBeep never fires — those keys are ENCODED in keyDown after
+    /// interpretKeyEvents returns, via the ghostty key path, not here; (2) when AppKit's input
+    /// context redirected a ⌘-equivalent here before keyDown could see it, re-send the event so
+    /// `unhandledKeyEquivalent`'s second pass routes it to keyDown (see `lastPerformKeyEvent`).
+    override func doCommand(by selector: Selector) {
+        if let lastPerformKeyEvent,
+           let current = NSApp.currentEvent,
+           lastPerformKeyEvent == current.timestamp {
+            NSApp.sendEvent(current)
+            return
+        }
+        // Deliberately NO `super.doCommand(by:)` — everything else is swallowed.
     }
 }
 
