@@ -7,11 +7,13 @@ import XCTest
 /// ``MetadataVerb/uninstallAgentHooks`` = 12 / ``MetadataVerb/agentHookStatus`` = 13): the typed
 /// ``MetadataClient`` methods must encode the right verb byte with an EMPTY request payload, surface the
 /// host's `ok`/`error` status as a `Bool` (true ONLY on `.ok`) for install/uninstall, and decode the
-/// 1-byte status flag for `agentHookStatus` (1 ⇒ `true`, 0 ⇒ `false`, anything else ⇒ `nil`). Each
-/// behavior has a test that FAILS on the un-fixed code:
+/// 2-byte `[installed][listenerActive]` flags for `agentHookStatus` (queue-safety cluster 2026-07-02;
+/// a missing/short payload beyond byte 0 conservatively reads listener-INACTIVE, an absent byte 0 ⇒
+/// `nil`). Each behavior has a test that FAILS on the un-fixed code:
 /// - send the wrong verb byte / a non-empty payload → the verb/payload-capture assertions fail;
 /// - return `true` on a non-`.ok` status → the error/unsupported tests fail;
-/// - decode the status flag without the `payload.first`/`status == .ok` gate → the nil / 0-byte tests fail;
+/// - decode the flags without the `payload.first`/`status == .ok` gate → the nil / 0-byte tests fail;
+/// - conflate installed with listener-active (the false-green bug) → the [1,0] / 1-byte tests fail;
 /// - drop the never-hangs timeout → the dropped-reply test hangs.
 ///
 /// The HOST shim (`HostAgentActionPerformer`, disk I/O) is compiled + code-reviewed ONLY (the hang/IO-safety
@@ -78,7 +80,7 @@ final class MetadataClientAgentHooksTests: XCTestCase {
         let client = MetadataClient(send: responder.send)
         responder.client = client
         responder.replies[MetadataVerb.agentHookStatus.rawValue] =
-            (status: MetadataStatus.ok.rawValue, payload: Data([1]))
+            (status: MetadataStatus.ok.rawValue, payload: Data([1, 1]))
 
         _ = await client.agentHookStatus()
 
@@ -88,24 +90,61 @@ final class MetadataClientAgentHooksTests: XCTestCase {
         XCTAssertEqual(responder.captured.first?.payload, Data(), "the status request carries an EMPTY payload")
     }
 
-    func testStatusInstalledFlagDecodesToTrue() async {
+    func testStatusInstalledActiveFlagsDecode() async {
+        let responder = AgentHooksResponder()
+        let client = MetadataClient(send: responder.send)
+        responder.client = client
+        responder.replies[MetadataVerb.agentHookStatus.rawValue] =
+            (status: MetadataStatus.ok.rawValue, payload: Data([1, 1]))
+        let report = await client.agentHookStatus()
+        XCTAssertEqual(
+            report, .init(installed: true, listenerActive: true),
+            "[1,1] decodes installed + listener live — the ONLY combination that earns the green check",
+        )
+    }
+
+    /// Queue-safety cluster (2026-07-02): installed-but-INACTIVE — the false-green bug. The hooks are
+    /// in settings.json but the host's hook listener is unbound; the second flag byte carries that
+    /// truth so the card can warn instead of showing "✓ Installed" over a dead integration.
+    func testStatusInstalledButListenerInactiveDecodes() async {
+        let responder = AgentHooksResponder()
+        let client = MetadataClient(send: responder.send)
+        responder.client = client
+        responder.replies[MetadataVerb.agentHookStatus.rawValue] =
+            (status: MetadataStatus.ok.rawValue, payload: Data([1, 0]))
+        let report = await client.agentHookStatus()
+        XCTAssertEqual(
+            report, .init(installed: true, listenerActive: false),
+            "[1,0] decodes installed with the listener DOWN — never conflated with active",
+        )
+    }
+
+    func testStatusNotInstalledFlagDecodes() async {
+        let responder = AgentHooksResponder()
+        let client = MetadataClient(send: responder.send)
+        responder.client = client
+        responder.replies[MetadataVerb.agentHookStatus.rawValue] =
+            (status: MetadataStatus.ok.rawValue, payload: Data([0, 0]))
+        let report = await client.agentHookStatus()
+        XCTAssertEqual(
+            report, .init(installed: false, listenerActive: false),
+            "a 0 install flag decodes to installed == false (NOT nil)",
+        )
+    }
+
+    /// A 1-byte reply (no listener flag) decodes CONSERVATIVELY: installed, listener NOT active —
+    /// the missing byte must never read as a live listener (never a false green).
+    func testStatusMissingListenerByteDecodesAsInactive() async {
         let responder = AgentHooksResponder()
         let client = MetadataClient(send: responder.send)
         responder.client = client
         responder.replies[MetadataVerb.agentHookStatus.rawValue] =
             (status: MetadataStatus.ok.rawValue, payload: Data([1]))
-        let installed = await client.agentHookStatus()
-        XCTAssertEqual(installed, true, "a 1 flag byte decodes to installed == true")
-    }
-
-    func testStatusNotInstalledFlagDecodesToFalse() async {
-        let responder = AgentHooksResponder()
-        let client = MetadataClient(send: responder.send)
-        responder.client = client
-        responder.replies[MetadataVerb.agentHookStatus.rawValue] =
-            (status: MetadataStatus.ok.rawValue, payload: Data([0]))
-        let installed = await client.agentHookStatus()
-        XCTAssertEqual(installed, false, "a 0 flag byte decodes to installed == false (NOT nil)")
+        let report = await client.agentHookStatus()
+        XCTAssertEqual(
+            report, .init(installed: true, listenerActive: false),
+            "a missing second byte is conservative: NOT listener-active",
+        )
     }
 
     func testStatusEmptyPayloadDecodesToNil() async {
@@ -115,19 +154,19 @@ final class MetadataClientAgentHooksTests: XCTestCase {
         responder.client = client
         responder.replies[MetadataVerb.agentHookStatus.rawValue] =
             (status: MetadataStatus.ok.rawValue, payload: Data())
-        let installed = await client.agentHookStatus()
-        XCTAssertNil(installed, "an ok reply with an EMPTY payload is status-unknown → nil")
+        let report = await client.agentHookStatus()
+        XCTAssertNil(report, "an ok reply with an EMPTY payload is status-unknown → nil")
     }
 
     func testStatusNonOkStatusDecodesToNil() async {
         let responder = AgentHooksResponder()
         let client = MetadataClient(send: responder.send)
         responder.client = client
-        // Even with a stray flag byte, a non-ok status is status-unknown → nil (never trusts the payload).
+        // Even with stray flag bytes, a non-ok status is status-unknown → nil (never trusts the payload).
         responder.replies[MetadataVerb.agentHookStatus.rawValue] =
-            (status: MetadataStatus.error.rawValue, payload: Data([1]))
-        let installed = await client.agentHookStatus()
-        XCTAssertNil(installed, "a non-ok status is nil regardless of any payload byte")
+            (status: MetadataStatus.error.rawValue, payload: Data([1, 1]))
+        let report = await client.agentHookStatus()
+        XCTAssertNil(report, "a non-ok status is nil regardless of any payload bytes")
     }
 
     func testInstallDroppedReplyTimesOutToFalseNeverHangs() async {
@@ -144,8 +183,8 @@ final class MetadataClientAgentHooksTests: XCTestCase {
         responder.dropAll = true
         let client = MetadataClient(timeout: .milliseconds(50), send: responder.send)
         responder.client = client
-        let installed = await client.agentHookStatus()
-        XCTAssertNil(installed, "a dropped status reply times out to nil (status-unknown), never hangs")
+        let report = await client.agentHookStatus()
+        XCTAssertNil(report, "a dropped status reply times out to nil (status-unknown), never hangs")
     }
 }
 

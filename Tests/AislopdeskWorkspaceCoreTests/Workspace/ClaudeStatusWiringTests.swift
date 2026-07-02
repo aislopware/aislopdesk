@@ -164,24 +164,131 @@ final class ClaudeStatusWiringTests: XCTestCase {
     }
 
     /// E12 KICKSTART (WI-1): enqueuing while the owning pane is ALREADY idle (no turn-finished edge is
-    /// coming) fires the head prompt immediately. Here the host reports the agent idle (`.idle`) — which by
-    /// itself dispatches nothing (the trigger is `.done`) — but it makes `LivePaneSession.isComposerPaneIdle`
-    /// true, so the enqueue kickstarts. Proves `ComposerModel.isIdleNow` is wired to the session's
-    /// `claudeStatus`. REVERT-TO-CONFIRM-FAIL: without the kickstart the prompt waits for a `.done` edge that
-    /// never comes (the agent is already idle), and `captured` stays empty.
-    func testEnqueueWhileAgentIdleKickstartsImmediately() throws {
+    /// coming) fires the head prompt immediately. Queue-safety (2026-07-02): the agent must be VERIFIED
+    /// first — a prior authoritative turn (`working → done → idle`, hooks/ctl-only states) proves the
+    /// turn-signal pipeline is live, so the later `.idle` is genuinely "between turns" (the bare
+    /// presence-floor `.idle` never kickstarts — see
+    /// ``testPresenceFloorIdleDoesNotKickstartAgentQueue``). Proves `ComposerModel.isIdleNow` is wired to
+    /// the session's `claudeStatus` + verification. REVERT-TO-CONFIRM-FAIL: without the kickstart the
+    /// prompt waits for a `.done` edge that never comes (the agent is already idle), and `captured`
+    /// stays empty.
+    func testEnqueueWhileVerifiedAgentIdleKickstartsImmediately() throws {
         let session = makeTerminalSession()
         let composer = try XCTUnwrap(session.composer)
         var captured: [Data] = []
         session.terminalModel?.inputSink = { captured.append($0) }
 
-        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // → .idle (no dispatch by itself)
-        XCTAssertTrue(captured.isEmpty, "the .idle transition alone dispatches nothing")
+        // A full authoritative turn ran earlier (hooks live): working → done → the ~8s decay to idle.
+        session.feedAgentSignal(.claudeStatus(state: 3, kind: 0, label: "")) // .working (verifies)
+        session.feedAgentSignal(.claudeStatus(state: 2, kind: 0, label: "")) // .done (empty queue — no-op)
+        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // .idle (between turns)
+        XCTAssertTrue(captured.isEmpty, "the status transitions alone dispatch nothing")
 
         composer.draft = "kick"
         composer.enqueueDraft()
-        XCTAssertEqual(captured, [Data("kick\r".utf8)], "enqueue while the agent is idle kickstarts the first prompt")
+        XCTAssertEqual(
+            captured, [Data("kick\r".utf8)],
+            "enqueue while a VERIFIED agent is idle kickstarts the first prompt",
+        )
         XCTAssertTrue(composer.promptQueue.isEmpty, "the kickstarted item left the queue")
+    }
+
+    // MARK: - Queue-safety (2026-07-02): queued prompts must NEVER be executed by the shell
+
+    /// The DEFAULT no-hooks host can only ever report the presence-floor `.idle` (state 1) for a
+    /// detected claude — Claude may be MID-TURN behind it. Without an authoritative turn signal
+    /// (`.working`/`.done`/`.needsPermission`, which only hooks/ctl produce), an enqueue must NOT
+    /// kickstart into the agent: the prompt is HELD. REVERT-TO-CONFIRM-FAIL: pre-fix
+    /// `isComposerPaneIdle` treated the floor `.idle` as "agent between turns" and the kickstart
+    /// typed the prompt into the mid-turn Claude immediately.
+    func testPresenceFloorIdleDoesNotKickstartAgentQueue() throws {
+        let session = makeTerminalSession()
+        let composer = try XCTUnwrap(session.composer)
+        var captured: [Data] = []
+        session.terminalModel?.inputSink = { captured.append($0) }
+
+        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // presence floor only
+        composer.draft = "now add unit tests"
+        composer.enqueueDraft()
+
+        XCTAssertTrue(captured.isEmpty, "presence-floor idle must not kickstart into a possibly-mid-turn agent")
+        XCTAssertEqual(
+            composer.promptQueue.items.map(\.text), ["now add unit tests"],
+            "the prompt is HELD in the queue, not sent",
+        )
+        XCTAssertEqual(
+            composer.queueHold, .awaitingVerifiedAgent,
+            "the held reason is surfaced so the strip can badge it (not a silently-stuck queue)",
+        )
+    }
+
+    /// THE safety property: prompts enqueued FOR AN AGENT must never fall through to the shell's
+    /// OSC-133;A prompt-idle dispatch. Claude exits without a `.done` (no hooks / hard exit), zsh
+    /// prints its prompt → the shell trigger fires → the held agent prompts must stay held (zsh
+    /// would EXECUTE them as commands — `zsh: command not found: now`, or worse `rm`/`git`).
+    /// REVERT-TO-CONFIRM-FAIL: pre-fix `notePromptIdle()` drained the head regardless of what the
+    /// item was enqueued for, typing "now update the docs\r" into the shell.
+    func testAgentQueuedPromptsNeverFallThroughToShellPromptIdle() throws {
+        let session = makeTerminalSession()
+        let composer = try XCTUnwrap(session.composer)
+        var captured: [Data] = []
+        session.terminalModel?.inputSink = { captured.append($0) }
+
+        session.feedAgentSignal(.claudeStatus(state: 3, kind: 0, label: "")) // agent mid-turn (.working)
+        composer.draft = "now update the docs"
+        composer.enqueueDraft() // busy → held, enqueued FOR THE AGENT
+        XCTAssertTrue(captured.isEmpty)
+
+        session.feedAgentSignal(.claudeStatus(state: 0, kind: 0, label: "")) // claude exits (no .done edge)
+        session.terminalModel?.onPromptIdle?() // zsh prints its prompt → the SHELL trigger fires
+
+        XCTAssertTrue(
+            captured.isEmpty,
+            "an agent-enqueued prompt must NEVER dispatch into the shell — zsh would execute it",
+        )
+        XCTAssertEqual(
+            composer.promptQueue.items.map(\.text), ["now update the docs"],
+            "the prompt stays held (explicit user release via tap-to-edit)",
+        )
+        XCTAssertEqual(composer.queueHold, .agentEnded, "the badge says the agent ended with prompts still held")
+    }
+
+    /// The reverse direction: a prompt enqueued for the SHELL must not be typed into a claude that
+    /// starts afterwards — the agent `.done` turn-finished edge must not drain a shell-targeted head.
+    func testShellQueuedPromptDoesNotDispatchIntoAgentTurnEnd() throws {
+        let session = makeTerminalSession()
+        let composer = try XCTUnwrap(session.composer)
+        var captured: [Data] = []
+        session.terminalModel?.inputSink = { captured.append($0) }
+
+        // A fresh shell sits at its prompt → the first enqueue kickstarts (expected; that command is now
+        // RUNNING), and the in-flight latch holds the second — a SHELL-targeted item left in the queue.
+        composer.draft = "make check"
+        composer.enqueueDraft()
+        XCTAssertEqual(captured, [Data("make check\r".utf8)], "the shell-prompt kickstart fires the first item")
+        composer.draft = "make lint"
+        composer.enqueueDraft() // in-flight latch → queued, stamped for the SHELL
+        XCTAssertEqual(composer.promptQueue.items.map(\.text), ["make lint"])
+
+        // The running command turns out to start a claude, which runs a turn: working → done. The agent
+        // edge must NOT type "make lint" into Claude — it was written for the shell.
+        session.feedAgentSignal(.claudeStatus(state: 3, kind: 0, label: ""))
+        session.feedAgentSignal(.claudeStatus(state: 2, kind: 0, label: ""))
+        XCTAssertEqual(
+            captured, [Data("make check\r".utf8)],
+            "a shell-targeted prompt must not be typed into the agent",
+        )
+        XCTAssertEqual(composer.promptQueue.items.map(\.text), ["make lint"], "held until the shell is back")
+        XCTAssertEqual(composer.queueHold, .shellPromptBehindAgent)
+
+        // Claude exits and zsh prints its prompt → the shell trigger NOW drains the shell-targeted head.
+        session.feedAgentSignal(.claudeStatus(state: 0, kind: 0, label: ""))
+        session.terminalModel?.onPromptIdle?()
+        XCTAssertEqual(
+            captured, [Data("make check\r".utf8), Data("make lint\r".utf8)],
+            "back at the shell, the held shell prompt dispatches",
+        )
+        XCTAssertNil(composer.queueHold, "no hold once the matching trigger drained the head")
     }
 
     /// An unknown / future urgency byte degrades to `.none` (forward-tolerant validate-then-repair) —

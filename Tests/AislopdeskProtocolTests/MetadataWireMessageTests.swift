@@ -256,7 +256,8 @@ final class MetadataWireMessageTests: XCTestCase {
         // E10 WI-7: the two side-effecting path verbs.
         XCTAssertEqual(MetadataVerb.openPath.rawValue, 9)
         XCTAssertEqual(MetadataVerb.revealPath.rawValue, 10)
-        // E13 WI-1: the three agent-hooks verbs (11/12 side-effecting, 13 a pure 1-byte-flag read).
+        // E13 WI-1: the three agent-hooks verbs (11/12 side-effecting, 13 a pure flag read — the
+        // 2-byte [installed][listenerActive] payload, docs/20).
         XCTAssertEqual(MetadataVerb.installAgentHooks.rawValue, 11)
         XCTAssertEqual(MetadataVerb.uninstallAgentHooks.rawValue, 12)
         XCTAssertEqual(MetadataVerb.agentHookStatus.rawValue, 13)

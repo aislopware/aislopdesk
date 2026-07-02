@@ -31,7 +31,7 @@ final class AgentSettingsCardWiringTests: XCTestCase {
     }
 
     private func installedController() async -> AgentHooksController {
-        let c = AgentHooksController(refreshStatus: { true })
+        let c = AgentHooksController(refreshStatus: { .init(installed: true, listenerActive: true) })
         await c.refresh()
         return c
     }

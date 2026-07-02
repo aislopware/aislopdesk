@@ -43,19 +43,27 @@ public struct ClaudePaneDetector: Sendable {
     /// A new machine verdict emits type-27 iff this triple changed (dedupe).
     private var lastEmittedStatus: ForegroundProcessDetector.StatusTriple?
 
-    /// Absolute time (injected `now`) of the LAST authoritative self-report (the P1 `report` ctl
-    /// verb), or `nil` if none. Within ``reportGraceWindow`` seconds of this, a foreground-presence
-    /// ABSENCE (`sample(name:)` with a non-claude/empty basename) must NOT terminate the
-    /// machine — the self-report is authoritative and a custom orchestrator / node-wrapped CLI will
-    /// not classify as `claude`, so the ~1 Hz poll would otherwise wipe a just-reported state on the
-    /// very next tick (review finding: "self-report beats the foreground heuristic" must hold past
-    /// the instant of report, not only at it).
-    private var lastReportAt: TimeInterval?
+    /// Absolute time (injected `now`) of the LAST authoritative fold — a ctl self-report (the P1
+    /// `report` verb) OR a parsed HOOK event (queue-safety fix, 2026-07-02) — or `nil` if none.
+    /// Within ``reportGraceWindow`` seconds of this, a foreground-presence ABSENCE (`sample(name:)`
+    /// with a non-claude/empty basename) must NOT terminate the machine — both are the same
+    /// precedence-2 authoritative signal, and a custom orchestrator / node-wrapped CLI will not
+    /// classify as `claude`, so the ~1 Hz poll would otherwise wipe a just-set state on the very
+    /// next tick (pre-fix only `report` stamped this, so a wrapper-launched claude's hook status
+    /// flapped none↔working every second).
+    private var lastAuthoritativeAt: TimeInterval?
 
-    /// Seconds a self-report stays STICKY against a foreground-presence absence. Picked an order of
-    /// magnitude above the ~1 Hz foreground poll so at least several polls cannot wipe a report; an
-    /// agent that keeps working re-reports (or its hooks fire) well within this, and a genuinely
-    /// finished/exited agent decays normally once the window lapses.
+    /// TRUE while the machine's current (non-`.none`) status was established by an authoritative
+    /// hook/report fold; cleared whenever the machine terminates (a SessionEnd hook, or a genuine
+    /// absence termination). Gates the WRAPPER-basename absence skip in ``sample(name:at:)`` so a
+    /// wrapper foreground can only preserve a genuinely hook-driven status — it can never manufacture
+    /// presence on its own.
+    private var hookAuthority = false
+
+    /// Seconds an authoritative fold (report/hook) stays STICKY against a foreground-presence
+    /// absence. Picked an order of magnitude above the ~1 Hz foreground poll so at least several
+    /// polls cannot wipe it; an agent that keeps working re-reports (or its hooks fire) well within
+    /// this, and a genuinely finished/exited agent decays normally once the window lapses.
     static let reportGraceWindow: TimeInterval = 30
 
     /// The wire `kind` byte for the LAST hook Notification class (`0` until a Notification arrives;
@@ -108,26 +116,41 @@ public struct ClaudePaneDetector: Sendable {
             emission.foreground = .foregroundProcess(name: base)
         }
         let present = matcher.isClaudeRunning(processName: base)
-        // Stickiness (review finding): a recent authoritative self-report must not be wiped by a
-        // foreground-presence ABSENCE — the common supervised agent (a custom orchestrator,
-        // node-wrapped CLI, any non-`claude` basename) self-reports `working`/`blocked`, and the
-        // ~1 Hz poll's `present == false` would otherwise terminate it on the next tick. Within the
-        // grace window we DROP the absence fold entirely (presence PRESENCE still folds as a normal
-        // floor). Once the window lapses, absence terminates as before (a genuinely exited agent
-        // decays). Ordered comparison (NaN-faithful) — never a bare `<` ternary.
-        let reportSticky: Bool = {
-            guard !present, let reportedAt = lastReportAt else { return false }
-            let elapsed = now - reportedAt
-            return Double.minimum(elapsed, Self.reportGraceWindow) < Self.reportGraceWindow
-                && elapsed >= 0
+        // Stickiness (review finding + queue-safety fix 2026-07-02): a recent authoritative fold
+        // (ctl self-report OR hook event) must not be wiped by a foreground-presence ABSENCE — the
+        // common supervised agent (a custom orchestrator, node-wrapped CLI, any non-`claude`
+        // basename) sets `working`/`blocked` authoritatively, and the ~1 Hz poll's
+        // `present == false` would otherwise terminate it on the next tick. Two suppressors:
+        // (a) within the grace window of the last authoritative fold, ANY absence is dropped;
+        // (b) while a hook/report-established status is live (`hookAuthority`), an absence whose
+        //     basename is a known WRAPPER (`node`/`npx`/`bun`/`deno`/`mise`) is dropped even past
+        //     the window — a wrapper-launched claude sitting quietly between turns (no hook traffic
+        //     to re-stamp the window) must not flap to `.none` while the wrapper still holds the
+        //     PTY foreground. A wrapper never LIFTS the floor (absence cannot lift `.none`).
+        // Once neither holds, absence terminates as before (a genuinely exited agent decays).
+        // Ordered comparison (NaN-faithful) — never a bare `<` ternary.
+        let absenceSuppressed: Bool = {
+            guard !present else { return false }
+            if let authoritativeAt = lastAuthoritativeAt {
+                let elapsed = now - authoritativeAt
+                if Double.minimum(elapsed, Self.reportGraceWindow) < Self.reportGraceWindow,
+                   elapsed >= 0
+                { return true }
+            }
+            return hookAuthority && matcher.isLikelyWrapper(processName: base)
         }()
-        if reportSticky {
-            // Skip the terminating absence fold; keep the authoritative reported status intact.
+        if absenceSuppressed {
+            // Skip the terminating absence fold; keep the authoritative status intact.
             // (No presence floor to lift — absence cannot lift `.none`.)
         } else {
             machine.reduce(.processPresent(present), at: now)
-            // Presence absence terminates → not blocked anymore → forget the stale notification kind.
-            if !present { lastNotificationKind = 0 }
+            // Presence absence terminates → not blocked anymore → forget the stale notification
+            // kind AND the authoritative provenance (a later wrapper foreground preserves nothing).
+            if !present {
+                lastNotificationKind = 0
+                hookAuthority = false
+                lastAuthoritativeAt = nil
+            }
         }
         emission.status = statusEmissionIfChanged()
         return emission
@@ -141,7 +164,14 @@ public struct ClaudePaneDetector: Sendable {
         var emission = Emission()
         guard let payload = HookParser.parse(bytes) else { return emission } // validate-then-drop
         let (event, kindByte) = AgentHookHandler.mapToHookEvent(payload)
+        // Queue-safety fix (2026-07-02): a REAL hook is the same precedence-2 authoritative signal
+        // as a ctl report, so it stamps the SAME stickiness anchor — otherwise the ~1 Hz foreground
+        // poll terminates a hook-set status within a second whenever claude runs under a wrapper
+        // (node/npx/mise) whose basename never classifies as `claude`. Stamped on every parsed
+        // record (Pre/PostToolUse traffic keeps a long turn's window fresh).
+        lastAuthoritativeAt = now
         machine.reduce(.hook(event), at: now)
+        hookAuthority = machine.status != .none // SessionEnd terminates → authority is gone with it
         // Track the live block class: a Notification carries its kind; any transition that leaves the
         // blocked state forgets it (so a later tick/presence type-27 reports kind 0, not a stale class).
         lastNotificationKind = (machine.status == .needsPermission) ? kindByte : 0
@@ -179,10 +209,11 @@ public struct ClaudePaneDetector: Sendable {
             return emission // validate-then-drop: unknown state is a no-op
         }
         // Record the report time so a subsequent foreground-presence absence cannot wipe this
-        // authoritative state for the grace window (see `lastReportAt` / `sample`). Only a VALID
-        // (folded) state stamps the floor — an unknown state already returned above.
-        lastReportAt = now
+        // authoritative state for the grace window (see `lastAuthoritativeAt` / `sample`). Only a
+        // VALID (folded) state stamps the floor — an unknown state already returned above.
+        lastAuthoritativeAt = now
         machine.reduce(.hook(event), at: now)
+        hookAuthority = machine.status != .none
         lastNotificationKind = (machine.status == .needsPermission) ? 1 : 0
         emission.status = statusEmissionIfChanged()
         return emission

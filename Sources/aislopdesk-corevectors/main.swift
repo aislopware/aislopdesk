@@ -948,8 +948,11 @@ root["metadataWireMessages"] = [
         .metadataResponse(requestID: 99, status: 200, payload: metaUnicodePayload),
         ["requestId": UInt32(99), "status": Int(200), "payloadHex": hex(metaUnicodePayload)],
     ),
-    // response: agentHookStatus (E13 WI-1) — status .ok + a 1-byte flag payload (1 = installed / 0 = not);
-    // pins the new 1-byte status-flag response shape (the only agent-hooks reply carrying a payload).
+    // response: agentHookStatus (E13 WI-1) — status .ok + a flag payload (the only agent-hooks reply
+    // carrying one). This record pins the metadataResponse ENVELOPE around an opaque 1-byte payload and
+    // is FROZEN as-is; the live verb-13 payload is now the 2-byte [installed][listenerActive] flags
+    // (queue-safety cluster 2026-07-02, docs/20) — the payload is opaque to the envelope codec, so the
+    // envelope bytes pinned here are unaffected.
     wmRecord(
         "metadataResponse",
         .metadataResponse(requestID: 0x0B0C_0D0E, status: 0, payload: Data([0x01])),

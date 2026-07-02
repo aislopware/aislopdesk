@@ -21,30 +21,86 @@ import Foundation
 /// never torn down across tab switches — see memory), `draft` and the queue survive tab
 /// switches; `cancel()` (`⎋`) hides the bar but keeps the draft so re-opening restores it.
 ///
-/// ## Two-signal turn-finished mapping (`notePromptIdle()`)
+/// ## Two-signal turn-finished mapping (`notePromptIdle(_:)`) + per-TARGET dispatch (queue-safety)
 ///
 /// There is no single "next idle prompt" dispatch trigger
 /// because Claude Code runs in the **alt-screen** (it emits no OSC-133 prompt marks) while a
 /// normal shell does, so the trigger is the **union of two faithful signals**, resolved
-/// per-pane, both funnelling into ``notePromptIdle()`` → one ``PromptQueueModel/dispatchNext()``
-/// per turn:
+/// per-pane, both funnelling into ``notePromptIdle(_:)`` → one dispatch per turn:
 ///
 /// 1. **Normal terminal pane** → the client `modeTracker` emits OSC-133 `;A` (`.promptStart`)
-///    when the shell is back at an idle prompt (`TerminalViewModel.onPromptIdle`). This is the
-///    primary dispatch trigger.
+///    when the shell is back at an idle prompt (`TerminalViewModel.onPromptIdle`) →
+///    ``notePromptIdle(.shellPrompt)``.
 /// 2. **Agent (alt-screen) pane** → `claudeStatus` transitions to `.done` (host-detected via the
-///    Stop hook, wired through `LivePaneSession.feedAgentSignal`). `.done` is the IMMEDIATE
-///    turn-finished edge (it then decays to `.idle` ~8s later); dispatching on `.done` — NOT on the
-///    laggy `.idle` decay — fires each queued prompt the moment the turn actually ends.
+///    Stop hook, wired through `LivePaneSession.feedAgentSignal`) → ``notePromptIdle(.agentTurnEnd)``.
+///    `.done` is the IMMEDIATE turn-finished edge (it then decays to `.idle` ~8s later); dispatching
+///    on `.done` — NOT on the laggy `.idle` decay — fires each queued prompt the moment the turn
+///    actually ends.
 ///
-/// Both paths call ``notePromptIdle()``; the queue dispatches FIFO, one item per finished turn.
+/// **Per-TARGET dispatch (2026-07-02, docs/DECISIONS.md "Queue-safety cluster"):** each queued item
+/// is stamped at enqueue with the pane mode it was written for (``AislopdeskClaudeCode/PromptTarget``,
+/// read from the injected ``paneContext``), and a trigger drains the head ONLY when target and
+/// source match (`.shellPrompt` ↔ `.shell`, `.agentTurnEnd` ↔ `.agent`). A mismatched head HOLDS
+/// the whole queue (FIFO, never skipped) and surfaces a ``queueHold`` reason for the strip badge —
+/// the load-bearing property being that a prompt enqueued for a mid-turn Claude can NEVER fall
+/// through to the shell after Claude exits (zsh would execute it as a command). The release is
+/// explicit: tap-to-edit the chip back into the Composer and send deliberately.
 ///
 /// ## Kickstart (`isIdleNow`)
 ///
 /// The turn-finished EDGE only fires after a turn runs. If the user enqueues while the pane is
-/// ALREADY idle (a shell sitting at its prompt, or an agent between turns), there is no edge to wait
-/// for, so ``enqueueDraft()`` kickstarts exactly the head item once (guarded by ``isIdleNow`` — the
-/// per-pane "idle now?" probe `LivePaneSession` injects — and a one-dispatch-per-turn in-flight latch).
+/// ALREADY idle (a shell sitting at its prompt, or a VERIFIED agent between turns), there is no edge
+/// to wait for, so ``enqueueDraft()`` kickstarts exactly the head item once (guarded by ``isIdleNow``
+/// — the per-pane "idle now?" probe `LivePaneSession` injects — the same target match as the edge
+/// triggers, and a one-dispatch-per-turn in-flight latch).
+/// The SOURCE of a turn-finished trigger (queue-safety, 2026-07-02): which pane mode just became
+/// ready for the next prompt. Matched against the head item's ``AislopdeskClaudeCode/PromptTarget``
+/// before anything dispatches — a shell prompt mark can only drain shell-targeted prompts, an agent
+/// turn-end edge only agent-targeted ones.
+public enum ComposerTurnSource: Equatable, Sendable {
+    /// The shell printed an idle prompt (OSC-133;A on the main screen) — drains `.shell` items.
+    case shellPrompt
+    /// The detected agent finished a turn (`claudeStatus → .done`) — drains `.agent` items.
+    case agentTurnEnd
+}
+
+/// The owning pane's agent context, injected by `LivePaneSession` into ``ComposerModel/paneContext``
+/// (queue-safety, 2026-07-02). `nil` probe (headless test / preview / never-adopted model) reads as
+/// a plain shell pane.
+public struct ComposerPaneContext: Equatable, Sendable {
+    /// A live agent (claude) is detected in the pane (`claudeStatus != .none`).
+    public var isAgent: Bool
+    /// Authoritative turn signals (`working`/`done`/`needsPermission` — producible ONLY by the
+    /// hooks / ctl paths, never by the foreground-watch presence floor) have been seen for this
+    /// pane. The ONLY basis on which the queue may auto-dispatch into an agent.
+    public var turnSignalsVerified: Bool
+
+    public init(isAgent: Bool, turnSignalsVerified: Bool) {
+        self.isAgent = isAgent
+        self.turnSignalsVerified = turnSignalsVerified
+    }
+
+    /// The ``AislopdeskClaudeCode/PromptTarget`` a prompt enqueued RIGHT NOW is written for.
+    public var currentTarget: PromptTarget { isAgent ? .agent : .shell }
+}
+
+/// WHY the Prompt Queue is currently holding instead of auto-dispatching (queue-safety, 2026-07-02)
+/// — surfaced by ``ComposerModel/queueHold`` so the strip can badge the held state instead of the
+/// queue silently looking stuck. `nil` means "no hold": either nothing is queued, or the head is
+/// simply waiting for its matching turn-finished edge (the normal queued state).
+public enum PromptQueueHold: Equatable, Sendable {
+    /// The head prompt targets a detected agent, but NO authoritative turn signal has ever been
+    /// seen for this pane (default no-hooks config → the status is only the presence floor).
+    /// Auto-dispatch never guesses — install the hooks (Settings ▸ Agents) or release manually.
+    case awaitingVerifiedAgent
+    /// The head prompt was enqueued for an agent that is no longer detected (claude exited). It
+    /// will NEVER be typed into the shell — release it explicitly via tap-to-edit.
+    case agentEnded
+    /// The head prompt targets the shell, but an agent currently owns the pane — it waits until
+    /// the shell is back at its prompt.
+    case shellPromptBehindAgent
+}
+
 @preconcurrency
 @MainActor
 @Observable
@@ -110,11 +166,24 @@ public final class ComposerModel {
     @ObservationIgnored public var selection: NSRange?
 
     /// Per-pane "is the owning pane idle RIGHT NOW?" probe, injected by ``LivePaneSession`` (true when the
-    /// normal shell is at its prompt OR the agent is between turns — `claudeStatus` `.idle`/`.done`). Read by
-    /// the ``enqueueDraft()`` kickstart so the FIRST queued prompt fires immediately when the pane is already
-    /// idle (no turn-finished edge will ever come for it otherwise). `nil` (headless / preview) ⇒ never idle ⇒
-    /// no kickstart. `@ObservationIgnored`: wiring, not view state.
+    /// normal shell is at its prompt OR a VERIFIED agent is between turns — `claudeStatus` `.idle`/`.done`
+    /// with authoritative turn signals seen; the bare presence-floor `.idle` is NOT idle, queue-safety
+    /// 2026-07-02). Read by the ``enqueueDraft()`` kickstart so the FIRST queued prompt fires immediately
+    /// when the pane is already idle (no turn-finished edge will ever come for it otherwise). `nil`
+    /// (headless / preview) ⇒ never idle ⇒ no kickstart. `@ObservationIgnored`: wiring, not view state.
     @ObservationIgnored public var isIdleNow: (() -> Bool)?
+
+    /// The owning pane's agent context probe (queue-safety, 2026-07-02), injected by ``LivePaneSession``.
+    /// Read at ENQUEUE time to stamp each item's ``AislopdeskClaudeCode/PromptTarget`` and at DISPATCH /
+    /// ``queueHold`` time for the target match. `nil` (headless / preview) reads as a plain shell pane.
+    /// `@ObservationIgnored`: wiring, not view state — the strip re-renders off the observable state the
+    /// probe reads (`LivePaneSession.claudeStatus` / `agentTurnSignalsVerified` are `@Observable`).
+    @ObservationIgnored public var paneContext: (() -> ComposerPaneContext)?
+
+    /// The resolved pane context (the `nil`-probe fallback = a plain shell pane).
+    private var resolvedPaneContext: ComposerPaneContext {
+        paneContext?() ?? ComposerPaneContext(isAgent: false, turnSignalsVerified: false)
+    }
 
     /// One-dispatch-per-turn latch: set when a prompt is dispatched (kickstart OR turn-finished edge), cleared
     /// by the next turn-finished edge. Guards the kickstart from sending a second prompt while one is already
@@ -200,24 +269,28 @@ public final class ComposerModel {
     }
 
     /// Appends the draft to the queue and clears it, **staying open** (`⌥⌘↩`, and the `⌘⇧M` add-a-line
-    /// path). Splits the draft into one queue item per non-blank line (``PromptQueueModel/enqueue(_:)``).
-    /// Sends nothing for a BUSY pane — queued items dispatch later, one per finished turn, via
-    /// ``notePromptIdle()``. But if the owning pane is ALREADY idle (``isIdleNow``), it KICKSTARTS exactly
-    /// the head item now (no turn-finished edge is coming for it), then the rest wait for edges.
+    /// path). Splits the draft into one queue item per non-blank line
+    /// (``PromptQueueModel/enqueue(_:target:)``), each stamped with the pane mode it was written for
+    /// (``paneContext`` — queue-safety, 2026-07-02). Sends nothing for a BUSY pane — queued items dispatch
+    /// later, one per finished turn, via ``notePromptIdle(_:)``. But if the owning pane is ALREADY idle
+    /// (``isIdleNow``), it KICKSTARTS exactly the head item now (no turn-finished edge is coming for it),
+    /// then the rest wait for edges.
     public func enqueueDraft() {
-        promptQueue.enqueue(draft)
+        promptQueue.enqueue(draft, target: resolvedPaneContext.currentTarget)
         draft = ""
         selection = nil
         isVisible = true
         kickstartIfIdle()
     }
 
-    /// Kickstart: dispatch the head queued item once IF the pane is idle now and no prompt is already in
-    /// flight for this turn. A no-op when busy (the turn-finished edge will drive dispatch) or when a
-    /// kickstart/edge dispatch is already in flight (the in-flight latch prevents a double-send).
+    /// Kickstart: dispatch the head queued item once IF the pane is idle now, the head was written for
+    /// the pane's CURRENT mode (target match — a stale head from the other mode holds, see
+    /// ``queueHold``), and no prompt is already in flight for this turn. A no-op when busy (the
+    /// turn-finished edge will drive dispatch) or when a kickstart/edge dispatch is already in flight
+    /// (the in-flight latch prevents a double-send).
     private func kickstartIfIdle() {
         guard !dispatchInFlight, isIdleNow?() == true else { return }
-        dispatch()
+        dispatch(resolvedPaneContext.currentTarget)
     }
 
     // MARK: Paste — ⌘V (rich → Markdown) / ⇧⌘V (plain)
@@ -291,23 +364,50 @@ public final class ComposerModel {
     // MARK: Turn-finished dispatch — the single sink BOTH turn-finished signals call
 
     /// Dispatches the next queued prompt at a turn-finished edge (see the two-signal mapping in the type
-    /// doc): the normal-pane OSC-133;A prompt mark, or the agent-pane `claudeStatus → .done` transition. The
-    /// finished turn clears the in-flight latch, then the head item (if any) is dispatched, one item per
-    /// edge, FIFO. A no-op when the queue is empty. With no sink wired (headless/preview) the queue is left intact so
+    /// doc): the normal-pane OSC-133;A prompt mark (`.shellPrompt`) or the agent-pane
+    /// `claudeStatus → .done` transition (`.agentTurnEnd`). The finished turn clears the in-flight latch,
+    /// then the head item (if any) is dispatched — ONLY when its target matches the trigger's source
+    /// (queue-safety, 2026-07-02: a shell prompt can never drain an agent-targeted prompt, and vice
+    /// versa; a mismatched head holds the whole queue, see ``queueHold``) — one item per edge, FIFO.
+    /// A no-op when the queue is empty. With no sink wired (headless/preview) the queue is left intact so
     /// nothing is lost.
-    public func notePromptIdle() {
+    public func notePromptIdle(_ source: ComposerTurnSource = .shellPrompt) {
         dispatchInFlight = false // the turn that was in flight (if any) finished.
-        dispatch()
+        dispatch(source == .agentTurnEnd ? .agent : .shell)
     }
 
-    /// Pops the head queued item and writes its bytes (`UTF-8(text) + CR`) through ``send``, latching
-    /// in-flight so a kickstart can't double-send. Shared by ``notePromptIdle()`` (turn-finished edge) and
-    /// the ``enqueueDraft()`` kickstart. A no-op (no latch) when the queue is empty or there is no sink.
-    private func dispatch() {
+    /// Pops the head queued item IF it was enqueued for `target` (the queue-layer match —
+    /// ``PromptQueueModel/dispatchNext(for:)`` — makes cross-mode dispatch unrepresentable) and writes its
+    /// bytes (`UTF-8(text) + CR`) through ``send``, latching in-flight so a kickstart can't double-send.
+    /// Shared by ``notePromptIdle(_:)`` (turn-finished edges) and the ``enqueueDraft()`` kickstart. A no-op
+    /// (no latch) when the queue is empty, the head's target mismatches, or there is no sink.
+    private func dispatch(_ target: PromptTarget) {
         guard let send else { return } // DEFENSIVE: no sink wired (headless/preview) — keep the queued
         // items. Always non-nil in production (wired once at `LivePaneSession.make`), so this never fires.
-        guard let bytes = promptQueue.dispatchNext() else { return }
+        guard let bytes = promptQueue.dispatchNext(for: target) else { return }
         dispatchInFlight = true
         send(bytes)
+    }
+
+    // MARK: Held-reason surface (queue-safety, 2026-07-02)
+
+    /// WHY the queue is holding instead of auto-dispatching, or `nil` when it is not (empty queue, or the
+    /// head simply awaits its matching turn-finished edge — the normal queued state). Read by the strip to
+    /// badge a held queue so it never looks silently stuck. Computed off the observable queue + the
+    /// session-injected ``paneContext`` (whose underlying `claudeStatus`/verified flags are `@Observable`),
+    /// so a SwiftUI reader re-renders on the relevant transitions.
+    public var queueHold: PromptQueueHold? {
+        guard let head = promptQueue.items.first else { return nil }
+        let context = resolvedPaneContext
+        switch (head.target, context.isAgent) {
+        case (.agent, false):
+            return .agentEnded // enqueued for an agent that is gone — never falls through to the shell
+        case (.agent, true):
+            return context.turnSignalsVerified ? nil : .awaitingVerifiedAgent
+        case (.shell, true):
+            return .shellPromptBehindAgent // a shell command is never typed into the agent
+        case (.shell, false):
+            return nil // normal: waiting for the next OSC-133;A prompt mark
+        }
     }
 }

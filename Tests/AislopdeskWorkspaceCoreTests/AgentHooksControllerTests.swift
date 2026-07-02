@@ -6,24 +6,47 @@ import XCTest
 /// status state machine driven through three injected async seams (the app wires them to the active
 /// connection's first-pane ``MetadataClient``; here they are fakes). Each behavior has a test that FAILS on
 /// the un-fixed code:
-/// - `refresh()` folds the status tri-state — `true`→`.installed`, `false`→`.notInstalled`, `nil`→
-///   `.disconnected` (the nil case is what keeps the card off a FALSE "Not Installed");
-/// - `install()`/`uninstall()` transition THROUGH `.working` (captured inside the seam) then land on the
-///   success state, and RE-PROBE on failure rather than getting stuck `.working`;
+/// - `refresh()` folds the typed status report — installed+listener → `.installed`, installed with the
+///   listener DOWN → `.installedInactive` (queue-safety cluster 2026-07-02: the false-green bug — hooks
+///   written to settings.json while hostd was launched without `AISLOPDESK_AGENT_HOOKS=1` are DEAD, so the
+///   card must warn, not show "✓ Installed"), not-installed → `.notInstalled`, `nil` → `.disconnected`
+///   (the nil case is what keeps the card off a FALSE "Not Installed");
+/// - `install()`/`uninstall()` transition THROUGH `.working` (captured inside the seam); install RE-PROBES
+///   on success too (a successful settings write does NOT prove the listener is bound) and both re-probe on
+///   failure rather than getting stuck `.working`;
 /// - `refresh()` is a no-op while a write owns `.working` (a concurrent appear-probe can't clobber it).
 @MainActor
 final class AgentHooksControllerTests: XCTestCase {
-    // MARK: refresh() folds the status tri-state
+    private typealias Report = MetadataClient.AgentHookStatusReport
 
-    func testRefreshTrueGivesInstalled() async {
-        let controller = AgentHooksController(refreshStatus: { true })
+    private static let active = Report(installed: true, listenerActive: true)
+    private static let inactive = Report(installed: true, listenerActive: false)
+    private static let notInstalled = Report(installed: false, listenerActive: false)
+
+    // MARK: refresh() folds the typed status report
+
+    func testRefreshInstalledWithListenerGivesInstalled() async {
+        let controller = AgentHooksController(refreshStatus: { Self.active })
         await controller.refresh()
         XCTAssertEqual(controller.state, .installed)
         XCTAssertTrue(controller.isInstalled)
     }
 
-    func testRefreshFalseGivesNotInstalled() async {
-        let controller = AgentHooksController(refreshStatus: { false })
+    /// Queue-safety cluster (2026-07-02): the false-green fix — installed on disk but the host hook
+    /// listener is unbound ⇒ `.installedInactive`, NEVER the green `.installed`.
+    func testRefreshInstalledWithoutListenerGivesInstalledInactive() async {
+        let controller = AgentHooksController(refreshStatus: { Self.inactive })
+        await controller.refresh()
+        XCTAssertEqual(
+            controller.state, .installedInactive,
+            "hooks in settings.json + no bound listener = a DEAD integration — warn, don't show green",
+        )
+        XCTAssertTrue(controller.isInstalled, "the entries ARE on disk — Uninstall/behaviour stay available")
+        XCTAssertTrue(controller.actionsEnabled, "Uninstall remains actionable from the inactive state")
+    }
+
+    func testRefreshNotInstalledGivesNotInstalled() async {
+        let controller = AgentHooksController(refreshStatus: { Self.notInstalled })
         await controller.refresh()
         XCTAssertEqual(controller.state, .notInstalled)
         XCTAssertFalse(controller.isInstalled)
@@ -40,16 +63,42 @@ final class AgentHooksControllerTests: XCTestCase {
 
     // MARK: install() / uninstall() success paths
 
-    func testInstallSuccessGivesInstalled() async {
-        let controller = AgentHooksController(install: { true }, refreshStatus: { false })
+    /// A successful install RE-PROBES (it does not blindly land `.installed`): with the listener live
+    /// the probe lands the green `.installed`.
+    func testInstallSuccessWithLiveListenerGivesInstalled() async {
+        let host = FakeHooksHost(listenerActive: true)
+        let controller = AgentHooksController(
+            install: { host.installed = true
+                return true
+            },
+            refreshStatus: { host.report },
+        )
         await controller.refresh()
         XCTAssertEqual(controller.state, .notInstalled)
         await controller.install()
         XCTAssertEqual(controller.state, .installed)
     }
 
+    /// Queue-safety cluster (2026-07-02): clicking Install on a hostd with NO bound listener must land
+    /// `.installedInactive` — pre-fix `install()` set `.installed` directly, flashing the false green
+    /// over a dead integration.
+    func testInstallSuccessWithoutListenerGivesInstalledInactive() async {
+        let host = FakeHooksHost(listenerActive: false)
+        let controller = AgentHooksController(
+            install: { host.installed = true
+                return true
+            },
+            refreshStatus: { host.report },
+        )
+        await controller.install()
+        XCTAssertEqual(
+            controller.state, .installedInactive,
+            "a successful settings write does NOT prove the listener — the re-probe lands the honest state",
+        )
+    }
+
     func testUninstallSuccessGivesNotInstalled() async {
-        let controller = AgentHooksController(uninstall: { true }, refreshStatus: { true })
+        let controller = AgentHooksController(uninstall: { true }, refreshStatus: { Self.active })
         await controller.refresh()
         XCTAssertEqual(controller.state, .installed)
         await controller.uninstall()
@@ -57,8 +106,15 @@ final class AgentHooksControllerTests: XCTestCase {
     }
 
     func testUninstallReversesInstall() async {
+        let host = FakeHooksHost(listenerActive: true)
         let controller = AgentHooksController(
-            install: { true }, uninstall: { true }, refreshStatus: { false },
+            install: { host.installed = true
+                return true
+            },
+            uninstall: { host.installed = false
+                return true
+            },
+            refreshStatus: { host.report },
         )
         await controller.install()
         XCTAssertEqual(controller.state, .installed)
@@ -77,17 +133,17 @@ final class AgentHooksControllerTests: XCTestCase {
                 stateInsideSeam = controller.state
                 return true
             },
-            refreshStatus: { false },
+            refreshStatus: { Self.active },
         )
         await controller.install()
         XCTAssertEqual(stateInsideSeam, .working, "install() must enter .working before firing the seam")
-        XCTAssertEqual(controller.state, .installed, "and land .installed after a successful seam")
+        XCTAssertEqual(controller.state, .installed, "and land .installed after a successful seam + probe")
     }
 
     // MARK: failure paths re-probe (never stuck .working)
 
     func testFailedInstallReProbesToNotInstalled() async {
-        let controller = AgentHooksController(install: { false }, refreshStatus: { false })
+        let controller = AgentHooksController(install: { false }, refreshStatus: { Self.notInstalled })
         await controller.install()
         XCTAssertEqual(
             controller.state, .notInstalled,
@@ -105,7 +161,7 @@ final class AgentHooksControllerTests: XCTestCase {
     }
 
     func testFailedUninstallReProbesToInstalled() async {
-        let controller = AgentHooksController(uninstall: { false }, refreshStatus: { true })
+        let controller = AgentHooksController(uninstall: { false }, refreshStatus: { Self.active })
         await controller.uninstall()
         XCTAssertEqual(
             controller.state, .installed,
@@ -121,7 +177,7 @@ final class AgentHooksControllerTests: XCTestCase {
             // The install seam suspends until the test resumes it, holding the controller in `.working`.
             install: { await withCheckedContinuation { resume = $0 } },
             // Would flip the state to `.notInstalled` if refresh() were NOT guarded against `.working`.
-            refreshStatus: { false },
+            refreshStatus: { Self.notInstalled },
         )
 
         let writing = Task { await controller.install() }
@@ -134,7 +190,9 @@ final class AgentHooksControllerTests: XCTestCase {
 
         resume?.resume(returning: true)
         await writing.value
-        XCTAssertEqual(controller.state, .installed, "the resumed write still lands its success state")
+        // The resumed write re-probes (this fake host still answers not-installed) — the point here is
+        // only that the mid-flight refresh() could not clobber `.working`.
+        XCTAssertEqual(controller.state, .notInstalled)
     }
 
     // MARK: derived view flags
@@ -155,5 +213,21 @@ final class AgentHooksControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .unknown, "the initial state before the first probe")
         XCTAssertTrue(controller.isDisconnected, "unknown renders like disconnected (the connect note shows)")
         XCTAssertFalse(controller.actionsEnabled)
+    }
+}
+
+/// A tiny stateful fake host: `installed` flips with the install/uninstall seams; `listenerActive` is
+/// fixed at construction (the listener binds only at hostd launch — no RPC can flip it).
+@MainActor
+private final class FakeHooksHost {
+    var installed = false
+    let listenerActive: Bool
+
+    init(listenerActive: Bool) {
+        self.listenerActive = listenerActive
+    }
+
+    var report: MetadataClient.AgentHookStatusReport {
+        .init(installed: installed, listenerActive: installed ? listenerActive : false)
     }
 }

@@ -237,17 +237,104 @@ final class ClaudePaneDetectorTests: XCTestCase {
     }
 
     /// The stickiness floor LAPSES: once the grace window elapses with the agent still absent
-    /// (genuinely exited), a foreground-absence sample DOES terminate — a stale report does not
-    /// pin the pane forever. Complements ``testReportStickyAgainstForegroundAbsence``.
+    /// (genuinely exited — the SHELL is back in the foreground), a foreground-absence sample DOES
+    /// terminate — a stale report does not pin the pane forever. Complements
+    /// ``testReportStickyAgainstForegroundAbsence``. (2026-07-02: the basename here must be a
+    /// NON-wrapper — a wrapper basename like `node` now deliberately stays sticky beyond the window
+    /// while a hook/report-established status is live, see
+    /// ``testWrapperAbsenceBeyondGraceWindowKeepsHookStatus``.)
     func testReportStickinessLapsesAfterGraceWindow() {
         var d = ClaudePaneDetector()
         _ = d.report(state: "working", message: nil, at: 0)
         XCTAssertEqual(d.status, .working)
-        // A sample PAST the grace window with no claude present → the agent really left → terminate.
+        // A sample PAST the grace window with the shell back in the foreground → the agent really
+        // left → terminate.
         let late = ClaudePaneDetector.reportGraceWindow + 1
-        let e = d.sample(name: "node", at: late)
-        XCTAssertEqual(d.status, .none, "after the grace window a non-claude absence terminates as before")
+        let e = d.sample(name: "zsh", at: late)
+        XCTAssertEqual(d.status, .none, "after the grace window a non-wrapper absence terminates as before")
         XCTAssertNotNil(e.status, "the termination emits a type-27 transition")
+    }
+
+    // MARK: - Queue-safety fix (2026-07-02): HOOK events get the same stickiness a ctl report has
+
+    /// A real HOOK event must stamp the stickiness window exactly like a ctl self-report: with claude
+    /// running under a wrapper (npm-installed `claude` is a `#!/usr/bin/env node` shebang → the PTY
+    /// foreground basename is `node`), a `UserPromptSubmit` hook sets `.working`, and the very next
+    /// ~1 Hz foreground poll (`tick` + `sample("node")`) must NOT terminate it. REVERT-TO-CONFIRM-FAIL:
+    /// pre-fix only `report(...)` stamped `lastReportAt`, so the poll wiped the hook status ~1 s later
+    /// (status flapped none↔working every second; a `.needsPermission` vanished before the user saw it).
+    func testHookStatusStickyAgainstWrapperForegroundPoll() {
+        var d = ClaudePaneDetector()
+        _ = d.sample(name: "node", at: 0) // wrapper-launched claude → basename is never "claude"
+        XCTAssertEqual(d.status, .none)
+        _ = d.hook(bytes: json(#"{"hook_event_name":"UserPromptSubmit"}"#), at: 1)
+        XCTAssertEqual(d.status, .working, "the hook is authoritative")
+
+        // The next foreground poll (~1 s later): a tick + the wrapper basename (absence).
+        _ = d.tick(at: 2)
+        let resample = d.sample(name: "node", at: 2)
+        XCTAssertEqual(d.status, .working, "a wrapper-basename absence must not wipe a fresh hook status")
+        XCTAssertNil(resample.status, "no transition → no type-27 flap")
+    }
+
+    /// A hook-set `.needsPermission` (the supervision alert) survives the wrapper foreground poll —
+    /// the exact lost-notification symptom: pre-fix the next poll tick wiped the blocked state (and its
+    /// attention badge) within a second.
+    func testHookNeedsPermissionSurvivesWrapperForegroundPoll() {
+        var d = ClaudePaneDetector()
+        _ = d.sample(name: "node", at: 0)
+        _ = d.hook(bytes: json(#"{"hook_event_name":"Notification","message":"needs your permission"}"#), at: 1)
+        XCTAssertEqual(d.status, .needsPermission)
+        _ = d.tick(at: 2)
+        _ = d.sample(name: "node", at: 2)
+        XCTAssertEqual(d.status, .needsPermission, "the blocked state must outlive the ~1 Hz poll")
+    }
+
+    /// WRAPPER absence never terminates a hook-established status even BEYOND the grace window — the
+    /// wrapped claude sitting quietly between turns (or inside a long tool run with no hook traffic)
+    /// keeps its status while `node`/`npx`/`bun`/`deno`/`mise` holds the PTY foreground. Only a
+    /// non-wrapper foreground (the shell back at its prompt) or a SessionEnd hook ends it.
+    func testWrapperAbsenceBeyondGraceWindowKeepsHookStatus() {
+        var d = ClaudePaneDetector()
+        _ = d.hook(bytes: json(#"{"hook_event_name":"SessionStart"}"#), at: 0) // hook-established idle
+        XCTAssertEqual(d.status, .idle)
+        let wayPast = ClaudePaneDetector.reportGraceWindow * 10
+        _ = d.tick(at: wayPast)
+        _ = d.sample(name: "node", at: wayPast)
+        XCTAssertEqual(d.status, .idle, "a wrapper foreground keeps a hook-established status alive indefinitely")
+    }
+
+    /// A NON-wrapper absence (zsh back in the foreground) past the grace window DOES terminate a
+    /// hook-established status — a genuinely exited (or hard-killed) claude decays; the wrapper skip
+    /// must not turn every absence into permanence.
+    func testNonWrapperAbsencePastGraceWindowTerminatesHookStatus() {
+        var d = ClaudePaneDetector()
+        _ = d.hook(bytes: json(#"{"hook_event_name":"UserPromptSubmit"}"#), at: 0)
+        XCTAssertEqual(d.status, .working)
+        let late = ClaudePaneDetector.reportGraceWindow + 1
+        let e = d.sample(name: "zsh", at: late)
+        XCTAssertEqual(d.status, .none, "a non-wrapper absence past the window terminates as before")
+        XCTAssertNotNil(e.status, "the termination emits the type-27 transition")
+    }
+
+    /// A SessionEnd hook terminates immediately — and AFTER it, a wrapper foreground must NOT
+    /// resurrect/preserve anything (the authority is gone with the session).
+    func testSessionEndClearsAuthoritySoWrapperAbsenceStaysNone() {
+        var d = ClaudePaneDetector()
+        _ = d.hook(bytes: json(#"{"hook_event_name":"UserPromptSubmit"}"#), at: 0)
+        _ = d.hook(bytes: json(#"{"hook_event_name":"SessionEnd"}"#), at: 1)
+        XCTAssertEqual(d.status, .none, "SessionEnd terminates")
+        _ = d.sample(name: "node", at: 2)
+        XCTAssertEqual(d.status, .none, "no authority left — a wrapper foreground changes nothing")
+    }
+
+    /// A wrapper basename is NOT presence: with no hook/report authority it can never lift the floor
+    /// off `.none` — a random `node` dev server must not light the agent dot.
+    func testWrapperNeverLiftsPresenceFloor() {
+        var d = ClaudePaneDetector()
+        _ = d.sample(name: "node", at: 0)
+        _ = d.sample(name: "node", at: 1)
+        XCTAssertEqual(d.status, .none, "a wrapper foreground alone is not claude presence")
     }
 
     /// A repeated identical self-report dedupes (no second type-27) — the change-hook only fires

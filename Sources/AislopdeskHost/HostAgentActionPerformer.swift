@@ -10,8 +10,8 @@ import Foundation
 /// performs NO side effects and never sees these verbs in production), and forwards every OTHER verb to
 /// the builder. Like ``HostPathActionPerformer`` it is **compiled + code-reviewed ONLY** — never
 /// instantiated in a unit test (it touches the host's home-directory settings file on disk; the
-/// hang/IO-safety rule). The CLIENT routing (verb 11/12/13 encode + ok/error decode + the 1-byte status
-/// flag) is the unit-tested half (``MetadataClient`` + `MetadataClientAgentHooksTests`), and the pure
+/// hang/IO-safety rule). The CLIENT routing (verb 11/12/13 encode + ok/error decode + the 2-byte status
+/// flags) is the unit-tested half (``MetadataClient`` + `MetadataClientAgentHooksTests`), and the pure
 /// install/uninstall/marker logic is tested in `AgentInstallerTests` / `AgentInstallerStatusTests`.
 ///
 /// **Host-global, not pane-scoped.** Install/uninstall act on the host's single `~/.claude/settings.json`
@@ -20,8 +20,8 @@ import Foundation
 /// / ``AgentInstaller/defaultScriptPath`` (honoring `CLAUDE_CONFIG_DIR`).
 ///
 /// **No exfiltration → no cwd confinement.** 11/12 return ONLY a status byte + empty payload; 13 returns
-/// a single 1-byte flag (`1` installed / `0` not) — no host FILE contents ever cross the wire, so (like
-/// 9/10) they are not an exfiltration vector. The host ALWAYS replies for 11/12/13 so the client's
+/// the 2-byte `[installed][listenerActive]` flags (docs/20) — no host FILE contents ever cross the wire,
+/// so (like 9/10) they are not an exfiltration vector. The host ALWAYS replies for 11/12/13 so the client's
 /// pending-request registry never hangs; a thrown install/uninstall maps to ``MetadataStatus/error``
 /// (validate-then-drop — never force-unwraps, never traps on a hostile verb).
 ///
@@ -33,7 +33,15 @@ enum HostAgentActionPerformer {
     /// verb (incl. an unknown future byte) so the caller falls through to the read-only
     /// ``MetadataResponseBuilder`` unchanged — keeping this shim's responsibility to ONLY the three
     /// agent-hooks verbs. The request `payload` is intentionally ignored (host-global, empty by contract).
-    static func response(requestID: UInt32, verb: UInt8, payload _: Data) -> WireMessage? {
+    ///
+    /// `hookListenerActive` is the LIVE bind state of the hostd hook listener (queue-safety cluster,
+    /// 2026-07-02): verb 13's reply now carries it as a second flag byte so the client can distinguish
+    /// "hooks written to settings.json" from "hooks actually flowing" — the listener binds only when
+    /// hostd was LAUNCHED with `AISLOPDESK_AGENT_HOOKS=1`, so a green "Installed" without it was a lie
+    /// (every installed hook exits silently without `$AISLOPDESK_SOCKET_PATH`).
+    static func response(
+        requestID: UInt32, verb: UInt8, payload _: Data, hookListenerActive: Bool = false,
+    ) -> WireMessage? {
         switch MetadataVerb(rawValue: verb) {
         case .installAgentHooks:
             return statusResponse(requestID: requestID, status: installHooks())
@@ -44,11 +52,17 @@ enum HostAgentActionPerformer {
             return .metadataResponse(
                 requestID: requestID,
                 status: MetadataStatus.ok.rawValue,
-                payload: Data([installed ? 1 : 0]),
+                payload: statusFlags(installed: installed, listenerActive: hookListenerActive),
             )
         default:
             return nil // not an agent-hooks verb → caller uses the read-only builder
         }
+    }
+
+    /// The verb-13 response payload: `[installed][listenerActive]` (docs/20). PURE (no disk) so the
+    /// exact byte shape is unit-pinned without instantiating the disk-touching verbs.
+    static func statusFlags(installed: Bool, listenerActive: Bool) -> Data {
+        Data([installed ? 1 : 0, listenerActive ? 1 : 0])
     }
 
     /// Installs the aislopdesk Claude Code hooks (script + `settings.json` merge) on the host. `.ok` on a

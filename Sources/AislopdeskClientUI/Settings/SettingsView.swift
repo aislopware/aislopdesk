@@ -1893,6 +1893,21 @@ private struct AgentsSettingsTab: View {
                     .foregroundStyle(Slate.Text.tertiary)
             }
 
+            // Queue-safety cluster (2026-07-02): installed-but-INACTIVE — the hooks are in
+            // settings.json but the host daemon's hook listener is not bound, so every hook exits
+            // silently and no live agent states (or prompt-queue turn signals) will ever arrive.
+            // Tell the user the exact fix instead of showing a green check over a dead integration.
+            if state == .installedInactive {
+                Text(
+                    "Hooks are installed but the host isn't listening. Restart the host daemon with "
+                        + "AISLOPDESK_AGENT_HOOKS=1 (or enable the “Claude Code hooks” toggle below and "
+                        + "relaunch it), then open new panes.",
+                )
+                .font(.system(size: Slate.Typeface.footnote))
+                .foregroundStyle(Slate.Status.warn)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
             // Install/uninstall write the host file LIVE, but Claude only re-reads its settings.json on the
             // next launch — so this is an agent-restart caveat, not a host-reconnect-gated sidecar flag (hence
             // a plain caption, not the `.reconnect` "Applies on reconnect" chip, which would mislead).
@@ -1908,7 +1923,8 @@ private struct AgentsSettingsTab: View {
     private func installButtons(_ state: AgentHooksController.InstallState) -> some View {
         HStack(spacing: Slate.Metric.space2) {
             switch state {
-            case .installed:
+            case .installed,
+                 .installedInactive: // the entries are on disk either way — Uninstall stays actionable
                 Button("Installed") {}.disabled(true)
                 Button("Uninstall") { Task { await agentHooks?.uninstall() } }
             case .notInstalled:
@@ -1923,14 +1939,17 @@ private struct AgentsSettingsTab: View {
         .buttonStyle(.bordered)
     }
 
-    /// The Status-row trailing badge: a green "✓ Installed" / gray "Not Installed" / neutral "Working…" /
-    /// "—" by state.
+    /// The Status-row trailing badge: a green "✓ Installed" (ONLY when the listener is live) / an amber
+    /// "Installed — inactive" warning / gray "Not Installed" / neutral "Working…" / "—" by state.
     @ViewBuilder
     private func statusBadge(_ state: AgentHooksController.InstallState) -> some View {
         switch state {
         case .installed:
             Label("Installed", systemImage: "checkmark")
                 .foregroundStyle(Slate.Status.ok)
+        case .installedInactive:
+            Label("Installed — inactive", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(Slate.Status.warn)
         case .notInstalled:
             Text("Not Installed").foregroundStyle(Slate.Text.secondary)
         case .working:

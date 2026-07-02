@@ -220,6 +220,15 @@ public final class UnixSocketAcceptor: @unchecked Sendable {
         if let path { unlink(path) }
     }
 
+    /// TRUE while the socket is bound + accepting (between a successful ``start(path:)`` and
+    /// ``stop()``). The LIVE truth the `agentHookStatus` metadata verb reports so the Settings card
+    /// can show installed-but-inactive instead of a false green (queue-safety cluster, 2026-07-02).
+    public var isListening: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return listenFD >= 0
+    }
+
     /// SAFETY: a blocking `accept`/`read` loop over the owned listen fd; each connection is
     /// read into a bounded growing buffer until EOF, the trailing newline stripped, and the
     /// record handed to `onRecord` (which validate-then-drops). A read error / EOF closes the
@@ -318,6 +327,12 @@ public final class AgentHookListener: @unchecked Sendable {
         sinks.removeAll()
         lock.unlock()
     }
+
+    /// TRUE while the underlying socket is bound + accepting — the REAL hook-listener state the
+    /// `agentHookStatus` verb (13) reports, so "hooks installed" and "hooks actually flowing" can't
+    /// be conflated on the Settings card. `false` when hostd was launched without
+    /// `AISLOPDESK_AGENT_HOOKS=1` (the listener is never constructed) OR the bind failed.
+    public var isListening: Bool { acceptor.isListening }
 
     /// Registers a per-pane sink for `paneID`. Replaces any prior sink for that id (idempotent).
     /// Internal — only ``HostServer`` (same module) registers channels; not a public API.

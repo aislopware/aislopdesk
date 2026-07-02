@@ -79,4 +79,35 @@ final class AgentInstallerStatusTests: XCTestCase {
         try Data(#"{"theme":"dark"}"#.utf8).write(to: URL(fileURLWithPath: settings))
         XCTAssertFalse(AgentInstaller.isInstalled(settingsPath: settings))
     }
+
+    // MARK: - verb-13 flag payload (queue-safety cluster, 2026-07-02)
+
+    /// The exact `[installed][listenerActive]` byte shape of the `agentHookStatus` (13) reply
+    /// (docs/20), pinned via the PURE `HostAgentActionPerformer.statusFlags` (no disk — the
+    /// disk-touching verbs stay compiled + code-reviewed only). The second byte is the LIVE
+    /// listener-bind truth: `[1,0]` is the installed-but-INACTIVE case the Settings card warns on —
+    /// pre-fix the payload was one byte and the card showed a false green over a dead integration.
+    func testAgentHookStatusFlagsPayloadShape() {
+        XCTAssertEqual(
+            Array(HostAgentActionPerformer.statusFlags(installed: true, listenerActive: true)), [1, 1],
+        )
+        XCTAssertEqual(
+            Array(HostAgentActionPerformer.statusFlags(installed: true, listenerActive: false)), [1, 0],
+            "installed with the listener DOWN must be distinguishable on the wire (the false-green fix)",
+        )
+        XCTAssertEqual(
+            Array(HostAgentActionPerformer.statusFlags(installed: false, listenerActive: false)), [0, 0],
+        )
+        XCTAssertEqual(
+            Array(HostAgentActionPerformer.statusFlags(installed: false, listenerActive: true)), [0, 1],
+            "a bound listener with no install marker still reports honestly (install missing)",
+        )
+    }
+
+    /// An un-started ``AgentHookListener`` reports NOT listening — the honest default the status verb
+    /// reports when hostd never bound the socket. (Binding a real socket is out of scope here —
+    /// hang/IO-safety; the bound case is covered by the HW loopback/manual path.)
+    func testAgentHookListenerNotListeningBeforeStart() {
+        XCTAssertFalse(AgentHookListener().isListening)
+    }
 }

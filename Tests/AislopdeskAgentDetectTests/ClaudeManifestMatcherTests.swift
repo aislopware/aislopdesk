@@ -113,4 +113,24 @@ final class ClaudeManifestMatcherTests: XCTestCase {
     func testWhitespaceOnlyIsNone() {
         XCTAssertEqual(m.coarseStatus(screen: "   \n\t\n   "), Optional.none)
     }
+
+    // MARK: Wrapper classification (queue-safety fix, 2026-07-02)
+
+    /// The known launcher/runtime basenames that commonly host a wrapped `claude` classify as
+    /// wrappers (path or bare basename) — and a wrapper is NOT claude presence.
+    func testKnownWrapperBasenamesClassify() {
+        for name in ["node", "npx", "bun", "deno", "mise", "/usr/local/bin/node", "/opt/homebrew/bin/mise"] {
+            XCTAssertTrue(m.isLikelyWrapper(processName: name), "\(name) is a known wrapper runtime")
+            XCTAssertFalse(m.isClaudeRunning(processName: name), "a wrapper is never claude presence")
+        }
+    }
+
+    /// Shells / editors / claude itself / substring look-alikes are NOT wrappers — the shell
+    /// returning to the foreground must stay the "claude exited" signal, and exact-match rules out
+    /// `nodemon`-style false positives.
+    func testNonWrapperBasenamesDoNotClassify() {
+        for name in ["zsh", "bash", "fish", "vim", "claude", "nodemon", "denort", "", "python3"] {
+            XCTAssertFalse(m.isLikelyWrapper(processName: name), "\(name) must not classify as a wrapper")
+        }
+    }
 }

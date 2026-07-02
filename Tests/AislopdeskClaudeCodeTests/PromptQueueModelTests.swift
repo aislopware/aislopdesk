@@ -144,4 +144,36 @@ final class PromptQueueModelTests: XCTestCase {
         let bytes = queue.dispatchNext()
         XCTAssertEqual(bytes.map { Array($0) }, Array("café — 修复".utf8) + [CR])
     }
+
+    // MARK: Target-matched dispatch (queue-safety, 2026-07-02)
+
+    /// `enqueue(_:target:)` stamps every split line with the target; the default stays `.shell`.
+    func testEnqueueStampsTargetOnEveryLine() {
+        var queue = PromptQueueModel()
+        queue.enqueue("one\ntwo", target: .agent)
+        queue.enqueue("three")
+        XCTAssertEqual(queue.items.map(\.target), [.agent, .agent, .shell])
+    }
+
+    /// `dispatchNext(for:)` pops the head ONLY on a target match; a mismatched head HOLDS the whole
+    /// queue (nothing popped, nothing skipped) — the queue-layer guarantee that a shell trigger can
+    /// never drain an agent prompt (zsh would execute it) and vice versa.
+    func testDispatchForTargetHoldsOnMismatchedHead() {
+        var queue = PromptQueueModel()
+        queue.enqueue("agent prompt", target: .agent)
+        queue.enqueue("shell command", target: .shell)
+
+        XCTAssertNil(queue.dispatchNext(for: .shell), "a shell trigger must not drain the agent head")
+        XCTAssertEqual(queue.items.count, 2, "mismatch holds the WHOLE queue — FIFO is never skipped")
+
+        XCTAssertEqual(
+            queue.dispatchNext(for: .agent).map { Array($0) }, Array("agent prompt".utf8) + [CR],
+            "the matching trigger drains the head",
+        )
+        XCTAssertEqual(
+            queue.dispatchNext(for: .shell).map { Array($0) }, Array("shell command".utf8) + [CR],
+            "then the shell head is reachable by its own trigger",
+        )
+        XCTAssertNil(queue.dispatchNext(for: .agent), "empty queue → nil")
+    }
 }

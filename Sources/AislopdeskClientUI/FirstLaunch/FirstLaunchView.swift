@@ -284,11 +284,19 @@ private struct FirstLaunchClaudeHooksStep: View {
         switch state {
         case .installed:
             Label("Installed", systemImage: "checkmark").foregroundStyle(Slate.Status.ok)
+        case .installedInactive:
+            // Queue-safety cluster (2026-07-02): written to settings.json but the host listener is not
+            // bound — honest amber, not the green check (Settings ▸ Agents carries the restart hint).
+            Label("Installed — inactive", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(Slate.Status.warn)
+                .help("Restart the host daemon with AISLOPDESK_AGENT_HOOKS=1, then open new panes.")
         case .notInstalled:
             Button("Install") {
                 Task {
                     await agentHooks?.install()
-                    if agentHooks?.state == .installed { model.markComplete(.installClaudeHooks) }
+                    // The settings.json write is what this step tracks — `installedInactive` still
+                    // counts (the listener half is a hostd-launch concern, surfaced by the badge).
+                    if agentHooks?.isInstalled == true { model.markComplete(.installClaudeHooks) }
                 }
             }
             .buttonStyle(.bordered)

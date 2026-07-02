@@ -84,6 +84,16 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// Observed so the leaf chrome re-renders on a change.
     public private(set) var claudeStatus: ClaudeStatus = .none
 
+    /// QUEUE-SAFETY (2026-07-02, docs/DECISIONS.md "Queue-safety cluster"): whether AUTHORITATIVE agent
+    /// turn signals have ever been seen for this pane — set on the first `.working`/`.done`/
+    /// `.needsPermission`, which ONLY the host's hook/ctl paths can produce (the always-on foreground
+    /// watch yields at most the presence-floor `.idle`, behind which Claude may be MID-TURN). This is the
+    /// only basis on which the Prompt Queue may auto-dispatch into an agent: unverified agent panes hold
+    /// the queue (``ComposerModel/queueHold``). Sticky for the pane-session lifetime — the PTY env keeps
+    /// `AISLOPDESK_SOCKET_PATH`, so a restarted claude in the same pane still reports. Observed so the
+    /// strip's held badge clears the moment the first authoritative signal lands.
+    public private(set) var agentTurnSignalsVerified = false
+
     /// The last foreground process basename the host reported (type 26) — a COARSE display-only hint, NOT
     /// a status source (P1, review #3): a transient child process taking the PTY must never wipe a
     /// `.needsPermission` the host set via a hook, so type-26 updates THIS string and nothing else. `nil`
@@ -202,6 +212,12 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// Snippet / send-keys primitive: feeds raw bytes (incl. control codes) into the shell via the input
     /// bar, NOT recorded for echo-dedup (a programmatic send has no local pre-echo to suppress).
     public func sendBytes(_ bytes: [UInt8]) { inputBar?.sendRaw(bytes, record: false) }
+
+    /// Reflects the live connection: `.terminal`/Claude panes are only ready once the handshake completes
+    /// (``ConnectionViewModel/status`` `== .connected`) — before that, `InputBarModel.sendSink` is wired but
+    /// `TerminalViewModel.inputSink` is not yet set, so a send would silently drop. A `.remoteGUI` /
+    /// `.systemDialog` pane has no `connection` at all and is always "ready" (no text funnel to gate).
+    public var isReadyForInput: Bool { connection.map { $0.status == .connected } ?? true }
 
     /// `aislopdesk pane capture --lines N`: the last `count` lines of this pane's scrollback, read through
     /// the same `TerminalSurfaceActions` seam find/copy-mode use (``TerminalViewModel/searchScrollbackLines()``
@@ -366,9 +382,11 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         composer.send = { [weak inputBar] data in inputBar?.sendRaw([UInt8](data), record: true) }
         // NORMAL-pane idle dispatch (the shell-idle-prompt trigger): the client modeTracker fires `onPromptIdle`
         // on an OSC-133;A prompt mark (the shell is back at an idle prompt) → drain the next queued prompt.
-        // The AGENT-pane (alt-screen Claude Code, no OSC-133 marks) idle path is `claudeStatus → .idle` in
-        // `applyDetectedStatus`. Weak so the callback can't retain the composer.
-        terminal.onPromptIdle = { [weak composer] in composer?.notePromptIdle() }
+        // Tagged `.shellPrompt` (queue-safety, 2026-07-02) so it can ONLY drain shell-targeted items — a
+        // prompt enqueued for an agent must never be typed into (and executed by) the shell. The AGENT-pane
+        // (alt-screen Claude Code, no OSC-133 marks) trigger is the `claudeStatus → .done` edge in
+        // `applyDetectedStatus` (`.agentTurnEnd`). Weak so the callback can't retain the composer.
+        terminal.onPromptIdle = { [weak composer] in composer?.notePromptIdle(.shellPrompt) }
 
         let session = LivePaneSession(
             id: PaneID(),
@@ -387,19 +405,34 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         )
         // E12 Prompt-Queue KICKSTART probe: the composer asks "is the pane idle now?" before deciding to
         // fire the head queued item immediately on enqueue. Resolved per-pane = the normal shell at its
-        // prompt OR the agent between turns (`claudeStatus` `.idle`/`.done`). Weak so the seam can't retain
-        // the session.
+        // prompt OR a VERIFIED agent between turns (`claudeStatus` `.idle`/`.done` with authoritative turn
+        // signals seen — queue-safety, 2026-07-02). Weak so the seam can't retain the session.
         composer.isIdleNow = { [weak session] in session?.isComposerPaneIdle ?? false }
+        // QUEUE-SAFETY (2026-07-02): the pane-context probe the composer uses to stamp each enqueued
+        // item's target (`.shell` vs `.agent`) and to surface the held-reason badge. Weak so the seam
+        // can't retain the session; a dead session reads as a plain shell pane (the safe default — a
+        // dead pane dispatches nothing anyway, its terminal fires no triggers).
+        composer.paneContext = { [weak session] in
+            ComposerPaneContext(
+                isAgent: (session?.claudeStatus ?? .none) != .none,
+                turnSignalsVerified: session?.agentTurnSignalsVerified ?? false,
+            )
+        }
         return session
     }
 
     /// Whether the owning pane is idle RIGHT NOW for the E12 Prompt-Queue kickstart, resolved by the SAME
     /// dual-signal split as dispatch: an AGENT pane (a `claude` detected, `claudeStatus != .none`) is idle
-    /// only between turns (`.idle`/`.done`) — the alt-screen shell-prompt state is meaningless there; a
-    /// NORMAL pane (no agent) is idle when its shell sits at the prompt (``TerminalViewModel/isAtShellPrompt``).
-    /// Read by ``ComposerModel/isIdleNow``.
+    /// only between turns (`.idle`/`.done`) — the alt-screen shell-prompt state is meaningless there — AND
+    /// only when ``agentTurnSignalsVerified`` (queue-safety, 2026-07-02: without hooks/ctl the host's
+    /// presence floor reports a PERMANENT `.idle` behind which Claude may be mid-turn, so the kickstart
+    /// must never trust a bare `.idle`); a NORMAL pane (no agent) is idle when its shell sits at the
+    /// prompt (``TerminalViewModel/isAtShellPrompt``). Read by ``ComposerModel/isIdleNow``.
     private var isComposerPaneIdle: Bool {
-        if claudeStatus != .none { return claudeStatus == .idle || claudeStatus == .done }
+        if claudeStatus != .none {
+            guard agentTurnSignalsVerified else { return false }
+            return claudeStatus == .idle || claudeStatus == .done
+        }
         return terminalModel?.isAtShellPrompt ?? false
     }
 
@@ -542,6 +575,13 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         let isActive = newStatus != .none
         guard claudeStatus != newStatus else { return } // dedupe identical updates (no churn)
         claudeStatus = newStatus
+        // QUEUE-SAFETY (2026-07-02): `.working`/`.done`/`.needsPermission` can ONLY come from the host's
+        // authoritative hook/ctl paths (the foreground watch's presence floor never leaves `.idle`), so
+        // the first one proves the turn-signal pipeline is live for this pane — from here on the Prompt
+        // Queue may auto-dispatch into the agent (kickstart on verified `.idle`/`.done`, drain on `.done`).
+        if newStatus == .working || newStatus == .done || newStatus == .needsPermission {
+            agentTurnSignalsVerified = true
+        }
         // E12 AGENT-pane turn-finished dispatch: alt-screen Claude Code emits no OSC-133 prompt marks, so
         // its "turn finished" signal is the host's transition INTO `.done` — emitted IMMEDIATELY by the Stop
         // hook, which then decays to `.idle` ~8s later. Fire on `.done` ONLY (NOT `.idle`) so each queued
@@ -549,8 +589,9 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         // prompt ~8s late) AND exactly once per turn (`.done → .idle` is a second edge that must not
         // re-dispatch). The dedupe guard above already ruled out a no-op repeat, so reaching `.done` here is
         // a genuine edge → drain the next queued prompt, exactly like the normal-pane OSC-133;A path
-        // (`TerminalViewModel.onPromptIdle`). Pure dispatch through the composer's ordered-OUT sink.
-        if newStatus == .done { composer?.notePromptIdle() }
+        // (`TerminalViewModel.onPromptIdle`). Tagged `.agentTurnEnd` (queue-safety) so it can only drain
+        // agent-targeted items. Pure dispatch through the composer's ordered-OUT sink.
+        if newStatus == .done { composer?.notePromptIdle(.agentTurnEnd) }
         if !wasActive, isActive {
             // A claude just appeared in this terminal → open the read-only inspector second channel.
             // E13 WI-7: also start tracking this pane's Claude session id so a later `/branch` (a NEW id) is

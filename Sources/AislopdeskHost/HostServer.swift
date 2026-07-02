@@ -614,6 +614,10 @@ public final class HostServer: @unchecked Sendable {
             sessionID: open.sessionID,
             shimDir: shimDir,
             agentDetectEnabled: agentDetectEnabled,
+            // Queue-safety cluster (2026-07-02): verb 13 reports the LIVE hook-listener bind state.
+            // Probed at request time (weak — the listener outlives sessions anyway) so a bind failure
+            // reads honest-false, never a stale construction-time snapshot.
+            agentHookListenerActive: { [weak listener = agentHookListener] in listener?.isListening ?? false },
             blocksEnabled: blocksEnabled,
         )
         // The shell-exit reaper closes over the SAME composite key so it only removes THIS
@@ -1012,6 +1016,7 @@ public final class HostServer: @unchecked Sendable {
             data: nullData,
             control: nullControl,
             sessionID: sessionID,
+            agentHookListenerActive: { [weak listener = agentHookListener] in listener?.isListening ?? false },
             blocksEnabled: false, // no client → blocks metadata would be dropped anyway
         )
         session.onExit = { [weak self] _ in self?.removeControlSession(sessionID) }

@@ -36,20 +36,62 @@ struct PromptQueueStrip: View {
         // re-renders on every enqueue / dispatch / reorder.
         let items = composer.promptQueue.items
         if !items.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Slate.Metric.space2) {
-                    ForEach(items) { item in
-                        chip(item)
-                    }
+            VStack(spacing: 0) {
+                // QUEUE-SAFETY (2026-07-02): the held-reason badge. When auto-dispatch is deliberately
+                // holding (unverified agent / agent gone / shell prompt behind a running agent) the strip
+                // SAYS so instead of looking silently stuck — the release is explicit (tap-to-edit a chip
+                // back into the Composer and send deliberately). Reads `composer.queueHold`, whose
+                // underlying state (`promptQueue.items` + the session's `claudeStatus`/verified flag) is
+                // observable, so the badge appears/clears live.
+                if let hold = composer.queueHold {
+                    holdBadge(hold)
                 }
-                .padding(.horizontal, Slate.Metric.space3)
-                .padding(.vertical, Slate.Metric.space2)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Slate.Metric.space2) {
+                        ForEach(items) { item in
+                            chip(item)
+                        }
+                    }
+                    .padding(.horizontal, Slate.Metric.space3)
+                    .padding(.vertical, Slate.Metric.space2)
+                }
             }
             .background(Slate.Surface.element)
             .overlay(alignment: .top) {
                 Rectangle().fill(Slate.Line.divider).frame(height: Slate.Metric.hairline)
             }
             .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    /// The held-reason row: a small pause glyph + a one-line explanation of WHY the queue is not
+    /// auto-dispatching (see ``AislopdeskWorkspaceCore/PromptQueueHold``).
+    private func holdBadge(_ hold: PromptQueueHold) -> some View {
+        HStack(spacing: Slate.Metric.space1) {
+            Image(systemSymbol: .pauseCircle)
+                .font(.system(size: trashSize, weight: .medium))
+            Text(Self.holdLabel(hold))
+                .font(.system(size: Slate.Typeface.small))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(Slate.Text.secondary)
+        .padding(.horizontal, Slate.Metric.space3)
+        .padding(.top, Slate.Metric.space2)
+        .help(Self.holdLabel(hold))
+        .accessibilityLabel("Prompt queue held: \(Self.holdLabel(hold))")
+    }
+
+    /// One-line copy per hold reason (pure + testable; honest about the explicit release path).
+    static func holdLabel(_ hold: PromptQueueHold) -> String {
+        switch hold {
+        case .awaitingVerifiedAgent:
+            "Held — no agent turn signals yet. Install hooks (Settings ▸ Agents), or tap a prompt to send it yourself."
+        case .agentEnded:
+            "Held — the agent ended. Queued prompts are never run by the shell; tap a prompt to edit and send."
+        case .shellPromptBehindAgent:
+            "Held — an agent is using this pane. Shell prompts resume at the next shell prompt."
         }
     }
 

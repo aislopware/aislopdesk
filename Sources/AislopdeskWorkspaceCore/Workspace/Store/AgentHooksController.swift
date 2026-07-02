@@ -27,9 +27,15 @@ public final class AgentHooksController {
         case unknown
         /// The host replied "not installed" — show the **Install** button + a gray "Not Installed" status.
         case notInstalled
-        /// The host replied "installed" — show **Installed** (disabled) + **Uninstall** + a green
-        /// "✓ Installed" status.
+        /// The host replied "installed AND the hook listener is bound" — show **Installed** (disabled) +
+        /// **Uninstall** + a green "✓ Installed" status. Only this state earns the green check.
         case installed
+        /// Queue-safety cluster (2026-07-02): the hooks are written to `settings.json` but the host's
+        /// hook LISTENER is not bound (hostd was launched without `AISLOPDESK_AGENT_HOOKS=1`, or the
+        /// bind failed) — every installed hook exits silently, so the integration is DEAD despite being
+        /// installed. Shows a warning "Installed — inactive" badge + the hostd-restart instruction,
+        /// never the false green check.
+        case installedInactive
         /// An install / uninstall RPC is in flight — the buttons disable (the card shows progress).
         case working
         /// No connected pane backs the card (the status seam returned `nil`) — the buttons disable with a
@@ -44,9 +50,10 @@ public final class AgentHooksController {
     public typealias Install = @MainActor () async -> Bool
     /// Uninstalls the hooks (wired to ``MetadataClient/uninstallAgentHooks()``). `true` on host `.ok`.
     public typealias Uninstall = @MainActor () async -> Bool
-    /// Probes install state (wired to ``MetadataClient/agentHookStatus()``): `true` / `false`, or `nil`
-    /// when no connected pane backs the card / the reply dropped — which lands the card on ``disconnected``.
-    public typealias RefreshStatus = @MainActor () async -> Bool?
+    /// Probes install state (wired to ``MetadataClient/agentHookStatus()``): the typed
+    /// `[installed][listenerActive]` report, or `nil` when no connected pane backs the card / the reply
+    /// dropped — which lands the card on ``InstallState/disconnected``.
+    public typealias RefreshStatus = @MainActor () async -> MetadataClient.AgentHookStatusReport?
 
     private let installSeam: Install
     private let uninstallSeam: Uninstall
@@ -66,15 +73,20 @@ public final class AgentHooksController {
 
     // MARK: Derived view state
 
-    /// Whether the hooks are installed on the host (drives "Installed"/"Uninstall" vs "Install").
-    public var isInstalled: Bool { state == .installed }
+    /// Whether the hooks are installed on the host (drives "Installed"/"Uninstall" vs "Install" and the
+    /// Agent-Behaviour toggles' enablement). TRUE for BOTH ``InstallState/installed`` and
+    /// ``InstallState/installedInactive`` — the entries are on disk either way (behaviour preferences
+    /// remain configurable; only the status badge distinguishes active from inactive).
+    public var isInstalled: Bool { state == .installed || state == .installedInactive }
     /// Whether a write RPC is in flight (the card shows a spinner).
     public var isWorking: Bool { state == .working }
     /// Whether no connected pane backs the card (the card shows the "Connect a session" note).
     public var isDisconnected: Bool { state == .disconnected || state == .unknown }
     /// Whether the Install / Uninstall buttons are actionable — a known, connected state with no write in
     /// flight. `.working` disables during the RPC; `.disconnected` / `.unknown` disable until a pane connects.
-    public var actionsEnabled: Bool { state == .installed || state == .notInstalled }
+    public var actionsEnabled: Bool {
+        state == .installed || state == .installedInactive || state == .notInstalled
+    }
 
     // MARK: Actions
 
@@ -87,17 +99,18 @@ public final class AgentHooksController {
         await applyProbe()
     }
 
-    /// Installs the hooks: → ``InstallState/working``, fire the seam, then ``InstallState/installed`` on
-    /// success or a re-probe on failure (which lands `.notInstalled` / `.disconnected` honestly rather than a
-    /// stuck `.working`). A no-op while a write is already in flight.
+    /// Installs the hooks: → ``InstallState/working``, fire the seam, then RE-PROBE — on success too
+    /// (queue-safety cluster, 2026-07-02): a successful write proves only the `settings.json` merge, NOT
+    /// that the host's hook listener is bound, so landing `.installed` directly would flash the false
+    /// green check on a hostd launched without `AISLOPDESK_AGENT_HOOKS=1`. The probe lands
+    /// `.installed` / `.installedInactive` / `.disconnected` honestly (and a failure lands
+    /// `.notInstalled` / `.disconnected` rather than a stuck `.working`). A no-op while a write is
+    /// already in flight.
     public func install() async {
         guard state != .working else { return }
         state = .working
-        if await installSeam() {
-            state = .installed
-        } else {
-            await applyProbe()
-        }
+        _ = await installSeam()
+        await applyProbe()
     }
 
     /// Uninstalls the hooks: → ``InstallState/working``, fire the seam, then ``InstallState/notInstalled`` on
@@ -112,13 +125,19 @@ public final class AgentHooksController {
         }
     }
 
-    /// Fires the status seam and folds its tri-state into ``state``. Bypasses the ``refresh()`` `.working`
-    /// guard so the install/uninstall failure paths (which OWN the `.working` state) can re-resolve honestly.
+    /// Fires the status seam and folds the typed report into ``state``: installed + listener bound →
+    /// `.installed` (the ONLY green); installed with the listener unbound → `.installedInactive` (the
+    /// hostd-restart warning); not installed → `.notInstalled`; `nil` → `.disconnected`. Bypasses the
+    /// ``refresh()`` `.working` guard so the install/uninstall paths (which OWN the `.working` state)
+    /// can re-resolve honestly.
     private func applyProbe() async {
         switch await refreshStatusSeam() {
-        case .some(true): state = .installed
-        case .some(false): state = .notInstalled
-        case .none: state = .disconnected
+        case let .some(report) where report.installed:
+            state = report.listenerActive ? .installed : .installedInactive
+        case .some:
+            state = .notInstalled
+        case .none:
+            state = .disconnected
         }
     }
 }

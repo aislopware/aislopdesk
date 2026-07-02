@@ -172,19 +172,42 @@ public final class MetadataClient {
         return status == .ok
     }
 
-    /// E13 WI-1 — reports whether the aislopdesk Claude Code hooks are installed on the host
+    /// E13 WI-1 — reports the host's aislopdesk Claude Code hooks state
     /// (``MetadataVerb/agentHookStatus``; drives the Agents card's status row). Empty request payload.
-    /// Returns `true` when the host replied `.ok` with a leading `1` byte, `false` on a leading `0` byte,
-    /// and `nil` on ANY other outcome — a non-`.ok` status, an empty payload, an unsupported verb, or a
-    /// dropped reply (timeout → `.error`). The `nil` (status-unknown) case is what lets the card show
-    /// "Connect a session to manage hooks" instead of a false "Not Installed".
-    public func agentHookStatus() async -> Bool? {
+    /// The reply payload is `[installed][listenerActive]` (docs/20, queue-safety cluster 2026-07-02):
+    /// byte 0 is the `settings.json` install marker; byte 1 is the LIVE bind state of the hostd hook
+    /// listener — so the card can show installed-but-INACTIVE (hooks written but hostd wasn't launched
+    /// with `AISLOPDESK_AGENT_HOOKS=1` → every hook exits silently) instead of a false green.
+    /// Returns `nil` on ANY non-decodable outcome — a non-`.ok` status, an empty payload, an
+    /// unsupported verb, or a dropped reply (timeout → `.error`) — which is what lets the card show
+    /// "Connect a session to manage hooks" instead of a false "Not Installed". A missing second byte
+    /// (a reply predating the listener flag) conservatively decodes `listenerActive == false` — never
+    /// a false green.
+    public func agentHookStatus() async -> AgentHookStatusReport? {
         let (status, payload) = await request(.agentHookStatus)
-        guard status == .ok, let flag = payload.first else { return nil }
-        return flag == 1
+        guard status == .ok, let installedFlag = payload.first else { return nil }
+        let activeFlag = payload.dropFirst().first ?? 0
+        return AgentHookStatusReport(installed: installedFlag == 1, listenerActive: activeFlag == 1)
     }
 
     // MARK: Core round-trip
+
+    /// The decoded `agentHookStatus` (verb 13) reply — the two flag bytes, typed (queue-safety
+    /// cluster, 2026-07-02). `installed` alone is NOT "the integration works": without
+    /// `listenerActive` every installed hook no-ops (`[ -z "$sock" ] && exit 0`), so the card must
+    /// render installed-but-inactive with the hostd-restart instruction.
+    public struct AgentHookStatusReport: Equatable, Sendable {
+        /// The aislopdesk entries are present in the host's `~/.claude/settings.json`.
+        public var installed: Bool
+        /// The hostd hook listener socket is ACTUALLY bound (hostd launched with
+        /// `AISLOPDESK_AGENT_HOOKS=1` and the bind succeeded) — hooks can flow.
+        public var listenerActive: Bool
+
+        public init(installed: Bool, listenerActive: Bool) {
+            self.installed = installed
+            self.listenerActive = listenerActive
+        }
+    }
 
     /// Sends `verb` + `payload`, awaits the reply, and maps the raw status byte to ``MetadataStatus``
     /// (an unknown future byte clamps to ``MetadataStatus/error`` — forward-tolerant). The registry's
