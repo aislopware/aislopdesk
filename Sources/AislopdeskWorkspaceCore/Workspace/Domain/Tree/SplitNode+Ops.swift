@@ -296,6 +296,46 @@ public extension SplitNode {
         }
     }
 
+    /// Evens ONLY the seam between the children at `leadingIndex` and `leadingIndex + 1` of the split
+    /// identified by `splitID` (the divider double-click): both flex weights become their pair MEAN
+    /// (sum-preserving), so every OTHER divider of this split — and every other split in the tree — keeps
+    /// its dragged ratio (unlike ``rebalanced()``, the whole-tree even reset). Returns the new tree (no-op
+    /// if `splitID` or the indices are absent, or either child is `.fixed`).
+    func eveningDivider(splitID: SplitNodeID, leadingIndex: Int) -> SplitNode {
+        switch self {
+        case .leaf:
+            return self
+
+        case let .split(id, axis, children):
+            if id == splitID {
+                return .split(id: id, axis: axis, children: evenPair(children, leadingIndex: leadingIndex))
+            }
+            let newChildren = children.map { child in
+                WeightedChild(
+                    weight: child.weight,
+                    node: child.node.eveningDivider(splitID: splitID, leadingIndex: leadingIndex),
+                )
+            }
+            return .split(id: id, axis: axis, children: newChildren)
+        }
+    }
+
+    /// Sets two adjacent flex children to the mean of their pair sum (a sum-preserving 50/50 for the one
+    /// seam), floored at ``SplitWeight/minWeight`` like ``rebalanced()``'s degenerate-total guard. Pure.
+    private func evenPair(_ children: [WeightedChild], leadingIndex: Int) -> [WeightedChild] {
+        let trailingIndex = leadingIndex + 1
+        guard children.indices.contains(leadingIndex), children.indices.contains(trailingIndex),
+              case let .flex(lead) = children[leadingIndex].weight,
+              case let .flex(trail) = children[trailingIndex].weight
+        else { return children }
+
+        let share = Double.maximum((lead + trail) / 2, SplitWeight.minWeight)
+        var out = children
+        out[leadingIndex] = WeightedChild(weight: .flex(share), node: children[leadingIndex].node)
+        out[trailingIndex] = WeightedChild(weight: .flex(share), node: children[trailingIndex].node)
+        return out
+    }
+
     /// Sum-preserving, clamped weight shift between two adjacent flex children. Pure.
     private func shiftWeight(_ children: [WeightedChild], leadingIndex: Int, delta: Double) -> [WeightedChild] {
         let trailingIndex = leadingIndex + 1
@@ -395,6 +435,20 @@ public extension SplitNode {
         case let .split(id, axis, children):
             .split(id: id, axis: axis, children: children.map { child in
                 WeightedChild(weight: child.weight, node: child.node.mapLeaves(transform))
+            })
+        }
+    }
+
+    /// Returns a structurally identical tree with every `.split` node's ``SplitNodeID`` freshly minted (leaf
+    /// ids, axes, and weights unchanged). Used by the workspace-import id re-mint so an imported document
+    /// cannot collide split identities with the live tree. Pure.
+    func withFreshSplitIDs() -> SplitNode {
+        switch self {
+        case .leaf:
+            self
+        case let .split(_, axis, children):
+            .split(id: SplitNodeID(), axis: axis, children: children.map { child in
+                WeightedChild(weight: child.weight, node: child.node.withFreshSplitIDs())
             })
         }
     }

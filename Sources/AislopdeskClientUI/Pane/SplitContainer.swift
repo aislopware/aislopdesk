@@ -13,7 +13,8 @@
 //
 // Dividers drag → LIVE resize: `store.setDividerWeightLive` each frame (panes move live) bracketed by
 // `store.setTerminalResizeSuspended` (defer the host grid-resize to release) + `store.commitDividerResize`;
-// double-click → `store.balanceActivePaneSplits` (even reset). SYSTEM colours only.
+// double-click → `store.evenDividerTree` (evens ONLY that seam — the whole-tab reset stays on the ⌃⌘=
+// `balanceActivePaneSplits`). SYSTEM colours only.
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -28,9 +29,20 @@ struct SplitContainer: View {
     /// terminal-grid / remote-window redraw fires once on commit, not per drag frame.
     @State private var move: PaneMoveDrag?
 
-    /// EVERY tab of the active session, in tab-bar order. We render ALL of them (see `body`), not just the
-    /// selected one, so a tab switch never unmounts a pane subtree.
-    private var tabs: [AislopdeskWorkspaceCore.Tab] { store.tree.activeSession?.tabs ?? [] }
+    /// EVERY tab of every RETAINED session (the active session + the LRU-retained previous ones — see
+    /// ``WorkspaceStore/retainedSessionIDs``), in session-then-tab-bar order. We render ALL of them (see
+    /// `body`), revealing only the active session's active tab, so NEITHER a tab switch NOR an A→B→A session
+    /// switch unmounts a pane subtree (R-lifecycle #3 — a session switch used to dismantle every outgoing
+    /// surface and repaint via the lossy ring replay). Stale retained ids (a since-closed session) are dropped
+    /// by the `tree.sessions` intersection; the active session is always included even before the first switch
+    /// (when the retention set is still empty).
+    private var tabs: [AislopdeskWorkspaceCore.Tab] {
+        let retained = store.retainedSessionIDs
+        let activeID = store.tree.activeSessionID
+        return store.tree.sessions
+            .filter { retained.contains($0.id) || $0.id == activeID }
+            .flatMap(\.tabs)
+    }
 
     /// The selected tab's id — the ONE tab shown + interactive; every other tab is mounted but hidden.
     private var activeTabID: TabID? { store.tree.activeSession?.activeTab?.id }
@@ -92,10 +104,24 @@ struct SplitContainer: View {
                     paneID: entry.id,
                     frame: entry.leaf.rect,
                     isFloating: entry.isFloating,
-                    isFocused: Self.isPaneFocused(entry.id, in: tab, activeTabID: activeTabID),
+                    // A zoom-hidden pane must never claim first responder (mirrors the keep-all-mounted
+                    // focus-steal guard for hidden tabs).
+                    isFocused: !entry.isHidden && Self.isPaneFocused(entry.id, in: tab, activeTabID: activeTabID),
+                    // ON-SCREEN gate (A2/R-lifecycle #2): visible ⟺ the pane's tab is the active tab AND it is
+                    // not zoom-hidden. A `.remoteGUI` pane drives its `liveVideoCap` activation off THIS — a
+                    // hidden tab / zoom-collapsed sibling releases its slot + stops the UDP/VT/Metal pipeline,
+                    // re-activating when it returns (onDisappear never fires under keep-all-mounted).
+                    isVisible: isActive && !entry.isHidden,
                     containerBounds: bounds,
                     staticMirror: staticMirror,
                 )
+                // ZOOM keep-mounted: a zoomed tab still emits every sibling (tiled + float) as a HIDDEN
+                // compositor leaf at its un-zoomed rect — revealed/hidden here exactly like an inactive
+                // tab's layer, so the libghostty surface / `.remoteGUI` stream survives the zoom toggle
+                // and un-zoom is a pure visibility flip (no teardown, no lossy ring-replay).
+                .opacity(entry.isHidden ? 0 : 1)
+                .allowsHitTesting(!entry.isHidden)
+                .accessibilityHidden(entry.isHidden)
                 .id(entry.id) // identity hazard: never reuse a surface across panes
             }
             // Interaction chrome only for the active tab (a hidden tab is non-interactive anyway).
@@ -114,6 +140,20 @@ struct SplitContainer: View {
         }
         .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
         .coordinateSpace(name: PaneMoveSpace.name)
+        // Report the ACTIVE tab's solved leaf rects to the store (`updateSolvedLayout`) — the production
+        // wiring the L0/L2 rewrite dropped with `SplitTreeView`, which left `lastSolvedLayout` forever nil
+        // and the ⌃⌘arrow / ⌥⌘⇧arrow chords resolving against the store's nominal fallback. View-only state;
+        // never reconciles. Skipped for hidden tabs (only the visible geometry counts) + the static path.
+        .onAppear { reportSolvedLayout(frames, isActive: isActive) }
+        .onChange(of: frames) { _, newFrames in reportSolvedLayout(newFrames, isActive: isActive) }
+        .onChange(of: isActive) { _, nowActive in reportSolvedLayout(frames, isActive: nowActive) }
+    }
+
+    /// Forwards the active tab's solved frames to `store.updateSolvedLayout` (a hidden tab / the static
+    /// snapshot path never reports — the store must only ever hold the geometry the user actually sees).
+    private func reportSolvedLayout(_ frames: [PaneID: CGRect], isActive: Bool) {
+        guard isActive, !staticMirror, !frames.isEmpty else { return }
+        store.updateSolvedLayout(SolvedLayout(frames: frames))
     }
 
     /// The z-index band the compositor ZStack stacks by (F4): tiled panes at the base (0, set inside
@@ -159,7 +199,9 @@ struct SplitContainer: View {
                 store.setTerminalResizeSuspended(false)
                 store.commitDividerResize()
             },
-            onReset: { store.balanceActivePaneSplits() },
+            // Double-click evens ONLY this seam — NOT balanceActivePaneSplits(), which rebalances every
+            // split of the tab and wiped the other dividers' dragged ratios.
+            onReset: { store.evenDividerTree(splitID: handle.splitID, leadingChildIndex: handle.childIndex) },
         )
         .position(x: handle.rect.midX, y: handle.rect.midY)
     }

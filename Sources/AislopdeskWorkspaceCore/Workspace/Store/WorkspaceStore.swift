@@ -361,6 +361,25 @@ public final class WorkspaceStore {
     /// The focused pane id, or `nil` when the canvas is empty (a pure passthrough).
     public var focusedPane: PaneID? { workspace.focusedPane }
 
+    /// The focused pane id in whichever live model is current: the active tab's active pane under
+    /// ``LiveModel/tree`` (the shipped app — where `workspace.focusedPane` is a dead default id), else the
+    /// canvas focus. Consumed by the snippet-run path so a snippet reaches a REAL registry leaf.
+    private var liveFocusedPane: PaneID? {
+        switch liveModel {
+        case .tree: tree.activeSession?.activeTab?.activePane
+        case .canvas: workspace.focusedPane
+        }
+    }
+
+    /// The ``PaneSpec`` for `id` in whichever live model is current (tree side table under
+    /// ``LiveModel/tree``, else the canvas). Used where a spec lookup must follow the live model.
+    private func liveSpec(for id: PaneID) -> PaneSpec? {
+        switch liveModel {
+        case .tree: tree.spec(for: id)
+        case .canvas: workspace.canvas.spec(for: id)
+        }
+    }
+
     /// Whether `id` is the focused pane (the view's focus-ring decision).
     public func isFocused(_ id: PaneID) -> Bool { workspace.focusedPane == id }
 
@@ -1475,8 +1494,37 @@ public final class WorkspaceStore {
 
     // MARK: - Snippets (saved command macros, run from ⌘K)
 
-    /// The saved snippets, persisted on the workspace (read-only view; mutate via the CRUD below).
-    public var snippets: [Snippet] { workspace.snippets }
+    /// The saved snippets in whichever live model is current (P-fix): the tree's under ``LiveModel/tree``
+    /// (the shipped app — where they are carried verbatim from v9 and persisted by ``persistableSnapshot()``),
+    /// else the canvas's. Reading `workspace.snippets` on the tree shell always saw the empty default canvas
+    /// (snippets never persisted / never reloaded); mirrors ``liveLayoutPresets``.
+    private var liveSnippets: [Snippet] {
+        get {
+            switch liveModel {
+            case .tree: tree.snippets
+            case .canvas: workspace.snippets
+            }
+        }
+        set {
+            switch liveModel {
+            case .tree: tree.snippets = newValue
+            case .canvas: workspace.snippets = newValue
+            }
+        }
+    }
+
+    /// Reconciles + debounce-saves the CURRENT live model (the tree app persists the tree via
+    /// ``persistableSnapshot()``; the canvas store persists the canvas). A metadata-only mutation (leaf set
+    /// unchanged) routes here so the write path matches the live model.
+    private func reconcileLive() {
+        switch liveModel {
+        case .tree: reconcileTree()
+        case .canvas: reconcile()
+        }
+    }
+
+    /// The saved snippets, persisted on the live model (read-only view; mutate via the CRUD below).
+    public var snippets: [Snippet] { liveSnippets }
 
     /// A non-blank snippet display name (trimmed; an empty/whitespace name falls back to "Snippet" so the
     /// palette never shows a blank "Run …" row — reachable from CRUD and from a merge-imported file). `public`
@@ -1492,32 +1540,32 @@ public final class WorkspaceStore {
     @discardableResult
     public func addSnippet(name: String, body: String, alias: String = "") -> Snippet {
         let snippet = Snippet(name: Self.snippetName(name), body: body, alias: alias)
-        workspace.snippets.append(snippet)
-        reconcile()
+        liveSnippets.append(snippet)
+        reconcileLive()
         return snippet
     }
 
     /// Edits an existing snippet's name + body (+ alias). No-op for an unknown id.
     public func updateSnippet(_ id: UUID, name: String, body: String, alias: String = "") {
-        guard let i = workspace.snippets.firstIndex(where: { $0.id == id }) else { return }
+        guard let i = liveSnippets.firstIndex(where: { $0.id == id }) else { return }
         // Store the name VERBATIM here — this is the live-editing path, so a per-keystroke trim/substitute
         // would fight the typist (a trailing space gets deleted; clearing the field snaps to "Snippet").
         // The empty→"Snippet" fallback is applied at DISPLAY time (palette/manager) and re-normalized once
         // on add + import/load, where a one-shot clean-up is correct.
-        workspace.snippets[i].name = name
-        workspace.snippets[i].body = body
+        liveSnippets[i].name = name
+        liveSnippets[i].body = body
         // The alias, unlike the name, IS normalized on every edit: the spec forbids spaces in an alias, so
         // stripping whitespace per-keystroke is the correct UX (you cannot type a space into it) rather
         // than a typist-fighting trim.
-        workspace.snippets[i].alias = Snippet.normalizeAlias(alias)
-        reconcile()
+        liveSnippets[i].alias = Snippet.normalizeAlias(alias)
+        reconcileLive()
     }
 
     /// Deletes a snippet. No-op for an unknown id.
     public func deleteSnippet(_ id: UUID) {
-        workspace.snippets.removeAll { $0.id == id }
+        liveSnippets.removeAll { $0.id == id }
         if lastRanSnippetID == id { lastRanSnippetID = nil } // don't leave ⌥⌘R pointing at a dead snippet
-        reconcile()
+        reconcileLive()
     }
 
     // MARK: - Workspace export / import (portable backup / share)
@@ -1525,7 +1573,13 @@ public final class WorkspaceStore {
     /// Encodes the current workspace to a portable document (host connection stripped, ephemeral panes
     /// stripped) — what the `.fileExporter` writes to disk.
     public func exportWorkspaceData() -> Data {
-        WorkspaceTransfer.export(persistableWorkspace())
+        // LIVE-MODEL aware: the shipped app is `.tree`, so an export must serialize the LIVE tree (sessions /
+        // tabs / splits / snippets). Exporting `persistableWorkspace()` on the tree shell wrote only the dead
+        // default single-terminal canvas — an empty "backup".
+        switch liveModel {
+        case .tree: WorkspaceTransfer.exportTree(tree)
+        case .canvas: WorkspaceTransfer.export(persistableWorkspace())
+        }
     }
 
     /// How an import lands: REPLACE the live canvas (backup-restore) or MERGE the document's panes in
@@ -1539,6 +1593,18 @@ public final class WorkspaceStore {
     /// leaves the live workspace untouched and returns `false`.
     @discardableResult
     public func importWorkspace(_ data: Data, mode: WorkspaceImportMode = .replace) -> Bool {
+        // LIVE-MODEL aware: the shipped app is `.tree`. On the canvas shell an import mutated only the dead
+        // canvas and reconcile() no-oped, so `true` was returned while nothing changed or persisted.
+        switch liveModel {
+        case .tree: importTreeWorkspace(data, mode: mode)
+        case .canvas: importCanvasWorkspace(data, mode: mode)
+        }
+    }
+
+    /// The canvas-model import (retained-but-dead in the shipped app; the source of truth for every existing
+    /// canvas test). See ``importWorkspace(_:mode:)`` for the mode semantics.
+    @discardableResult
+    private func importCanvasWorkspace(_ data: Data, mode: WorkspaceImportMode) -> Bool {
         guard let imported = WorkspaceTransfer.decode(data) else { return false }
         // COMMIT (not discard) any in-flight scroll pan: a later path here can still bail (e.g. the
         // mergeAppend cap rejects the document), and discarding would silently snap the canvas back to the
@@ -1691,11 +1757,14 @@ public final class WorkspaceStore {
     /// body / no text-capable target). Stays in the primary declaration because it reaches the private `registry`.
     @discardableResult
     public func runSnippet(_ id: UUID, values: [String: String] = [:]) -> Int {
-        guard let snippet = workspace.snippets.first(where: { $0.id == id }) else { return 0 }
+        guard let snippet = liveSnippets.first(where: { $0.id == id }) else { return 0 }
         let bytes = snippetBytes(for: snippet, values: values)
         guard !bytes.isEmpty else { return 0 }
-        let candidates = broadcastActive ? broadcastTargets() : (workspace.focusedPane.map { [$0] } ?? [])
-        let targets = candidates.filter { workspace.canvas.spec(for: $0)?.kind.canReceiveText == true }
+        // Resolve the (non-broadcast) target from the LIVE focused pane + spec: on the tree shell the canvas
+        // `workspace.focusedPane` is a dead default id that is never a registry key, so a snippet reached
+        // nothing (yet returned success). `liveFocusedPane` / `liveSpec` read whichever model drives the app.
+        let candidates = broadcastActive ? broadcastTargets() : (liveFocusedPane.map { [$0] } ?? [])
+        let targets = candidates.filter { liveSpec(for: $0)?.kind.canReceiveText == true }
         for pid in targets { registry[pid]?.sendBytes(bytes) }
         return targets.count
     }
@@ -1722,7 +1791,7 @@ public final class WorkspaceStore {
     /// placeholders; the sheet finishes by calling ``runSnippet(_:values:)`` + ``clearSnippetRunRequest()``.
     @discardableResult
     public func beginRunSnippet(_ id: UUID) -> SnippetRunOutcome {
-        guard let snippet = workspace.snippets.first(where: { $0.id == id }) else { return .unknown }
+        guard let snippet = liveSnippets.first(where: { $0.id == id }) else { return .unknown }
         lastRanSnippetID = id // remember the launch so ⌥⌘R can re-fire it without ⌘K
         // E16 WI-2: only the USER-prompt placeholders gate the value-entry sheet. The four reserved vars
         // (`{{date}}`/`{{time}}`/`{{clipboard}}`/`{{cursor}}`) are resolved by `ReservedSnippetVars` at run
@@ -2641,18 +2710,15 @@ public final class WorkspaceStore {
         reconcileTree()
     }
 
-    /// Moves tree focus in `direction` using the bounds the active-tab view last reported via
-    /// ``updateSolvedLayout(_:)`` — the keyboard / menu / command-palette entry point that has no
-    /// `GeometryReader` of its own. The bounds are the union of the reported frames (the exact rect the
-    /// `SplitTreeView` solved into), so a chord-driven focus move resolves against the geometry the user
-    /// sees. A no-op until the view has reported a layout (the first frame), mirroring the canvas
-    /// ``move(_:)`` directional no-op.
+    /// Moves tree focus in `direction` — the keyboard / menu / command-palette entry point that has no
+    /// `GeometryReader` of its own. Resolves against ``treeGeometryBounds``: the view-reported layout when
+    /// one has landed (``updateSolvedLayout(_:)``, wired from `SplitContainer`'s layout pass), else a
+    /// nominal rect — direction is scale-invariant for the tiled tree (`moveFocusTree` re-solves the tree
+    /// into the bounds), so the ⌃⌘arrow chords are NEVER dead. The audit found the old
+    /// wait-for-a-report guard blocked forever: no production view called `updateSolvedLayout` after the
+    /// L0/L2 rewrite deleted `SplitTreeView`, so every directional chord silently no-opped.
     public func moveFocusTreeUsingReportedLayout(_ direction: FocusDirection) {
-        guard let solved = lastSolvedLayout, !solved.frames.isEmpty else { return }
-        var bounds = CGRect.null
-        for rect in solved.frames.values { bounds = bounds.union(rect) }
-        guard !bounds.isNull, bounds.width > 0, bounds.height > 0 else { return }
-        moveFocusTree(direction, bounds: bounds)
+        moveFocusTree(direction, bounds: treeGeometryBounds)
     }
 
     /// Adds a new tab (single leaf of `kind`) to the active session and selects it; materializes its leaf.
@@ -2751,8 +2817,12 @@ public final class WorkspaceStore {
         let inheritedCwd = SettingsKey.workingDirectoryNewWindow.resolve(activePaneCwd: activeCwd)
         var spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
         spec.lastKnownCwd = inheritedCwd
+        let previous = tree.activeSessionID
         let (next, _) = WorkspaceTreeOps.newSession(in: tree, name: name, spec: spec)
         tree = next
+        // Keep the OUTGOING session mounted (R-lifecycle #3): creating + switching to a new session must not
+        // dismantle the session you just left — otherwise returning to it repaints from the lossy ring.
+        if let newID = tree.activeSessionID { noteActiveSessionChanged(to: newID, from: previous) }
         reconcileTree()
     }
 
@@ -2760,11 +2830,26 @@ public final class WorkspaceStore {
     /// when it was the last). Reconcile tears down its leaves.
     public func closeSession(_ sessionID: SessionID) {
         tree = WorkspaceTreeOps.closeSession(sessionID, in: tree)
+        noteSessionClosed(sessionID) // drop it from the keep-mounted retention LRU; keep the now-active one
         reconcileTree()
     }
 
+    /// SESSION-RETENTION LRU (R-lifecycle #3): the most-recent-first session ids whose pane subtrees the
+    /// keep-mounted compositor keeps MOUNTED (at `opacity 0`) even while they are not the active session —
+    /// so an A→B→A session round-trip does NOT dismantle A's ghostty surfaces and repaint them from the lossy
+    /// 256 KB ring (dropped prompts on unfocused panes, blank alt-screen TUIs). Capped at
+    /// ``retainedSessionCap`` (the active session + the previous one; LRU-evicted beyond that) — a bounded set
+    /// so we never hold every session's live Metal surface on-window. The view (`SplitContainer`) renders a
+    /// hidden layer for each retained session's tabs; retained-but-inactive sessions have no active tab, so
+    /// every one of their panes is hidden + non-interactive (and, being off-screen, their video panes release
+    /// their `liveVideoCap` slots via the visibility-driven activation lifecycle).
+    /// `internal(set)` (not `private(set)`) so the `WorkspaceStore+Lifecycle` extension's retention helpers can
+    /// mutate it; still not publicly settable.
+    public internal(set) var retainedSessionIDs: [SessionID] = []
+
     /// Selects session `sessionID` — a pure active-state change (the full leaf set stays registered).
     public func selectSession(_ sessionID: SessionID) {
+        noteActiveSessionChanged(to: sessionID, from: tree.activeSessionID)
         tree = WorkspaceTreeOps.selectSession(sessionID, in: tree)
         reconcileTree()
     }
@@ -3079,19 +3164,16 @@ public final class WorkspaceStore {
     /// derived buffer, not view state (the rendered `globalSearch` results carry the observation).
     @ObservationIgnored private var globalSearchSourceCache: [GlobalSearchSource]?
 
-    /// Moves (swaps) the active pane with its geometric neighbour in `direction` (Zellij "move pane"),
-    /// resolved against the bounds the active-tab view last reported via ``updateSolvedLayout(_:)`` — the
-    /// keyboard/menu/palette entry point that has no `GeometryReader` of its own. Mirrors
-    /// ``moveFocusTreeUsingReportedLayout(_:)``: a no-op until the view has reported a layout, and a no-op
-    /// when there is no neighbour on the requested side. The moved pane keeps focus (its `PaneID` is
-    /// unchanged, so reconcile is a registry no-op). No-op without an active pane.
+    /// Moves (swaps) the active pane with its geometric neighbour in `direction` (Zellij "move pane") —
+    /// the keyboard/menu/palette entry point that has no `GeometryReader` of its own. Mirrors
+    /// ``moveFocusTreeUsingReportedLayout(_:)``: resolves against ``treeGeometryBounds`` (the reported
+    /// layout when available, else a nominal rect — the neighbour relation is scale-invariant), so the
+    /// ⌥⌘⇧arrow chords are never dead; a no-op when there is no neighbour on the requested side. The moved
+    /// pane keeps focus (its `PaneID` is unchanged, so reconcile is a registry no-op). No-op without an
+    /// active pane.
     public func swapActivePaneInDirection(_ direction: FocusDirection) {
         guard let active = tree.activeSession?.activeTab?.activePane else { return }
-        guard let solved = lastSolvedLayout, !solved.frames.isEmpty else { return }
-        var bounds = CGRect.null
-        for rect in solved.frames.values { bounds = bounds.union(rect) }
-        guard !bounds.isNull, bounds.width > 0, bounds.height > 0 else { return }
-        tree = WorkspaceTreeOps.movePaneInDirection(active, direction, bounds: bounds, in: tree)
+        tree = WorkspaceTreeOps.movePaneInDirection(active, direction, bounds: treeGeometryBounds, in: tree)
         reconcileTree()
     }
 
@@ -3451,7 +3533,9 @@ public final class WorkspaceStore {
         // notification only when backgrounded (replaces the old direct notifier.notifyIfLong in the VM).
         connection?.onCommandCompleted = { [weak self, weak connection] exitCode, durationMS in
             guard let self else { return }
-            let title = tree.spec(for: id)?.title ?? ""
+            // See ``PaneSpec/completionNotificationTitle`` — prefers the live OSC 0/2 shell title over
+            // the static spec title so the banner/toast identifies WHICH command/directory finished.
+            let title = tree.spec(for: id)?.completionNotificationTitle ?? ""
             handleCommandCompleted(id: id, exitCode: exitCode, durationMS: durationMS, paneTitle: title)
             // NB: an in-flight recipe REPLAY does NOT resume here. OSC-133;D for an interactive handoff command
             // (`ssh`/`docker exec -it`/`tmux attach`) fires only when that session EXITS — resuming on it would
@@ -3828,7 +3912,8 @@ public final class WorkspaceStore {
                 // B3 BACKGROUND-PANE COMMAND-COMPLETION: same focus-gated completion route as the tree path.
                 connection?.onCommandCompleted = { [weak self] exitCode, durationMS in
                     guard let self else { return }
-                    let title = spec(for: id)?.title ?? ""
+                    // Same live-title preference as the tree path — see ``PaneSpec/completionNotificationTitle``.
+                    let title = spec(for: id)?.completionNotificationTitle ?? ""
                     handleCommandCompleted(id: id, exitCode: exitCode, durationMS: durationMS, paneTitle: title)
                 }
                 connection?.onWorkingDirectoryChanged = { [weak self] cwd in
@@ -4133,6 +4218,34 @@ public extension WorkspaceStore {
     func commitDividerResize() {
         reconcileTree()
     }
+
+    /// Evens ONLY the double-clicked seam — the divider between children `leadingChildIndex` and
+    /// `leadingChildIndex + 1` of split `splitID` resets to an equal pair share (sum-preserving), while
+    /// every OTHER divider's dragged ratio survives. The `PaneDivider` double-click target; the whole-tab
+    /// even reset stays on ``balanceActivePaneSplits()`` (the ⌃⌘= chord). The leaf set is unchanged, so
+    /// reconcile is a registry no-op.
+    func evenDividerTree(splitID: SplitNodeID, leadingChildIndex: Int) {
+        tree = WorkspaceTreeOps.evenDivider(splitID: splitID, leadingChildIndex: leadingChildIndex, in: tree)
+        reconcileTree()
+    }
+
+    /// The bounds the tree's geometric ops (directional focus / move-pane) solve the active tab into:
+    /// the union of the frames the view last reported via ``updateSolvedLayout(_:)`` (the exact geometry
+    /// the user sees), else the reported container bounds (``updateFloatingBounds(_:)``), else a nominal
+    /// desktop rect — a directional neighbour is scale-invariant on the tiled tree (cf.
+    /// `WorkspaceTreeOps.neighbour(of:in:)`, which solves into a fixed unit square), so a chord fired
+    /// before the first layout report still resolves correctly instead of dying.
+    private var treeGeometryBounds: CGRect {
+        if let solved = lastSolvedLayout, !solved.frames.isEmpty {
+            var bounds = CGRect.null
+            for rect in solved.frames.values { bounds = bounds.union(rect) }
+            if !bounds.isNull, bounds.width > 0, bounds.height > 0 { return bounds }
+        }
+        if let reported = lastFloatingBounds, reported.width > 0, reported.height > 0 {
+            return reported
+        }
+        return CGRect(x: 0, y: 0, width: 1280, height: 800)
+    }
 }
 
 // MARK: - Find-in-terminal + Global Search command entries (E5)
@@ -4236,6 +4349,10 @@ public extension WorkspaceStore {
             query: globalSearchQuery,
             caseSensitive: globalSearchCaseSensitive,
             isRegex: globalSearchRegex,
+            // Map the logical (unwrapped) hit line to the physical grid row `scroll_to_row` addresses — the
+            // mirror collapses soft-wrapped rows, so a heavily-wrapped pane would otherwise land rows too high.
+            lines: model.searchScrollbackLines(),
+            columns: model.searchGridColumns(),
         )
         for action in actions {
             model.performSearchSurfaceAction(action)

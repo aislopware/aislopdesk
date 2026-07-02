@@ -2,7 +2,7 @@
 // inside a comfortable hit band; a resize cursor on hover. Dragging resizes the panes LIVE — the layout
 // updates every frame, like an AppKit `NSSplitView` divider — while the host grid-resize SEND is deferred
 // until release (the shell brackets the drag with `setTerminalResizeSuspended`, so the server gets ONE resize
-// event when the drag settles, not one per frame). Double-click resets the split to even.
+// event when the drag settles, not one per frame). Double-click evens out THIS seam only (never the whole tab).
 //
 // LIVE-RESIZE RULE (why this no longer needs the old ghost-seam / commit-on-release dance): the drag sets the
 // leading child's ABSOLUTE weight each frame — `handle.leadingWeight` captured at drag start, plus the cursor
@@ -35,7 +35,8 @@ struct PaneDivider: View {
     /// Drag end / cancel — wired to `store.setTerminalResizeSuspended(false)` (flush the settled grid to the
     /// host) + `store.commitDividerResize()` (reconcile + persist ONCE).
     var onResizeEnd: () -> Void = {}
-    /// Double-click → reset split to even. Wired to `store.balanceActivePaneSplits`.
+    /// Double-click → even out THIS seam (50/50, sum-preserving). Wired to `store.evenDividerTree` with
+    /// this handle's `(splitID, childIndex)` — never the whole-tab `balanceActivePaneSplits` reset.
     var onReset: () -> Void = {}
 
     /// The drawn hairline thickness (the hit band is the handle rect; the line is thinner + crisp).

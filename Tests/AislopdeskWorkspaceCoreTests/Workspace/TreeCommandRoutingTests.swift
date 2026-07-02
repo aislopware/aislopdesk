@@ -120,20 +120,18 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(bFake?.teardownCount, 1, "the closed leaf was torn down exactly once")
     }
 
-    // MARK: - Focus: geometric move follows the reported layout
+    // MARK: - Focus: geometric move works without a pre-seeded layout report
 
-    /// `.focusLeft` / `.focusRight` move the active pane along the solved layout the view reports — proving
-    /// the focus actions route through `moveFocusTree` against the live geometry (not a no-op).
+    /// `.focusLeft` / `.focusRight` move the active pane geometrically WITHOUT any `updateSolvedLayout`
+    /// pre-seed — the store solves the tree itself (direction is scale-invariant), so the ⌃⌘arrow chords
+    /// work from the first frame. The audit found the old guard waited on a report NO production view ever
+    /// sent (the deleted `SplitTreeView` was its only caller), leaving every directional chord permanently
+    /// dead; this test fails on that un-wired path (the routes below were silent no-ops).
     func testFocusRightThenLeftMovesActivePane() throws {
         let store = makeTreeStore()
         let left = leaves(store)[0]
         route(.splitRight, store) // a horizontal split: [left | right], right focused
         let right = try XCTUnwrap(activePane(store))
-        // Report the rects the SplitTreeView would solve so the geometric move resolves.
-        store.updateSolvedLayout(SolvedLayout(frames: [
-            left: CGRect(x: 0, y: 0, width: 100, height: 100),
-            right: CGRect(x: 100, y: 0, width: 100, height: 100),
-        ]))
 
         route(.focusLeft, store)
         XCTAssertEqual(activePane(store), left, "focusLeft lands on the left pane")
@@ -221,17 +219,15 @@ final class TreeCommandRoutingTests: XCTestCase {
     // MARK: - Panes: move / resize / balance (keyboard pane management)
 
     /// `.movePaneRight` swaps the active pane with its right neighbour (the leaf order flips); the moved pane
-    /// keeps focus (PaneID identity preserved). Proven to fail before the action + routing exist.
+    /// keeps focus (PaneID identity preserved). Like the focus chords above, this must work WITHOUT any
+    /// `updateSolvedLayout` pre-seed (the store solves the tree itself) — it fails on the un-wired path
+    /// where the swap guarded on a layout report no production view ever sent.
     func testMovePaneRightSwapsActiveWithRightNeighbour() throws {
         let store = makeTreeStore()
         let a = leaves(store)[0]
         route(.splitRight, store) // [a | b], b active
         let b = try XCTUnwrap(activePane(store))
         store.focusPaneTree(a) // make a active so we move IT right
-        store.updateSolvedLayout(SolvedLayout(frames: [
-            a: CGRect(x: 0, y: 0, width: 100, height: 100),
-            b: CGRect(x: 100, y: 0, width: 100, height: 100),
-        ]))
 
         route(.movePaneRight, store)
 
@@ -286,6 +282,44 @@ final class TreeCommandRoutingTests: XCTestCase {
         }
         XCTAssertEqual(flex(children[0]), flex(children[1]), accuracy: 1e-9, "balance equalized the two columns")
         XCTAssertEqual(leaves(store).count, 2, "balance never changes the leaf set")
+    }
+
+    /// Double-clicking ONE divider evens ONLY that seam: `evenDividerTree` resets the clicked pair to an
+    /// equal share (sum-preserving) while every OTHER split keeps its dragged ratio. The audit bug: the
+    /// `PaneDivider` double-click was wired to `balanceActivePaneSplits()`, which rebalances EVERY split of
+    /// the tab — wiping the other seams' carefully dragged ratios. Proven to fail before the targeted op
+    /// exists (compile), and behaviourally: the whole-tab reset would flatten `after[0]` back to 1.
+    func testEvenDividerTreeResetsOnlyTheClickedSeam() {
+        let store = makeTreeStore()
+        route(.splitRight, store) // [a | b]
+        route(.splitDown, store) // b's slot → nested [b / c]; root = horizontal[a, vertical[b, c]]
+        guard case let .split(rootID, _, rootChildren)? = store.tree.activeSession?.activeTab?.root,
+              case let .split(nestedID, _, _) = rootChildren[1].node
+        else {
+            XCTFail("expected [a | [b / c]]")
+            return
+        }
+        func flex(_ c: WeightedChild) -> Double { if case let .flex(w) = c.weight { return w }
+            return 0
+        }
+        // Drag BOTH seams off-balance (each pair starts 1/1).
+        store.resizeDividerTree(splitID: rootID, leadingChildIndex: 0, delta: 0.4) // a | … → 1.4 / 0.6
+        store.resizeDividerTree(splitID: nestedID, leadingChildIndex: 0, delta: 0.4) // b / c → 1.4 / 0.6
+
+        store.evenDividerTree(splitID: nestedID, leadingChildIndex: 0) // double-click the b/c seam only
+
+        guard case let .split(_, _, after)? = store.tree.activeSession?.activeTab?.root,
+              case let .split(_, _, nestedAfter) = after[1].node
+        else {
+            XCTFail("the tree shape is unchanged by an even-out")
+            return
+        }
+        XCTAssertEqual(flex(nestedAfter[0]), flex(nestedAfter[1]), accuracy: 1e-9, "the clicked seam evened out")
+        XCTAssertEqual(
+            flex(nestedAfter[0]) + flex(nestedAfter[1]), 2.0, accuracy: 1e-9, "the pair sum is preserved",
+        )
+        XCTAssertEqual(flex(after[0]), 1.4, accuracy: 1e-9, "the OTHER split's dragged ratio survives")
+        XCTAssertEqual(flex(after[1]), 0.6, accuracy: 1e-9, "the OTHER split's dragged ratio survives")
     }
 
     /// `store.swapPanesTree(a, b)` exchanges two leaves' positions (the drag-to-move-pane commit) while

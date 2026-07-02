@@ -16,8 +16,10 @@ import Foundation
 /// ### Zoom
 /// When the tab names a `zoomedPane` that is a live leaf, the model collapses to that ONE leaf filling
 /// the whole bound and **no dividers** (WezTerm `TabInner.zoomed` — render-only; the tree is untouched).
-/// The other leaves are NOT in `leaves` — the view keeps them mounted at `opacity 0` itself (the proven
-/// no-teardown trick), so the model needs only the visible placement.
+/// The other leaves are NOT in `leaves` — but they ARE still emitted, as ``Layout/hiddenLeaves`` at their
+/// un-zoomed rects, so ``Layout/compositorLeaves`` always carries EVERY pane of the tab and the view keeps
+/// the siblings MOUNTED at `opacity 0` (the proven no-teardown trick — unmounting them dismantles the
+/// libghostty surface / `.remoteGUI` stream and un-zoom repaints from the lossy replay ring).
 ///
 /// Free of SwiftUI; `CGRect`/`CGFloat` math only (the house float idiom: separate `*`+`+`, never
 /// `addingProduct`/`fma`; NaN-faithful ordered `Double.maximum`/`Double.minimum`). Headless-unit-tested
@@ -103,12 +105,18 @@ public enum SplitTreeRenderModel {
     public struct CompositorLeaf: Equatable, Sendable {
         public let leaf: PlacedLeaf
         public let isFloating: Bool
-        public init(leaf: PlacedLeaf, isFloating: Bool) {
+        /// ZOOM-hidden: the pane is a sibling of the zoomed leaf, kept MOUNTED (the view renders it at
+        /// `opacity 0`, no hit-testing) at its un-zoomed rect so its surface survives the zoom toggle —
+        /// exactly the keep-all-tabs-mounted trick, applied per pane. `false` for every visible leaf.
+        public let isHidden: Bool
+        public init(leaf: PlacedLeaf, isFloating: Bool, isHidden: Bool = false) {
             self.leaf = leaf
             self.isFloating = isFloating
+            self.isHidden = isHidden
         }
 
-        /// The pane identity the compositor `ForEach` keys on — STABLE across the float↔embed transition.
+        /// The pane identity the compositor `ForEach` keys on — STABLE across the float↔embed transition
+        /// AND across the zoom hidden↔visible flip (one keyed collection, no teardown).
         public var id: PaneID { leaf.id }
     }
 
@@ -120,23 +128,37 @@ public enum SplitTreeRenderModel {
         public let leaves: [PlacedLeaf]
         public let dividers: [DividerHandle]
         public let floatingLeaves: [PlacedLeaf]
-        public init(leaves: [PlacedLeaf], dividers: [DividerHandle], floatingLeaves: [PlacedLeaf] = []) {
+        /// The ZOOM-hidden leaves: while a zoom is active, every non-zoomed pane (tiled sibling AND float)
+        /// lands here at its un-zoomed rect, flagged `isHidden` — so ``compositorLeaves`` still carries the
+        /// FULL pane set and the view keeps the siblings mounted at `opacity 0` (never unmounted → the
+        /// libghostty surface / video stream survives the zoom toggle, and un-zoom is a pure visibility
+        /// flip, no lossy ring-replay). Empty while un-zoomed, so the tiled path is byte-identical.
+        public let hiddenLeaves: [CompositorLeaf]
+        public init(
+            leaves: [PlacedLeaf],
+            dividers: [DividerHandle],
+            floatingLeaves: [PlacedLeaf] = [],
+            hiddenLeaves: [CompositorLeaf] = [],
+        ) {
             self.leaves = leaves
             self.dividers = dividers
             self.floatingLeaves = floatingLeaves
+            self.hiddenLeaves = hiddenLeaves
         }
 
         public static let empty = Self(leaves: [], dividers: [], floatingLeaves: [])
 
-        /// The tiled + floating leaves as ONE ordered, `PaneID`-keyed sequence (tiled first, floating last so
-        /// the z-order is preserved when the compositor draws them in order / bumps floats above via z-index).
-        /// The compositor renders EVERY pane from this single `ForEach` so a float↔embed move stays within one
-        /// keyed collection and the pane's hosted surface is never torn down (E21 F4 / WI-6). A pane is in
-        /// EITHER `leaves` or `floatingLeaves`, never both (the float leaves the tiled tree), so each `PaneID`
-        /// appears exactly once here.
+        /// The tiled + floating (+ zoom-hidden) leaves as ONE ordered, `PaneID`-keyed sequence (tiled first,
+        /// floating last so the z-order is preserved when the compositor draws them in order / bumps floats
+        /// above via z-index; hidden leaves trail — their order is irrelevant at `opacity 0`).
+        /// The compositor renders EVERY pane from this single `ForEach` so a float↔embed move — and the zoom
+        /// hidden↔visible flip — stays within one keyed collection and the pane's hosted surface is never
+        /// torn down (E21 F4 / WI-6). A pane is in EXACTLY one of `leaves` / `floatingLeaves` /
+        /// `hiddenLeaves`, so each `PaneID` appears exactly once here.
         public var compositorLeaves: [CompositorLeaf] {
             leaves.map { CompositorLeaf(leaf: $0, isFloating: false) }
                 + floatingLeaves.map { CompositorLeaf(leaf: $0, isFloating: true) }
+                + hiddenLeaves
         }
     }
 
@@ -171,9 +193,18 @@ public enum SplitTreeRenderModel {
         )
         // A zoomed tab hides floats (one leaf fills the bound). Read the SAME zoom-validity rule the
         // bare-root overload used (a zoom that names a live leaf) from the one shared `isZoomActive` helper,
-        // so the float-suppression decision can't drift from the base layout's own zoom guard.
+        // so the float-suppression decision can't drift from the base layout's own zoom guard. Hidden ≠
+        // dropped: the floats join `hiddenLeaves` at their clamped rects so their surfaces stay MOUNTED
+        // (opacity 0) across the zoom, exactly like the tiled siblings the base layout already hides.
         if isZoomActive(root: tab.root, zoomedPane: tab.zoomedPane) {
-            return base
+            let hiddenFloats = floatingLeaves(for: floating, in: bounds).map {
+                CompositorLeaf(leaf: $0, isFloating: true, isHidden: true)
+            }
+            return Layout(
+                leaves: base.leaves,
+                dividers: base.dividers,
+                hiddenLeaves: base.hiddenLeaves + hiddenFloats,
+            )
         }
         let floats = floatingLeaves(for: floating, in: bounds)
         return Layout(leaves: base.leaves, dividers: base.dividers, floatingLeaves: floats)
@@ -202,10 +233,17 @@ public enum SplitTreeRenderModel {
         minLeaf: CGSize = SplitLayoutSolver.defaultMinLeaf,
         dividerThickness: CGFloat = Self.dividerThickness,
     ) -> Layout {
-        // Zoom: a single leaf fills the whole bound, no dividers. Only honor a zoom that names a leaf that
-        // actually exists in the tree (a stale zoom id falls through to the normal tiled layout).
+        // Zoom: a single VISIBLE leaf fills the whole bound, no dividers. Only honor a zoom that names a
+        // leaf that actually exists in the tree (a stale zoom id falls through to the normal tiled layout).
+        // The siblings are NOT dropped: they ride `hiddenLeaves` at their un-zoomed solver rects so the
+        // view keeps them mounted (opacity 0, no reflow) — a zoom is a visibility/geometry change, never a
+        // teardown (the surfaces + streams survive, un-zoom needs no lossy ring-replay).
         if isZoomActive(root: root, zoomedPane: zoomedPane), let zoomed = zoomedPane {
-            return Layout(leaves: [PlacedLeaf(id: zoomed, rect: bounds)], dividers: [])
+            let solved = SplitLayoutSolver.solve(root, in: bounds, minLeaf: minLeaf)
+            let hidden = root.allPaneIDs().filter { $0 != zoomed }.compactMap { id in
+                solved[id].map { CompositorLeaf(leaf: PlacedLeaf(id: id, rect: $0), isFloating: false, isHidden: true) }
+            }
+            return Layout(leaves: [PlacedLeaf(id: zoomed, rect: bounds)], dividers: [], hiddenLeaves: hidden)
         }
 
         // Leaves come from the SOLVER so the render and FocusResolver agree exactly. Ordered by the tree's

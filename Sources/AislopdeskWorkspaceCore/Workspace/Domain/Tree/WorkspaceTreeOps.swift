@@ -37,6 +37,7 @@ public enum WorkspaceTreeOps {
         else { return (ws, newID) }
         tab.root = newRoot
         tab.activePane = newID // the freshly split pane takes focus
+        tab.zoomedPane = nil // splitting while zoomed exits zoom (the new focused pane must be visible)
         session.tabs[tIdx] = tab
         session.specs[newID] = newSpec // keep the specs == leafIDs invariant
         copy.sessions[sIdx] = session
@@ -159,6 +160,26 @@ public enum WorkspaceTreeOps {
         guard copy.sessions[sIdx].tabs.indices.contains(tIdx) else { return ws }
         var tab = copy.sessions[sIdx].tabs[tIdx]
         tab.root = tab.root.resizingDivider(splitID: splitID, leadingIndex: leadingChildIndex, delta: delta)
+        copy.sessions[sIdx].tabs[tIdx] = tab
+        return copy
+    }
+
+    /// Evens ONLY the clicked seam: the divider between children `leadingChildIndex` and
+    /// `leadingChildIndex + 1` of split `splitID` resets to an equal pair share (sum-preserving), leaving
+    /// every OTHER divider's dragged ratio intact — the divider double-click, unlike
+    /// ``balanceSplits(activeTabContaining:in:)`` which evens the whole tab. Searches the active session's
+    /// active tab (dividers only render there). No-op if the split / indices are absent.
+    public static func evenDivider(
+        splitID: SplitNodeID,
+        leadingChildIndex: Int,
+        in ws: TreeWorkspace,
+    ) -> TreeWorkspace {
+        guard let sIdx = ws.activeSessionIndex else { return ws }
+        var copy = ws
+        let tIdx = copy.sessions[sIdx].activeTabIndex
+        guard copy.sessions[sIdx].tabs.indices.contains(tIdx) else { return ws }
+        var tab = copy.sessions[sIdx].tabs[tIdx]
+        tab.root = tab.root.eveningDivider(splitID: splitID, leadingIndex: leadingChildIndex)
         copy.sessions[sIdx].tabs[tIdx] = tab
         return copy
     }
@@ -536,14 +557,19 @@ public enum WorkspaceTreeOps {
 
     // MARK: Focus
 
-    /// Focuses `target` (sets the owning tab's `activePane` and selects that session/tab). No-op if
-    /// absent.
+    /// Focuses `target` (sets the owning tab's `activePane` and selects that session/tab). Focusing a pane
+    /// OTHER than the tab's zoomed one exits that tab's zoom first (the applyLayout/cycleLayout un-zoom
+    /// rule) — focus must never land on a pane the zoom collapse hides; re-focusing the zoomed pane itself
+    /// keeps the zoom. No-op if absent.
     public static func focusPane(_ target: PaneID, in ws: TreeWorkspace) -> TreeWorkspace {
         guard let (sIdx, tIdx) = locate(target, in: ws) else { return ws }
         var copy = ws
         copy.activeSessionID = copy.sessions[sIdx].id
         copy.sessions[sIdx].activeTabIndex = tIdx
         copy.sessions[sIdx].tabs[tIdx].activePane = target
+        if copy.sessions[sIdx].tabs[tIdx].zoomedPane != target {
+            copy.sessions[sIdx].tabs[tIdx].zoomedPane = nil
+        }
         return copy
     }
 
@@ -897,6 +923,7 @@ public enum WorkspaceTreeOps {
         var tab = copy.sessions[sIdx].tabs[tIdx]
         tab.floatingPanes.append(newID)
         tab.activePane = newID
+        tab.zoomedPane = nil // zoom hides floats — spawning a (focused) float while zoomed exits zoom
         copy.sessions[sIdx].tabs[tIdx] = tab
         copy.sessions[sIdx].specs[newID] = spec
         return (copy, newID)
