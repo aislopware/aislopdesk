@@ -133,6 +133,14 @@ public final class ConnectionViewModel {
     /// would whitewash an already-torn-down pane to `.connected` (and overwrite `sessionID`).
     private var connectGeneration = 0
     private var reconnect: ReconnectManager?
+    /// Single-flight guard for ``connect()`` (R-lifecycle #4). `connect()` is `@MainActor`, but its body
+    /// SUSPENDS at `await teardown()` (which itself awaits `outDrainTask?.value` / `client?.close()`), so two
+    /// overlapping `connect()` calls — a double / key-repeated "Reconnect Pane" — could interleave: the second
+    /// call's teardown cancel-prefix would run BEFORE the first built its client/observe/output/supervisor
+    /// tasks, leaving the first attempt's client alive with nothing left to cancel or close it (a supervised
+    /// zombie whose output keeps painting into the pane). Chaining each attempt after the prior one SERIALIZES
+    /// them: the second call's teardown then closes+cancels the first's fully-built client, so no zombie leaks.
+    private var connectTask: Task<Void, Never>?
     private var supervisorTask: Task<Void, Never>?
     /// The single events loop (chrome status + forward to the terminal model).
     private var observeTask: Task<Void, Never>?
@@ -304,7 +312,25 @@ public final class ConnectionViewModel {
     /// Opens this pane's CHANNEL on the shared mux at the current app target, starting reconnect
     /// supervision + stream observation. The host/port come from the app-global ``ConnectionTarget``
     /// (the connect-gate dialled them) — the pane no longer has its own form.
+    ///
+    /// SINGLE-FLIGHT (R-lifecycle #4): the real work is ``performConnect()``; this wrapper CHAINS each attempt
+    /// after any in-flight one so two overlapping calls (a double / held ⇧⌘R "Reconnect Pane") can never
+    /// interleave their teardown/build and leak a live zombie client into the pane. The synchronous
+    /// `status = .connecting` still lands BEFORE the first `await` so a re-entrant ``connectIfNeeded()`` sees
+    /// `.connecting` and no-ops.
     public func connect() async {
+        // Flip synchronously (before awaiting the prior attempt) so a re-entrant connectIfNeeded no-ops.
+        status = .connecting
+        let prior = connectTask
+        let task = Task { @MainActor [weak self] in
+            await prior?.value
+            await self?.performConnect()
+        }
+        connectTask = task
+        await task.value
+    }
+
+    private func performConnect() async {
         let t = target()
         let host = t.host
         let port = t.port
@@ -317,6 +343,10 @@ public final class ConnectionViewModel {
         // Tear down any prior session first (re-connect to a new target).
         await teardown()
         deliberatelyClosed = false
+        // Re-arm the OSC-7 startup-noise gate for this fresh session (see `commandStartSeen`): a
+        // re-dialed pane spawns a brand-new shell that re-sources `.zshrc`, so its pre-first-command
+        // plugin OSC 7 must be dropped again.
+        commandStartSeen = false
         terminal.reset()
 
         let client = makeClient()
@@ -612,6 +642,11 @@ public final class ConnectionViewModel {
             // otherwise wedge the terminal model's connectionStatus to .connected past disconnect()'s
             // terminal.reset() (R13 #3).
             if deliberatelyClosed { return }
+            // A reconnect spawns a BRAND-NEW host shell (the mux path has no server-side resume) that
+            // re-sources `.zshrc`, replaying the plugin-manager OSC-7 startup noise. Re-arm the gate
+            // (`commandStartSeen`) so that pre-first-command OSC 7 is dropped again — else the stale-true
+            // flag admits the plugin cache dir and poisons `lastKnownCwd` (the plugin-cache-poison bug).
+            commandStartSeen = false
             self.sessionID = sessionID
             effectiveSessionID = sessionID
             onResumeIdentitySnapshot?(sessionID, snapshotedContiguousSeq)

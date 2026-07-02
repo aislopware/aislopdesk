@@ -881,13 +881,15 @@ final class HostOutputSnifferTests: XCTestCase {
     }
 
     func testOSC7FileURLEmitsCwd() {
-        let raw = bytes("\u{1B}]7;file://mac-studio/Users/me/project%20dir\u{07}")
+        // `localhost` is always a local authority, so the default sniffer accepts it regardless of the
+        // test machine's real hostname (the foreign-hostname filter is exercised separately below).
+        let raw = bytes("\u{1B}]7;file://localhost/Users/me/project%20dir\u{07}")
         XCTAssertEqual(observeWhole(raw), [.cwd("/Users/me/project dir")])
         assertForwardsUnchanged(raw)
     }
 
     func testOSC7SplitAcrossChunksEquivalence() {
-        let raw = bytes("\u{1B}]7;file://host/private/tmp/next\(ST)")
+        let raw = bytes("\u{1B}]7;file://localhost/private/tmp/next\(ST)")
         let whole = observeWhole(raw)
         XCTAssertEqual(whole, [.cwd("/private/tmp/next")])
         for size in 1...raw.count {
@@ -896,9 +898,33 @@ final class HostOutputSnifferTests: XCTestCase {
     }
 
     func testOSC7DropsMalformedOrNonFilePayloads() {
-        XCTAssertEqual(cwdOnly(observeWhole(bytes("\u{1B}]7;https://host/Users/me\u{07}"))), [])
-        XCTAssertEqual(cwdOnly(observeWhole(bytes("\u{1B}]7;file://host\u{07}"))), [])
-        XCTAssertEqual(cwdOnly(observeWhole(bytes("\u{1B}]7;file://host/%ZZ\u{07}"))), [])
+        XCTAssertEqual(cwdOnly(observeWhole(bytes("\u{1B}]7;https://localhost/Users/me\u{07}"))), [])
+        XCTAssertEqual(cwdOnly(observeWhole(bytes("\u{1B}]7;file://localhost\u{07}"))), [])
+        XCTAssertEqual(cwdOnly(observeWhole(bytes("\u{1B}]7;file://localhost/%ZZ\u{07}"))), [])
+    }
+
+    /// A shell on ANOTHER machine (ssh'd into the pane) emits OSC 7 with a FOREIGN authority
+    /// (`file://linuxbox/…`). Treating it as a local cwd poisons the inherit source — a later split
+    /// `chdir`s the fresh PTY into a host-nonexistent path (dead pane) or a wrong-but-existing local
+    /// dir. The sniffer must DROP any authority that is not a local identity.
+    func testOSC7DropsForeignHostname() {
+        let sniffer = HostOutputSniffer(localHostnames: ["mac-studio", "mac-studio.local"])
+        XCTAssertEqual(
+            cwdOnly(sniffer.observe(bytes("\u{1B}]7;file://linuxbox/home/user\u{07}"))),
+            [],
+            "an OSC 7 from a foreign host must not be treated as a local cwd",
+        )
+    }
+
+    /// The local identities — the host machine's own hostname, `localhost`, and an EMPTY authority
+    /// (`file:///…`) — must all be accepted as local cwd.
+    func testOSC7AcceptsLocalIdentities() {
+        let own = HostOutputSniffer(localHostnames: ["mac-studio"])
+        XCTAssertEqual(own.observe(bytes("\u{1B}]7;file://mac-studio/Users/me\u{07}")), [.cwd("/Users/me")])
+        let loopback = HostOutputSniffer(localHostnames: ["mac-studio"])
+        XCTAssertEqual(loopback.observe(bytes("\u{1B}]7;file://localhost/tmp\u{07}")), [.cwd("/tmp")])
+        let empty = HostOutputSniffer(localHostnames: ["mac-studio"])
+        XCTAssertEqual(empty.observe(bytes("\u{1B}]7;file:///var/log\u{07}")), [.cwd("/var/log")])
     }
 
     func testStringSequenceSwallowsEmbeddedNotification() {

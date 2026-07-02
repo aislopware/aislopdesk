@@ -49,12 +49,35 @@ public final class HostOutputSniffer: @unchecked Sendable {
     /// - Parameter clock: the wall-clock source for the OSC 133 C→D duration. Injectable so
     ///   a test advances it deterministically; defaults to `Date.init` in production.
     @preconcurrency
-    public init(clock: @escaping @Sendable () -> Date = { Date() }) {
+    public init(
+        clock: @escaping @Sendable () -> Date = { Date() },
+        localHostnames: Set<String> = HostOutputSniffer.defaultLocalHostnames(),
+    ) {
         self.clock = clock
+        self.localHostnames = localHostnames
     }
 
     private let lock = NSLock()
     private let clock: @Sendable () -> Date
+
+    /// Lower-cased host identities an OSC 7 `file://<authority>/…` may carry for the path to be
+    /// treated as a LOCAL cwd. An empty authority and `localhost` are always local; the host
+    /// machine's own hostname(s) are added at init. A FOREIGN authority (a shell ssh'd into another
+    /// box that emits OSC 7) is DROPPED so it cannot poison cwd inheritance — the check iTerm2 /
+    /// Terminal.app / ghostty perform. See ``osc7Path(from:localHostnames:)``.
+    private let localHostnames: Set<String>
+
+    /// The default local identities: `localhost`, the empty authority, and this host machine's own
+    /// hostname (both the full form, e.g. `mac-studio.local`, and the leading label, `mac-studio`).
+    public static func defaultLocalHostnames() -> Set<String> {
+        var names: Set = ["", "localhost"]
+        let full = ProcessInfo.processInfo.hostName.lowercased()
+        if !full.isEmpty {
+            names.insert(full)
+            if let first = full.split(separator: ".").first { names.insert(String(first)) }
+        }
+        return names
+    }
 
     /// When the foreground command started (set on `133;C`, cleared on `133;D`); `nil` idle.
     private var runningSince: Date?
@@ -440,7 +463,7 @@ public final class HostOutputSniffer: @unchecked Sendable {
             // are silently dropped.
             let bodyBytes = oscBuffer[oscBuffer.index(after: sep)...]
             guard let body = String(bytes: bodyBytes, encoding: .utf8),
-                  let cwd = Self.osc7Path(from: body)
+                  let cwd = Self.osc7Path(from: body, localHostnames: localHostnames)
             else { return }
             messages.append(.cwd(cwd))
 
@@ -499,10 +522,19 @@ public final class HostOutputSniffer: @unchecked Sendable {
         }
     }
 
-    static func osc7Path(from body: String) -> String? {
+    static func osc7Path(from body: String, localHostnames: Set<String>) -> String? {
         guard body.hasPrefix("file://") else { return nil }
         let afterScheme = body.dropFirst("file://".count)
         guard let slash = afterScheme.firstIndex(of: "/") else { return nil }
+        // Honor the authority: a FOREIGN hostname (a shell ssh'd into another box) must not be treated
+        // as a local cwd — dropping it stops an ssh-inside-pane from poisoning cwd inheritance (the
+        // next split would `chdir` into a host-nonexistent / wrong path). Percent-decode + lowercase
+        // the authority; accept only a local identity (empty / localhost / this host's hostname).
+        let authority = String(afterScheme[afterScheme.startIndex..<slash])
+        let host = (authority.removingPercentEncoding ?? authority).lowercased()
+        // An empty authority (`file:///…`) and `localhost` are ALWAYS local (machine-independent); any
+        // other authority must match an injected local hostname or it is a foreign shell → drop.
+        guard host.isEmpty || host == "localhost" || localHostnames.contains(host) else { return nil }
         let encodedPath = String(afterScheme[slash...])
         guard !encodedPath.isEmpty,
               encodedPath.hasPrefix("/"),

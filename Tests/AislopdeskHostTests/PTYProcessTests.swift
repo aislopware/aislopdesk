@@ -89,6 +89,63 @@ final class PTYProcessTests: XCTestCase {
         XCTAssertTrue(output.contains(dir.path), "expected child cwd \(dir.path), got: \(output)")
     }
 
+    /// Bug 1: an inherited cwd that no longer exists (deleted project dir, foreign ssh path, `~`-style
+    /// preset dir) must NOT kill the freshly-spawned shell (`chdir`-fail `_exit 127` = dead pane). The
+    /// host validates the requested cwd and falls back to the user's HOME, so the pane comes up live.
+    func testResolveCwdFallsBackToHomeForInvalidRequest() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aislopdesk-home-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        // A nonexistent requested dir resolves to HOME.
+        XCTAssertEqual(
+            PTYProcess.resolveCwd("/nonexistent-aislopdesk-\(UUID().uuidString)", home: home.path),
+            home.path,
+        )
+        // A valid requested dir is used verbatim.
+        XCTAssertEqual(PTYProcess.resolveCwd(home.path, home: home.path), home.path)
+        // A tilde path is expanded against HOME.
+        XCTAssertEqual(PTYProcess.resolveCwd("~", home: home.path), home.path)
+        // A nil request stays nil (child inherits the daemon cwd — unchanged behaviour).
+        XCTAssertNil(PTYProcess.resolveCwd(nil, home: home.path))
+        // An invalid request with no usable HOME resolves to nil (no chdir, live shell — never a dead pane).
+        XCTAssertNil(PTYProcess.resolveCwd("/nonexistent-aislopdesk", home: nil))
+    }
+
+    /// End-to-end: spawning with a since-deleted cwd must land the shell in HOME and exit CLEANLY
+    /// (code 0), not `_exit(127)`. Revert-to-confirm-fail: the un-fixed child `_exit(127)`s so the
+    /// exit code is 127 and `pwd` never prints HOME.
+    func testPTYSpawnWithInvalidCwdFallsBackToHomeAndStaysLive() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aislopdesk-home-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        var env = curatedEnv()
+        env["HOME"] = home.path
+        let pty = PTYProcess()
+        try pty.spawn(
+            "/bin/sh",
+            arguments: ["-c", "pwd"],
+            environment: env,
+            cwd: "/nonexistent-aislopdesk-\(UUID().uuidString)",
+        )
+        let output = readUntil(fd: pty.masterFD, needle: home.lastPathComponent)
+        XCTAssertTrue(
+            output.contains(home.lastPathComponent),
+            "an invalid cwd must fall back to HOME (\(home.path)), got: \(output)",
+        )
+
+        let exp = expectation(description: "exit0")
+        Task {
+            let code = await pty.waitForExit()
+            XCTAssertEqual(code, 0, "an invalid cwd must not kill the shell (_exit 127)")
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 5)
+    }
+
     func testPTYInteractiveEcho() throws {
         let pty = PTYProcess()
         try pty.spawn("/bin/sh", environment: curatedEnv())

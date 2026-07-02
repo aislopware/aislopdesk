@@ -35,6 +35,13 @@ public enum ShellIntegration {
     /// Any other value (or absence) leaves the shim ENABLED.
     public static let optOutEnvKey = "AISLOPDESK_SHELL_INTEGRATION"
 
+    /// Env var that opts OUT of JUST the OSC-133 command marks (keeping the resize-reprint fix) when set
+    /// to `0` / `false` / `no` / `off`. Evaluated in the CHILD shell by the generated `.zshrc`
+    /// (`${AISLOPDESK_OSC133:-1}`), so it must be FORWARDED across the curated env allowlist
+    /// (``HostEnvironment/curated(parent:term:agentSocketPath:paneID:controlSocketPath:)``) for a
+    /// daemon-side setting to take effect.
+    public static let osc133EnvKey = "AISLOPDESK_OSC133"
+
     /// A private env var the shim's `.zshenv` reads to learn the user's *real* `ZDOTDIR`
     /// before we overrode it (defaults to `$HOME` inside the script when unset). Carrying it
     /// explicitly means the shim never has to guess what `ZDOTDIR` would have been.
@@ -141,6 +148,12 @@ public enum ShellIntegration {
             // at an empty per-session file. Restored to the shim below (reassert) for the NEXT file.
             "if [ \"$__aislopdesk_real\" = \"$HOME\" ]; then unset ZDOTDIR; else ZDOTDIR=\"$__aislopdesk_real\"; fi",
             "[ -f \"$__aislopdesk_real/\(fileName)\" ] && source \"$__aislopdesk_real/\(fileName)\"",
+            // Re-capture a ZDOTDIR the user's startup file just REASSIGNED (the XDG layout does exactly
+            // this in ~/.zshenv: `export ZDOTDIR=\"$HOME/.config/zsh\"`). Export the new value as the
+            // effective real dir so the NEXT shim file (and .zshrc's final restore) forward to the user's
+            // real config instead of the stale $HOME — otherwise their rc files never load.
+            "if [ \"${ZDOTDIR:-$HOME}\" != \"$__aislopdesk_real\" ]; then __aislopdesk_real=\"${ZDOTDIR:-$HOME}\"; "
+                + "export AISLOPDESK_REAL_ZDOTDIR=\"$__aislopdesk_real\"; fi",
         ]
         if reassertZDotDir {
             // Keep startup-file resolution pointed at the shim for the next file, regardless of
@@ -177,6 +190,10 @@ public enum ShellIntegration {
     # final block below re-restores ZDOTDIR to the real value for the running shell.
     if [ "$__aislopdesk_real" = "$HOME" ]; then unset ZDOTDIR; else ZDOTDIR="$__aislopdesk_real"; fi
     [ -f "$__aislopdesk_real/.zshrc" ] && source "$__aislopdesk_real/.zshrc"
+    # Re-capture a ZDOTDIR the user's real .zshrc just reassigned so the final restore below (and any
+    # later .zlogin) land on the user's real dir, not the stale one (mirrors the .zshenv re-capture).
+    if [ "${ZDOTDIR:-$HOME}" != "$__aislopdesk_real" ]; then __aislopdesk_real="${ZDOTDIR:-$HOME}"; \
+    export AISLOPDESK_REAL_ZDOTDIR="$__aislopdesk_real"; fi
 
     # Chain any pre-existing TRAPWINCH (e.g. powerlevel10k's) so the user's handler still runs,
     # then unconditionally redraw the prompt. `zle && zle reset-prompt` is a no-op when ZLE is not

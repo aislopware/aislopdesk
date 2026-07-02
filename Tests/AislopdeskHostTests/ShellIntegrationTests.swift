@@ -346,6 +346,39 @@ final class ShellIntegrationTests: XCTestCase {
         }
     }
 
+    /// Bug 5 (XDG layout): the common `~/.zshenv` that `export ZDOTDIR="$HOME/.config/zsh"` reassigns
+    /// the real dir. Each shim file that sources a user startup file must RE-CAPTURE a reassigned
+    /// `ZDOTDIR` back into `AISLOPDESK_REAL_ZDOTDIR` (exported, so the NEXT shim file sees it) — before it
+    /// re-asserts `ZDOTDIR` to the shim. Without this, `.zprofile`/`.zshrc`/`.zlogin` forward to the stale
+    /// `$HOME` and the user's real rc files under `~/.config/zsh` never load (bare default shell).
+    func testShimRecapturesReassignedRealZDotDir() throws {
+        let dir = try XCTUnwrap(ShellIntegration.writeShimDirectory(into: makeTempDir()))
+        for name in [".zshenv", ".zprofile", ".zlogin"] {
+            let body = try String(contentsOf: dir.appendingPathComponent(name), encoding: .utf8)
+            XCTAssertTrue(
+                body.contains("export AISLOPDESK_REAL_ZDOTDIR"),
+                "\(name) must re-export a reassigned real ZDOTDIR so later shim files forward to it",
+            )
+            // The re-capture must happen AFTER sourcing the user file (so it sees the reassignment) and
+            // BEFORE re-asserting ZDOTDIR to the shim (so it reads the user's value, not ours).
+            let sourceIdx = try XCTUnwrap(body.range(of: "source \"$__aislopdesk_real/\(name)\""))
+            let recaptureIdx = try XCTUnwrap(body.range(of: "export AISLOPDESK_REAL_ZDOTDIR"))
+            let reassertIdx = try XCTUnwrap(body.range(of: "ZDOTDIR=\"$__aislopdesk_shim\""))
+            XCTAssertTrue(sourceIdx.lowerBound < recaptureIdx.lowerBound, "\(name): re-capture must follow the source")
+            XCTAssertTrue(
+                recaptureIdx.lowerBound < reassertIdx.lowerBound,
+                "\(name): re-capture must precede the reassert",
+            )
+        }
+        // The .zshrc likewise re-captures a real-.zshrc reassignment so its final restore + .zlogin land
+        // on the user's real dir, not the stale one.
+        let zshrc = try String(contentsOf: dir.appendingPathComponent(".zshrc"), encoding: .utf8)
+        XCTAssertTrue(
+            zshrc.contains("export AISLOPDESK_REAL_ZDOTDIR"),
+            ".zshrc must re-capture a reassigned real ZDOTDIR",
+        )
+    }
+
     func testEachCallGeneratesAFreshShimDir() {
         let tmp = makeTempDir()
         let a = ShellIntegration.makeEnvironmentOverrides(

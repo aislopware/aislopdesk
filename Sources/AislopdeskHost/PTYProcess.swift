@@ -135,7 +135,11 @@ public final class PTYProcess: @unchecked Sendable {
         envp.append(nil)
 
         let pathDup = strdup(executable)
-        let cwdDup: UnsafeMutablePointer<CChar>? = cwd.flatMap { strdup($0) }
+        // Validate the requested cwd HOST-SIDE before fork: a stale/deleted/foreign/`~`-style path
+        // must not reach the child's `chdir` and abort it pre-`execve` (`_exit 127` = dead pane). An
+        // invalid request falls back to the user's HOME; an unusable HOME resolves to nil (no chdir).
+        let resolvedCwd = Self.resolveCwd(cwd, home: environment["HOME"])
+        let cwdDup: UnsafeMutablePointer<CChar>? = resolvedCwd.flatMap { strdup($0) }
 
         defer {
             for p in argv where p != nil { free(p) }
@@ -162,7 +166,10 @@ public final class PTYProcess: @unchecked Sendable {
             // dup2(slave → 0,1,2); close(slave) if >2. This is what makes the slave the
             // controlling terminal (so SIGWINCH / job control reach the shell).
             if login_tty(slave) != 0 { _exit(127) }
-            if let cwdDup, chdir(cwdDup) != 0 { _exit(127) }
+            // Best-effort chdir: `resolveCwd` already validated the dir in the parent, so this
+            // normally succeeds. A TOCTOU (dir deleted between validate and chdir) must NOT kill the
+            // pane — leave the child in the inherited cwd rather than `_exit 127` (dead pane).
+            if let cwdDup { _ = chdir(cwdDup) }
             // The child must never hold the master, or its EOF would never arrive on read.
             close(master)
             _ = execve(pathDup, argv, envp)
@@ -214,6 +221,41 @@ public final class PTYProcess: @unchecked Sendable {
             set(VMIN, 1)
             set(VTIME, 0)
         }
+    }
+
+    // MARK: resolveCwd
+
+    /// Resolves the initial working directory for a fresh shell, HOST-SIDE, before the fork.
+    ///
+    /// The child's `chdir` runs pre-`execve` with no Swift runtime, so it cannot validate or fall
+    /// back — a failed `chdir` there aborts the child (`_exit 127`) and the client gets a
+    /// dead-on-arrival pane. So we validate here instead: a `~`/`~/…` path is tilde-expanded against
+    /// `home`; the resolved path is accepted only when it is an existing, SEARCHABLE directory;
+    /// otherwise we fall back to `home` (when it is itself a usable dir), else `nil` (no chdir — the
+    /// child inherits the daemon cwd, still a LIVE shell). `nil` requested ⇒ `nil` (unchanged).
+    ///
+    /// Pure + injectable (`fileManager`) so it is unit-tested without a spawn.
+    static func resolveCwd(_ requested: String?, home: String?, fileManager: FileManager = .default) -> String? {
+        func usableDir(_ path: String) -> Bool {
+            var isDir: ObjCBool = false
+            guard fileManager.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { return false }
+            // Searchable (execute bit) — a non-searchable dir would fail chdir too.
+            return access(path, X_OK) == 0
+        }
+        func expandTilde(_ path: String) -> String? {
+            guard path.hasPrefix("~") else { return path }
+            guard let home, !home.isEmpty else { return nil } // no HOME to expand against
+            if path == "~" { return home }
+            if path.hasPrefix("~/") { return home + String(path.dropFirst(1)) }
+            // `~user` form — we cannot resolve another user's home here; reject (fall back to HOME).
+            return nil
+        }
+        // Fallback candidate: the user's HOME, only when it is a usable dir.
+        let homeFallback: String? = home.flatMap { !$0.isEmpty && usableDir($0) ? $0 : nil }
+
+        guard let requested, !requested.isEmpty else { return nil }
+        guard let expanded = expandTilde(requested), usableDir(expanded) else { return homeFallback }
+        return expanded
     }
 
     // MARK: setBlocking

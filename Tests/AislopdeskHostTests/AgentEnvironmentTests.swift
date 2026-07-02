@@ -91,6 +91,21 @@ final class AgentEnvironmentTests: XCTestCase {
         XCTAssertEqual(env["AISLOPDESK_PANE_ID"], "conn:7")
     }
 
+    /// The documented daemon-side OSC-133 marks opt-out (`AISLOPDESK_OSC133=0`) must be forwarded
+    /// into the curated child env — the shim's `.zshrc` reads `${AISLOPDESK_OSC133:-1}` in the CHILD,
+    /// so the curated allowlist must carry the flag or the opt-out is dead code.
+    func testCuratedForwardsOSC133OptOut() {
+        let env = HostEnvironment.curated(parent: ["AISLOPDESK_OSC133": "0", "HOME": "/Users/x"])
+        XCTAssertEqual(env["AISLOPDESK_OSC133"], "0", "the daemon-side OSC133 opt-out must reach the child shell")
+    }
+
+    /// When the operator did NOT set the flag, curated must not synthesize it — the shim's default-on
+    /// branch (`${AISLOPDESK_OSC133:-1}` → marks ON) must be preserved.
+    func testCuratedOmitsOSC133WhenUnset() {
+        let env = HostEnvironment.curated(parent: ["HOME": "/Users/x"])
+        XCTAssertNil(env["AISLOPDESK_OSC133"], "an unset OSC133 must not be materialized (keep the shim default)")
+    }
+
     func testPaneIDIsTheCompositeKey() {
         let conn = UUID()
         let id = HostServer.paneID(connectionID: conn, channelID: 4)

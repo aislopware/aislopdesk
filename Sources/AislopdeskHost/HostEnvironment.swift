@@ -96,6 +96,12 @@ public enum HostEnvironment {
         // before the login profile augments it. (Not forwarded blindly from parent.)
         env["PATH"] = parent["PATH"] ?? "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+        // Forward the OSC-133 marks opt-out to the child: the shim's `.zshrc` reads
+        // `${AISLOPDESK_OSC133:-1}` in the CHILD, so a daemon-side `AISLOPDESK_OSC133=0` (the documented
+        // marks-only opt-out) only takes effect if it is carried across this allowlist. Forwarded ONLY
+        // when the operator set it — absent leaves the shim's default-on branch unchanged.
+        if let osc133 = parent[ShellIntegration.osc133EnvKey] { env[ShellIntegration.osc133EnvKey] = osc133 }
+
         // W10: export the agent-hook socket path + pane id into the PTY env (Muxy's
         // MUXY_SOCKET_PATH / MUXY_PANE_ID analog) when the host has the opt-in hook listener
         // enabled. The installed hook script (``AgentInstaller/hookScript()``) reads these to
