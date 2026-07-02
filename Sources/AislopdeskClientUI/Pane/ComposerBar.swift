@@ -64,6 +64,13 @@ enum ComposerKeyResolver {
     /// it drops the marked text (Telex / Pinyin / Kotoeri) instead of tearing down the whole Composer. Pure so
     /// the decision is testable without a live text view / input context.
     static func escapeCancels(hasMarkedText: Bool) -> Bool { !hasMarkedText }
+
+    /// Whether a Return press must be deferred to the input context instead of being resolved into a
+    /// Composer action. Mirrors ``escapeCancels(hasMarkedText:)``: while an IME composition is in flight
+    /// (`hasMarkedText()`), Return's job is to COMMIT the composition (Telex/Pinyin/Kotoeri), never to
+    /// enqueue/send/newline the still-marked, uncommitted text. Pure so the decision is testable without a
+    /// live text view / input context.
+    static func returnDefersToIME(hasMarkedText: Bool) -> Bool { hasMarkedText }
 }
 
 // MARK: - Per-leaf chrome (the wired-callback target)
@@ -96,34 +103,52 @@ enum ComposerPasteboard {
     static func richMarkdown() -> String? {
         #if os(macOS)
         let pb = NSPasteboard.general
+        let plain = pb.string(forType: .string)
         if let html = pb.string(forType: .html), !html.isEmpty {
-            return RichPasteMarkdown.markdown(fromHTML: html)
+            return preferringCodeFidelity(plain: plain, converted: RichPasteMarkdown.markdown(fromHTML: html))
         }
         if let html = htmlFromRTF(pb.data(forType: .rtf)) {
-            return RichPasteMarkdown.markdown(fromHTML: html)
+            return preferringCodeFidelity(plain: plain, converted: RichPasteMarkdown.markdown(fromHTML: html))
         }
         if pb.data(forType: .png) != nil || pb.data(forType: .tiff) != nil {
             return imageMarkdownPlaceholder
         }
-        return pb.string(forType: .string)
+        return plain
         #elseif os(iOS)
         let pb = UIPasteboard.general
+        let plain = pb.string
         if let data = pb.data(forPasteboardType: "public.html"),
            let html = String(data: data, encoding: .utf8), !html.isEmpty
         {
-            return RichPasteMarkdown.markdown(fromHTML: html)
+            return preferringCodeFidelity(plain: plain, converted: RichPasteMarkdown.markdown(fromHTML: html))
         }
         if let html = htmlFromRTF(pb.data(forPasteboardType: "public.rtf")) {
-            return RichPasteMarkdown.markdown(fromHTML: html)
+            return preferringCodeFidelity(plain: plain, converted: RichPasteMarkdown.markdown(fromHTML: html))
         }
         if pb.hasImages {
             return imageMarkdownPlaceholder
         }
-        return pb.string
+        return plain
         #else
         return nil
         #endif
     }
+
+    #if os(macOS) || os(iOS)
+    /// `⌘V` code-fidelity guard: the HTML→Markdown converter strips leading indentation outside `<pre>`,
+    /// mangling code copied from editors (VS Code / Xcode / browsers / Slack) that ship a styled-`<div>`
+    /// HTML flavour. When the plain text carries indentation the conversion LOST, prefer the plain text so
+    /// code pastes verbatim; otherwise keep the rich Markdown (headings/links/lists for prose). See
+    /// ``AislopdeskClaudeCode/RichPasteMarkdown/shouldPreferPlainText(plain:converted:)``.
+    private static func preferringCodeFidelity(plain: String?, converted: String) -> String {
+        if let plain, !plain.isEmpty,
+           RichPasteMarkdown.shouldPreferPlainText(plain: plain, converted: converted)
+        {
+            return plain
+        }
+        return converted
+    }
+    #endif
 
     /// `⇧⌘V` — the plain-text flavour, inserted verbatim (no conversion).
     static func plainText() -> String? {

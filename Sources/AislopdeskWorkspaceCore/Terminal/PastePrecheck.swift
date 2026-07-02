@@ -32,11 +32,13 @@ public enum PastePrecheckDecision: Equatable, Sendable {
 /// is the thin actuator that reads the pasteboard, calls ``decide(clipboard:protectionOn:isAlternateScreen:)``,
 /// and either pastes directly or shows the sheet.
 ///
-/// It deliberately mirrors the embedder's existing `confirm_read_clipboard_cb` choices for the two
-/// program-state booleans `PasteSafetyAnalyzer.shouldWarn` also takes: `bracketedSafe` and
-/// `programAdvertisedBracketed` are both treated as `false` here, because the pinned libghostty fork
-/// exposes no accessor for whether the foreground program advertised bracketed paste — so we conservatively
-/// never apply the bracketed-safe skip at this layer (favouring an extra warning over a missed danger).
+/// It supplies the two program-state booleans `PasteSafetyAnalyzer.shouldWarn` also takes from the LIVE
+/// terminal/settings state: `bracketedSafe` is the "Paste Bracketed Safe" setting, and
+/// `programAdvertisedBracketed` is the real DECSET `?2004h` state parsed by the client `TerminalModeTracker`.
+/// When both hold, the foreground program frames the paste as an inert bracketed block, so the sheet is
+/// skipped — matching libghostty's own `clipboard-paste-bracketed-safe` gate this pre-check preempts. They
+/// default to `false` so a caller that cannot resolve the live state stays conservative (favouring an extra
+/// warning over a missed danger).
 public enum PastePrecheck {
     /// Decide what an embedder paste should do for `clipboard`.
     ///
@@ -47,18 +49,24 @@ public enum PastePrecheck {
     ///   - isAlternateScreen: whether a full-screen / foreground program owns the screen (the GUI derives
     ///     this from the OSC-133 shell-activity the host streams). A full-screen TUI receives the paste
     ///     inertly, so the sheet is skipped — matching ``PasteSafetyAnalyzer/shouldWarn(text:protectionOn:bracketedSafe:programAdvertisedBracketed:isAlternateScreen:)``.
+    ///   - bracketedSafe: the live "Paste Bracketed Safe" setting
+    ///     (``SettingsKey/pasteBracketedSafeEnabled``, default ON).
+    ///   - programAdvertisedBracketed: whether the foreground program has bracketed-paste mode
+    ///     (DECSET `?2004h`) enabled, from the client ``TerminalModeTracker``.
     /// - Returns: ``PastePrecheckDecision/pasteDirect`` to paste without a dialog, or
     ///   ``PastePrecheckDecision/confirm(_:)`` carrying the flagged dangers to render in the sheet.
     public static func decide(
         clipboard: String,
         protectionOn: Bool,
         isAlternateScreen: Bool,
+        bracketedSafe: Bool = false,
+        programAdvertisedBracketed: Bool = false,
     ) -> PastePrecheckDecision {
         let warn = PasteSafetyAnalyzer.shouldWarn(
             text: clipboard,
             protectionOn: protectionOn,
-            bracketedSafe: false,
-            programAdvertisedBracketed: false,
+            bracketedSafe: bracketedSafe,
+            programAdvertisedBracketed: programAdvertisedBracketed,
             isAlternateScreen: isAlternateScreen,
         )
         guard warn else { return .pasteDirect }

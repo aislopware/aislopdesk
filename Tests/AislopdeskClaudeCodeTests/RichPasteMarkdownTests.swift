@@ -189,4 +189,36 @@ final class RichPasteMarkdownTests: XCTestCase {
             "the context-menu paste path converts clipboard HTML to Markdown, not plain text",
         )
     }
+
+    // MARK: - Code-fidelity guard (Bug 4): `⌘V` prefers plain text when conversion drops indentation
+
+    /// VS Code / Xcode / browser code copy ships a styled `<div>`/`<span>` HTML flavour (never `<pre>`), and
+    /// the converter collapses nbsp indent runs + strips leading spaces — so the converted Markdown loses
+    /// every line's indentation. When the plain text carries that indentation, prefer it.
+    func testPrefersPlainTextWhenConversionDropsIndentation() {
+        let plain = "def f():\n    if x:\n        return 1\n"
+        // The HTML flavour VS Code emits: styled divs + nbsp indentation, no <pre>.
+        let html = "<div>def f():</div>" +
+            "<div>&nbsp;&nbsp;&nbsp;&nbsp;if x:</div>" +
+            "<div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;return 1</div>"
+        let converted = md(html)
+        // Precondition (not tautological): the conversion really did destroy the indentation.
+        XCTAssertFalse(converted.contains("    if x:"), "guard precondition: conversion should drop indent")
+        XCTAssertTrue(RichPasteMarkdown.shouldPreferPlainText(plain: plain, converted: converted))
+    }
+
+    /// Prose with no per-line indentation → keep the rich conversion (headings/links/lists must survive).
+    func testKeepsRichConversionForUnindentedProse() {
+        let plain = "Plan\nRefactor the composer (spec)."
+        let converted = "## Plan\n\nRefactor the **composer** ([spec](https://example.com/spec))."
+        XCTAssertFalse(RichPasteMarkdown.shouldPreferPlainText(plain: plain, converted: converted))
+    }
+
+    /// A real `<pre>` block keeps indentation in the fenced output, so the converted Markdown ALSO has
+    /// leading whitespace → do not discard the rich conversion.
+    func testKeepsRichConversionWhenConvertedPreservesIndent() {
+        let plain = "def f():\n    return 1\n"
+        let converted = "```\ndef f():\n    return 1\n```"
+        XCTAssertFalse(RichPasteMarkdown.shouldPreferPlainText(plain: plain, converted: converted))
+    }
 }

@@ -105,6 +105,51 @@ final class PastePrecheckTests: XCTestCase {
         )
     }
 
+    // MARK: - Bracketed-safe skip (the "Paste Bracketed Safe" setting on a program advertising DEC ?2004h)
+
+    /// The headline Bug-1 fix: with "Paste Bracketed Safe" ON and the foreground program advertising
+    /// bracketed paste (DECSET `?2004h`), even a multi-line / trailing-newline paste lands inertly framed →
+    /// paste direct, NO sheet. Before the fix these flags were hardcoded `false`, so this nagged on every
+    /// multi-line paste into a bracketed-paste shell.
+    func testBracketedSafeAndProgramAdvertisedPastesDirect() {
+        XCTAssertEqual(
+            PastePrecheck.decide(
+                clipboard: "echo one\necho two\n",
+                protectionOn: true,
+                isAlternateScreen: false,
+                bracketedSafe: true,
+                programAdvertisedBracketed: true,
+            ),
+            .pasteDirect,
+        )
+    }
+
+    /// The skip requires BOTH: with the setting on but the program NOT advertising bracketed paste, the
+    /// multi-line paste still confirms (a raw shell that never sent `?2004h` executes each line).
+    func testBracketedSafeButProgramNotAdvertisingConfirms() {
+        let decision = PastePrecheck.decide(
+            clipboard: "echo one\necho two\n",
+            protectionOn: true,
+            isAlternateScreen: false,
+            bracketedSafe: true,
+            programAdvertisedBracketed: false,
+        )
+        XCTAssertTrue(confirmedDangers(decision).contains(.multiLine))
+    }
+
+    /// Symmetrically: program advertises bracketed paste but the user turned "Paste Bracketed Safe" OFF →
+    /// the multi-line paste still confirms.
+    func testProgramAdvertisedButSettingOffConfirms() {
+        let decision = PastePrecheck.decide(
+            clipboard: "echo one\necho two\n",
+            protectionOn: true,
+            isAlternateScreen: false,
+            bracketedSafe: false,
+            programAdvertisedBracketed: true,
+        )
+        XCTAssertTrue(confirmedDangers(decision).contains(.multiLine))
+    }
+
     /// Empty clipboard → nothing to warn about → paste direct (a no-op paste downstream).
     func testEmptyClipboardPastesDirect() {
         XCTAssertEqual(

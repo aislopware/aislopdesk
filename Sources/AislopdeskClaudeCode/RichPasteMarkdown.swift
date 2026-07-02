@@ -36,6 +36,47 @@ public enum RichPasteMarkdown {
         return emitter.finish()
     }
 
+    /// Whether the Composer's `⌘V` should DISCARD the HTML→Markdown conversion in favour of the plain-text
+    /// flavour to preserve code fidelity.
+    ///
+    /// ## Why (the code-mangling bug — E12)
+    /// Editors that copy code (VS Code with `copyWithSyntaxHighlighting`, Xcode RTF, browsers, Slack) put a
+    /// styled `<div>`/`<span>` HTML flavour beside the plain text — they almost never use `<pre>`. This
+    /// converter preserves whitespace only INSIDE a literal `<pre>` (elsewhere it collapses nbsp indent runs
+    /// and strips leading spaces after a newline), so the HTML branch silently destroys every line's leading
+    /// indentation — pasting syntactically broken code into the agent prompt.
+    ///
+    /// The fix: when the plain text carries significant leading indentation that the converted Markdown has
+    /// LOST, the plain text is the faithful representation, so `⌘V` prefers it. Prose (no per-line indent) is
+    /// unaffected — the predicate is false — so rich conversion (headings, links, lists) still applies; a
+    /// real `<pre>` block keeps its indentation in the fenced output, so that too keeps the rich conversion.
+    public static func shouldPreferPlainText(plain: String, converted: String) -> Bool {
+        hasSignificantLeadingWhitespace(plain) && !hasSignificantLeadingWhitespace(converted)
+    }
+
+    /// TRUE when any line begins with one or more spaces/tabs followed by a non-whitespace character —
+    /// i.e. real indentation (not a blank line). Newlines are treated uniformly (`\n`, `\r`, `\r\n`).
+    private static func hasSignificantLeadingWhitespace(_ text: String) -> Bool {
+        var atLineStart = true
+        var sawLeadingSpace = false
+        for scalar in text.unicodeScalars {
+            switch scalar {
+            case "\n",
+                 "\r":
+                atLineStart = true
+                sawLeadingSpace = false
+            case " ",
+                 "\t":
+                if atLineStart { sawLeadingSpace = true }
+            default:
+                if atLineStart, sawLeadingSpace { return true }
+                atLineStart = false
+                sawLeadingSpace = false
+            }
+        }
+        return false
+    }
+
     // MARK: - Tokenizer
 
     /// One lexed HTML token. Attributes are kept only for the converter's needs (`href`,

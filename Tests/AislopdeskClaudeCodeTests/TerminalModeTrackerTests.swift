@@ -63,6 +63,41 @@ final class TerminalModeTrackerTests: XCTestCase {
         XCTAssertEqual(t.mode, .altScreen)
     }
 
+    // MARK: Bracketed paste (DECSET/DECRST 2004)
+
+    /// `ESC[?2004h` enables bracketed-paste mode; `ESC[?2004l` disables it. It is a passive flag (no event)
+    /// and independent of the alt-screen mode.
+    func testBracketedPasteEnableDisable() {
+        let t = TerminalModeTracker()
+        XCTAssertFalse(t.bracketedPasteActive)
+
+        // Enabling bracketed paste emits NO mode event and leaves `.mode` alone.
+        XCTAssertEqual(t.consume(Array("\(ESC)[?2004h".utf8)), [])
+        XCTAssertTrue(t.bracketedPasteActive)
+        XCTAssertEqual(t.mode, .shellPrompt)
+
+        XCTAssertEqual(t.consume(Array("\(ESC)[?2004l".utf8)), [])
+        XCTAssertFalse(t.bracketedPasteActive)
+    }
+
+    /// A single CSI can carry both alt-screen and bracketed params (`?1049;2004h`): the alt-screen event
+    /// still fires exactly once AND the bracketed flag flips.
+    func testBracketedPasteWithAltScreenInOneCSI() {
+        let t = TerminalModeTracker()
+        XCTAssertEqual(t.consume(Array("\(ESC)[?1049;2004h".utf8)), [.enteredAltScreen])
+        XCTAssertEqual(t.mode, .altScreen)
+        XCTAssertTrue(t.bracketedPasteActive)
+    }
+
+    /// `reset()` (session boundary) clears the bracketed flag — a fresh shell re-advertises it.
+    func testBracketedPasteClearedOnReset() {
+        let t = TerminalModeTracker()
+        t.consume(Array("\(ESC)[?2004h".utf8))
+        XCTAssertTrue(t.bracketedPasteActive)
+        t.reset()
+        XCTAssertFalse(t.bracketedPasteActive)
+    }
+
     // MARK: OSC 133
 
     func testOSC133PromptCycleWithExitCode() {

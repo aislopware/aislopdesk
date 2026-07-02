@@ -40,6 +40,13 @@ public final class TerminalModeTracker {
     /// The current terminal mode.
     public private(set) var mode: TerminalMode = .shellPrompt
 
+    /// TRUE while the foreground program has bracketed-paste mode (DECSET `?2004h`) enabled — set on
+    /// `ESC[?2004h`, cleared on `ESC[?2004l`. Independent of ``mode`` (a shell prompt enables it; a TUI
+    /// may too). It emits NO event (unlike alt-screen) so the frozen differential oracle stays byte-exact;
+    /// it is a passive flag the E8 paste-protection pre-check reads to skip the sheet when the program
+    /// frames the paste as an inert bracketed block (matching libghostty's own `clipboard-paste-bracketed-safe`).
+    public private(set) var bracketedPasteActive = false
+
     public init() {}
 
     // MARK: Parser state
@@ -104,6 +111,7 @@ public final class TerminalModeTracker {
     public func reset() {
         state = .ground
         mode = .shellPrompt
+        bracketedPasteActive = false
         csiBuffer.removeAll(keepingCapacity: false)
         oscBuffer.removeAll(keepingCapacity: false)
     }
@@ -299,6 +307,10 @@ public final class TerminalModeTracker {
             .compactMap { Int($0) }
 
         let isSet = (final == 0x68) // 'h'
+        // DECSET/DECRST 2004 — bracketed-paste mode. Passive flag only (no event), so the frozen
+        // differential oracle (`LegacyTerminalModeTracker`, which compares events + `.mode`) stays exact.
+        // Handled independently of alt-screen: a single CSI can carry both (e.g. `?1049;2004h`).
+        if params.contains(2004) { bracketedPasteActive = isSet }
         for param in params where param == 1049 || param == 47 || param == 1047 {
             if isSet {
                 if mode != .altScreen {
