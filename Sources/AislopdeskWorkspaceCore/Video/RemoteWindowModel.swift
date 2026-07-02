@@ -131,6 +131,10 @@ public final class RemoteWindowModel {
 
     /// The in-flight paste (cancelled if a new one starts or the pane tears down).
     private var pasteTask: Task<Void, Never>?
+    /// The in-flight post-pick binding revalidation (see ``pickAndOpen(_:)``) — cancelled if the user
+    /// re-picks or the pane closes, so a stale query can't unbind a freshly re-picked window. Readable so a
+    /// test can `await` its completion deterministically (the setter stays private).
+    @ObservationIgnored private(set) var revalidationTask: Task<Void, Never>?
     /// Per-character pacing — slow enough that a secure field's focus/IME keeps up, fast enough to
     /// feel instant for a password. Injectable for deterministic tests (`.zero`).
     private let pasteInterval: Duration
@@ -312,6 +316,26 @@ public final class RemoteWindowModel {
         ))
     }
 
+    /// The user picked `window` from the live picker list and wants it live. Opens optimistically (so the
+    /// surface mounts instantly on the common case), THEN revalidates the binding against a FRESH host query.
+    ///
+    /// WHY not a bare `pick`+`open`: the picker list is fetched on appear and only refreshed manually, so a
+    /// window can close on the host between the fetch and the tap. The host then rejects the dead CGWindowID
+    /// SILENTLY (`helloAck(accepted:false)` → zero client effects, or the mux drops the hello outright) — the
+    /// pane streams a permanent black surface with NO error and no way back. Revalidation re-queries the live
+    /// list and, if the window is gone, closes back to the picker with a ``loadError`` (the re-pick affordance);
+    /// if the id was merely recycled it re-binds the same app+title. A live window is `.kept` (one extra query,
+    /// no visible change). Mirrors the restored-binding self-heal (``LivePaneSession`` runs it once on restore).
+    public func pickAndOpen(_ window: RemoteWindowSummary) {
+        pick(window)
+        open()
+        revalidationTask?.cancel()
+        revalidationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await revalidateBinding()
+        }
+    }
+
     // MARK: Stale-binding revalidation (PANE REBIND, 2026-06-12)
 
     /// What ``revalidateBinding()`` decided (observability/tests).
@@ -405,6 +429,10 @@ public final class RemoteWindowModel {
     public func close() {
         active = nil
         pasteTask?.cancel() // a torn-down pane must not keep injecting a paste-in-flight into the host
+        // Cancel any in-flight post-pick revalidation. Safe against self-cancel from the `.rebound` path
+        // (which calls close() then re-open()s synchronously — cooperative cancellation has no checkpoint
+        // between them, so the rebind still completes); a genuine teardown stops a stale query re-opening.
+        revalidationTask?.cancel()
         endAwaitingReflow() // a closed window will not re-capture — never leave the scrim hung
     }
 }

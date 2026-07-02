@@ -322,6 +322,52 @@ final class RemoteWindowModelTests: XCTestCase {
         XCTAssertNotNil(m.loadError, "the form explains why the pane fell back")
     }
 
+    // MARK: pickAndOpen — a fresh user pick revalidates against a stale list (2026-07-02 fix)
+
+    // A live window the user picks stays live (the common case: the picked id is still open).
+    func testPickAndOpenKeepsLiveWindow() async {
+        let rows = [RemoteWindowSummary(windowID: 58, appName: "Code", title: "main.swift", width: 100, height: 50)]
+        RemoteWindowDiscovery.shared = { _, _, _ in rows }
+        let m = RemoteWindowModel(target: { self.target })
+        m.pickAndOpen(rows[0])
+        XCTAssertEqual(m.active?.windowID, 58, "opens optimistically")
+        await m.revalidationTask?.value
+        XCTAssertEqual(m.active?.windowID, 58, "a still-open window stays live after revalidation")
+        XCTAssertNil(m.loadError)
+    }
+
+    // THE BUG: the picker list went stale — the window the user taps closed on the host after the fetch. A
+    // bare pick+open would stream a permanent black pane; pickAndOpen revalidates and falls back to the picker
+    // with an error (the re-pick affordance). Here the tapped id (58) is absent from the FRESH query.
+    func testPickAndOpenUnbindsAndSurfacesErrorForStalePick() async {
+        // The user's list still shows id 58, but by tap time the host only has a different app's window.
+        let stale = RemoteWindowSummary(windowID: 58, appName: "Preview", title: "Doc.pdf", width: 100, height: 50)
+        RemoteWindowDiscovery.shared = { _, _, _ in
+            [RemoteWindowSummary(windowID: 9, appName: "Safari", title: "Apple", width: 100, height: 50)]
+        }
+        let m = RemoteWindowModel(target: { self.target })
+        m.pickAndOpen(stale)
+        XCTAssertEqual(m.active?.windowID, 58, "opens optimistically before the query lands")
+        await m.revalidationTask?.value
+        XCTAssertNil(m.active, "the picked window is gone on the host — fall back to the picker, no black pane")
+        XCTAssertNotNil(m.loadError, "the picker explains why the pick fell back (re-pick affordance)")
+    }
+
+    // A recycled id (same app, new CGWindowID) re-binds instead of unbinding — the pick still lands live.
+    func testPickAndOpenRebindsRecycledID() async {
+        let stale = RemoteWindowSummary(
+            windowID: 58, appName: "Code", title: "main.swift — proj", width: 100, height: 50,
+        )
+        RemoteWindowDiscovery.shared = { _, _, _ in
+            [RemoteWindowSummary(windowID: 77, appName: "Code", title: "main.swift — proj", width: 100, height: 50)]
+        }
+        let m = RemoteWindowModel(target: { self.target })
+        m.pickAndOpen(stale)
+        await m.revalidationTask?.value
+        XCTAssertEqual(m.active?.windowID, 77, "re-bound to the same app's live window")
+        XCTAssertNil(m.loadError)
+    }
+
     func testRevalidateSkipsOnUnreachableHostOrNoSeam() async {
         // Empty list (host unreachable / discovery timeout): NOT evidence of staleness.
         RemoteWindowDiscovery.shared = { _, _, _ in [] }

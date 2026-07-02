@@ -151,8 +151,10 @@ struct RemoteWindowPickerView: View {
     private func windowRow(_ window: RemoteWindowSummary) -> some View {
         Button {
             onActivate()
-            model.pick(window)
-            model.open()
+            // pickAndOpen (not bare pick+open): opens optimistically, then revalidates against a fresh host
+            // query so a window that closed between the list fetch and this tap falls back to the picker with
+            // an error instead of streaming a permanent black surface (host rejects a dead id silently).
+            model.pickAndOpen(window)
         } label: {
             HStack(spacing: Slate.Metric.space2) {
                 Image(systemSymbol: .macwindow)

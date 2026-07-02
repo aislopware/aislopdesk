@@ -294,13 +294,32 @@ final class MetalLayerBackedView: NSView {
     /// pointer never moved.
     var isActive: Bool = true {
         didSet {
+            guard isActive != oldValue else { applyLocalCursor()
+                return
+            }
             applyLocalCursor()
-            // REFOCUS SHAPE RESYNC: when this pane REGAINS focus with the pointer already inside (e.g.
-            // the user clicked away to a terminal pane then tabbed/clicked back), the host cursor is
-            // frozen at its last-forwarded spot — hover moves aren't forwarded while inactive — so the
-            // remote SHAPE is stale (an I-beam sitting over a resize edge) until the user jiggles the
-            // mouse. Warp the host cursor to the LIVE pointer now so the correct shape ships next tick.
-            if isActive, !oldValue { resyncPointerToHost() }
+            if isActive {
+                // FOCUS CLAIM (BUG-1): this pane became the workspace-focused pane WITHOUT a click inside the
+                // surface (a tab switch / pane-focus keybinding). Under keep-all-mounted (db86a5b) the view is
+                // never remounted, so `viewDidMoveToWindow`'s mount-time claim can't re-fire — claim the
+                // keyboard here so typing reaches the remote window instead of the previously focused
+                // (possibly hidden) terminal. Mirrors the terminal pane's `isFocusedPane` false→true path.
+                claimKeyboardFocus()
+                // MODIFIER RESYNC (BUG-2): a modifier genuinely still held at refocus must be re-established
+                // (its down `flagsChanged` was delivered to the OLD responder), else a chord starts a key short.
+                resyncModifiersFromCurrentFlags()
+                // REFOCUS SHAPE RESYNC: when this pane REGAINS focus with the pointer already inside (e.g.
+                // the user clicked away to a terminal pane then tabbed/clicked back), the host cursor is
+                // frozen at its last-forwarded spot — hover moves aren't forwarded while inactive — so the
+                // remote SHAPE is stale (an I-beam sitting over a resize edge) until the user jiggles the
+                // mouse. Warp the host cursor to the LIVE pointer now so the correct shape ships next tick.
+                resyncPointerToHost()
+            } else {
+                // MODIFIER UNLATCH (BUG-2): a modifier forwarded as down whose release we will no longer see
+                // (focus moved to another pane) would stay latched in the host's shared hidSystemState event
+                // source, so a later plain scroll rides ⌘ (the remote page zooms). Release them now.
+                releaseLatchedModifiers()
+            }
         }
     }
 
@@ -318,6 +337,16 @@ final class MetalLayerBackedView: NSView {
     //    `.fit` letterbox margin / host-hidden-cursor / a background pane we keep the plain arrow.
     //    `pointerInside` gates the work to when the pointer is actually over this view.
     private var pointerInside = false
+    /// MODIFIER LATCH (BUG-2): which modifier keyCodes this view has forwarded to the host as "down" but not
+    /// yet released. On focus loss (pane blur / FR resign / window-resign-key on ⌘-Tab away) we synthesize the
+    /// missing key-ups so the host's shared hidSystemState source does not keep the modifier latched (which
+    /// would make a later plain scroll a ⌘-scroll = zoom). Pure logic lives in ``ModifierLatchTracker``.
+    private var modifierLatch = ModifierLatchTracker()
+    /// Observer token for the current window's ``NSWindow/didResignKeyNotification`` — releases any latched
+    /// modifiers when the window loses key (⌘-Tab away / clicking another app) while a modifier is held, since
+    /// that path delivers NO release `flagsChanged` and does NOT call `resignFirstResponder` (the view stays
+    /// first responder). Re-scoped to the live window on every `viewDidMoveToWindow` (mirrors the terminal pane).
+    private var windowResignKeyObserver: NSObjectProtocol?
     /// Make this pane the active pane — called at the top of `mouseDown` (click-to-activate). Sets the
     /// *workspace* focus; the host window is raised separately via `pipeline.focusWindow()`.
     var onActivate: () -> Void = {}
@@ -578,6 +607,54 @@ final class MetalLayerBackedView: NSView {
         forwardPointer(atWindowLocation: window.mouseLocationOutsideOfEventStream)
     }
 
+    /// FOCUS CLAIM (BUG-1): make this view first responder so the keyboard follows workspace focus. Deferred
+    /// off the SwiftUI update/commit pass (a synchronous `makeFirstResponder` rebuilds the AppKit responder
+    /// chain and stalls the main thread inside `updateNSView` on a tab/pane switch) and guarded so a pane that
+    /// lost focus again before the hop, or is already first responder, is a no-op. Mirrors the terminal pane.
+    private func claimKeyboardFocus() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, isActive, let window, window.firstResponder !== self else { return }
+            window.makeFirstResponder(self)
+        }
+    }
+
+    /// MODIFIER UNLATCH (BUG-2): synthesize a host key-up for every modifier this view forwarded as down but
+    /// whose release `flagsChanged` it will not see (focus moved away), clearing the host's latched flag so a
+    /// subsequent scroll / mouse-move (which carry no explicit flags) is not treated as modifier-held. Idempotent
+    /// — a no-op when nothing is latched. Uses an empty modifier mask so the emitted key-up itself clears cleanly.
+    private func releaseLatchedModifiers() {
+        for keyCode in modifierLatch.drainForRelease() {
+            pipeline.key(keyCode: keyCode, down: false, modifiers: [])
+        }
+    }
+
+    /// MODIFIER RESYNC (BUG-2): on regaining focus, re-establish any modifier that is STILL physically held —
+    /// its down `flagsChanged` went to the previously focused responder, so without this the host would not
+    /// know the modifier is down (a chord would start a key short). Reads the live global flags (there is no
+    /// event on a keyboard/tab refocus). Gated exactly like the other relays (`isActive && inputEnabled`).
+    private func resyncModifiersFromCurrentFlags() {
+        guard isActive, inputEnabled else { return }
+        let flags = NSEvent.modifierFlags
+        for keyCode in Self.heldModifierKeyCodes(flags) where !modifierLatch.isDown(keyCode) {
+            modifierLatch.note(keyCode: keyCode, down: true)
+            pipeline.key(keyCode: keyCode, down: true, modifiers: Self.modifiers(flags))
+        }
+    }
+
+    /// A representative modifier keyCode (left variant) for each modifier currently present in `flags` — used
+    /// by ``resyncModifiersFromCurrentFlags`` to re-forward a still-held modifier on refocus. The left keyCode
+    /// is arbitrary but consistent: the host only cares about the resulting latched flag, not left-vs-right.
+    static func heldModifierKeyCodes(_ flags: NSEvent.ModifierFlags) -> [UInt16] {
+        var codes: [UInt16] = []
+        if flags.contains(.command) { codes.append(55) }
+        if flags.contains(.shift) { codes.append(56) }
+        if flags.contains(.control) { codes.append(59) }
+        if flags.contains(.option) { codes.append(58) }
+        if flags.contains(.capsLock) { codes.append(57) }
+        if flags.contains(.function) { codes.append(63) }
+        return codes
+    }
+
     override func layout() {
         super.layout()
         layer?.masksToBounds = true // clip the oversized video sublayer to the pane
@@ -677,7 +754,14 @@ final class MetalLayerBackedView: NSView {
     /// least one axis). Gates edge-pan.
     private var isNavigable: Bool {
         guard let win = streamPoints else { return false }
-        return win.width > Double(bounds.width) + 1 || win.height > Double(bounds.height) + 1
+        // The DISPLAYED window is native × clientZoom (see `layoutVideoLayer`), so the navigability gate must
+        // key off the zoomed size — otherwise footer zoom-in overflow of a smaller-than-pane window reads as
+        // "fits" and edge-pan (the only in-pane pan path) never arms.
+        return ViewportPan.isNavigable(
+            window: win,
+            pane: VideoSize(width: Double(bounds.width), height: Double(bounds.height)),
+            zoom: Double(clientZoom),
+        )
     }
 
     // MARK: Edge-pan (translate the oversized video layer when the pointer hugs a pane edge)
@@ -733,8 +817,15 @@ final class MetalLayerBackedView: NSView {
             return
         }
         let dt = 1.0 / 60.0
-        let maxX = Swift.max(0, win.width - Double(bounds.width))
-        let maxY = Swift.max(0, win.height - Double(bounds.height))
+        // Clamp to the DISPLAYED (zoomed) overflow, matching `layoutVideoLayer`'s frame clamp — clamping to
+        // the un-zoomed `win − pane` stopped panning partway and stranded the far edge of zoomed content.
+        let maxPan = ViewportPan.maxPanOffset(
+            window: win,
+            pane: VideoSize(width: Double(bounds.width), height: Double(bounds.height)),
+            zoom: Double(clientZoom),
+        )
+        let maxX = maxPan.x
+        let maxY = maxPan.y
         let nx = min(max(Double(panOffset.x) + Double(edgePanVelocity.x) * dt, 0), maxX)
         let ny = min(max(Double(panOffset.y) + Double(edgePanVelocity.y) * dt, 0), maxY)
         let xDone = edgePanVelocity
@@ -947,6 +1038,8 @@ final class MetalLayerBackedView: NSView {
     override func flagsChanged(with event: NSEvent) {
         guard inputEnabled else { return } // read-only ⇒ no modifier key-event forward (E21 WI-3)
         guard let down = Self.modifierDown(keyCode: event.keyCode, flags: event.modifierFlags) else { return }
+        // Track the edge (BUG-2) so a focus change that swallows the release can synthesize the key-up.
+        modifierLatch.note(keyCode: event.keyCode, down: down)
         pipeline.key(keyCode: event.keyCode, down: down, modifiers: mods(event))
     }
 
@@ -997,8 +1090,33 @@ final class MetalLayerBackedView: NSView {
         }
     }
 
+    /// FIRST-RESPONDER RESIGN (BUG-2): when a sibling pane grabs first responder (⌘T / any focus move that
+    /// calls `makeFirstResponder`) while a modifier is physically held, its release `flagsChanged` is delivered
+    /// to the NEW responder — never to us — so the host would keep the modifier latched (scroll → zoom). Release
+    /// the latched modifiers here. (The other no-release path — the whole window resigning key on ⌘-Tab away,
+    /// which does NOT call `resignFirstResponder` — is covered by the `didResignKeyNotification` observer below.)
+    override func resignFirstResponder() -> Bool {
+        releaseLatchedModifiers()
+        return super.resignFirstResponder()
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        // BUG-2: re-scope the window-resign-key observer to the CURRENT window (removed first so a moved /
+        // detached view never keeps a stale subscription). On ⌘-Tab away the window resigns key WITHOUT a
+        // release `flagsChanged` or a `resignFirstResponder`, so this is the only signal to unlatch modifiers.
+        if let token = windowResignKeyObserver {
+            NotificationCenter.default.removeObserver(token)
+            windowResignKeyObserver = nil
+        }
+        if let window {
+            windowResignKeyObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification, object: window, queue: .main,
+            ) { [weak self] _ in
+                // Already on the main queue (`queue: .main`); bridge to this @MainActor view.
+                MainActor.assumeIsolated { self?.releaseLatchedModifiers() }
+            }
+        }
         // FOCUS-STEALING FIX: only grab first responder when THIS pane is the ACTIVE one and we are not
         // already the responder. An unconditional makeFirstResponder on every NSView mount let the
         // LAST-mounted video pane steal the keyboard regardless of workspace focus (and thrash the
@@ -1014,6 +1132,13 @@ final class MetalLayerBackedView: NSView {
         if newWindow == nil { if pointerInside { NSCursor.arrow.set() }
             pointerInside = false
             stopEdgePan() // teardown — never leave a timer firing on a detached view
+            // BUG-2: release any latched modifier + drop the resign-key observer before the view detaches, so
+            // a torn-down pane never leaves the host with a stuck modifier or a stale window subscription.
+            releaseLatchedModifiers()
+            if let token = windowResignKeyObserver {
+                NotificationCenter.default.removeObserver(token)
+                windowResignKeyObserver = nil
+            }
         }
     }
 

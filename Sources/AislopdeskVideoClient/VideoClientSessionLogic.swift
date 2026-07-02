@@ -186,6 +186,61 @@ public struct VideoClientStateMachine: Sendable {
     public var mediaFlowing: Bool { state == .streaming }
 }
 
+/// Pure edge-pan reachability + clamp math for the ACTUAL-SIZE viewport (2026-07-02). The macOS pane shows
+/// the remote window inside a fixed viewport; the DISPLAYED window size is the native POINT size × the client
+/// zoom (a compositor scale of the sublayer), and edge-pan is the only in-pane way to reach content beyond the
+/// pane. Both the navigability GATE and the per-axis pan CLAMP must key off the DISPLAYED (zoomed) size, or a
+/// zoomed-in window's overflow is unreachable (gate false) / only half-reachable (clamp stops at the un-zoomed
+/// size). Pure Double math — headlessly unit-testable, no `CALayer`.
+public enum ViewportPan {
+    /// Whether there is displayed window content beyond the pane to pan to on some axis (±1 pt slack). Keys
+    /// off `window × zoom` (the DISPLAYED size), matching the layer frame the compositor lays out.
+    public static func isNavigable(window: VideoSize, pane: VideoSize, zoom: Double) -> Bool {
+        window.width * zoom > pane.width + 1 || window.height * zoom > pane.height + 1
+    }
+
+    /// The maximum pan offset per axis (DISPLAY points, top-left basis): `displayed − pane`, floored at 0.
+    /// Identical basis to ``isNavigable`` and to `layoutVideoLayer`'s frame clamp, so the gate, the edge-pan
+    /// step clamp, and the layer position never disagree.
+    public static func maxPanOffset(window: VideoSize, pane: VideoSize, zoom: Double) -> VideoPoint {
+        VideoPoint(
+            x: Swift.max(0, window.width * zoom - pane.width),
+            y: Swift.max(0, window.height * zoom - pane.height),
+        )
+    }
+}
+
+/// Tracks which modifier KEYS the view has forwarded to the host as "down" but whose release `flagsChanged`
+/// it may never see because focus moved away (⌘-Tab to another app, pane blur, first-responder resign). Since
+/// the host injects modifiers through a shared `CGEventSource(.hidSystemState)` that LATCHES flag state, a
+/// swallowed key-up leaves the modifier stuck — and later scroll / mouse-move events (which carry no explicit
+/// flags) inherit it, so a plain two-finger scroll becomes ⌘-scroll (the remote page zooms). This lets the
+/// view synthesize the missing key-ups on focus loss. Pure value type — headlessly unit-testable.
+public struct ModifierLatchTracker: Sendable, Equatable {
+    private var downKeyCodes: Set<UInt16> = []
+
+    public init() {}
+
+    /// Whether no modifier is currently latched down.
+    public var isEmpty: Bool { downKeyCodes.isEmpty }
+
+    /// Whether `keyCode` is currently latched down.
+    public func isDown(_ keyCode: UInt16) -> Bool { downKeyCodes.contains(keyCode) }
+
+    /// Record one modifier `flagsChanged` edge (idempotent — a repeated same-edge is absorbed).
+    public mutating func note(keyCode: UInt16, down: Bool) {
+        if down { downKeyCodes.insert(keyCode) } else { downKeyCodes.remove(keyCode) }
+    }
+
+    /// Returns every latched keyCode (ascending, for a deterministic emit order) and CLEARS the tracker —
+    /// the caller synthesizes a host key-up for each so no modifier stays latched after focus loss.
+    public mutating func drainForRelease() -> [UInt16] {
+        let all = downKeyCodes.sorted()
+        downKeyCodes.removeAll()
+        return all
+    }
+}
+
 /// Display-scale + cursor-placement math for the client (doc 17 §3.3).
 ///
 /// The decoded frame is `decodedSize` pixels (the host's capture size). The Metal
